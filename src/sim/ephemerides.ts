@@ -105,7 +105,10 @@ const stateFor = (body: Body, utDays: UtDaysSinceJ2000): HeliocentricState => {
 /**
  * Returns only heliocentric EQJ states for the Tier 0 bodies. This provider is
  * a pure function of the supplied virtual sim time and epoch; it never reads a
- * host clock. The Sun is intentionally the zero vector in this frame.
+ * host clock. The Sun is intentionally the zero vector in this frame. Its
+ * Horizons validation coverage is 2026-01-01 through 2027-04-26; callers are
+ * not restricted to that window by this Tier 0 adapter (longburn-8fo owns that
+ * policy decision).
  */
 export const ephemeridesAt = (
   epochUtDaysSinceJ2000: UtDaysSinceJ2000,

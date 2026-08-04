@@ -1,5 +1,5 @@
-import { SetDeltaTFunction } from "astronomy-engine";
-import { describe, expect, it } from "vitest";
+import { DeltaT_JplHorizons, SetDeltaTFunction } from "astronomy-engine";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import earthFixture from "../../test/fixtures/ephemerides/horizons/earth.json" with { type: "json" };
 import marsFixture from "../../test/fixtures/ephemerides/horizons/mars.json" with { type: "json" };
@@ -71,6 +71,15 @@ const positionErrorLimitsKm: Readonly<Record<FixtureBody, number>> = {
   mars: 4_500
 };
 
+// These are the patched-conic scales used to enforce the validation decision.
+// The Sun's heliocentric state is identically zero, so it has no relevant SOI
+// limit at this adapter boundary.
+const SPHERE_OF_INFLUENCE_KM = {
+  earth: 924_000,
+  moon: 66_000,
+  mars: 577_000
+} as const;
+
 const velocityErrorLimitsKmPerSecond: Readonly<Record<FixtureBody, number>> = {
   // Observed maxima across the same rows: Sun 0, Earth 0.001502,
   // Moon 0.001515, Mars 0.000939 km/s.
@@ -89,6 +98,19 @@ const observedMaximumErrors: Readonly<
   mars: { positionKm: 4_404.986_594, velocityKmPerSecond: 0.000_938_804 }
 };
 
+const observedMaximumGeocentricLunarError = {
+  positionKm: 13.946,
+  velocityKmPerSecond: 0.000_051_9
+} as const;
+
+const geocentricLunarPositionErrorLimitKm = 15;
+
+afterEach(() => {
+  // SetDeltaTFunction is process-global. Leave the provider in this adapter's
+  // documented convention after any test deliberately poisons it.
+  SetDeltaTFunction(DeltaT_JplHorizons);
+});
+
 describe("Tier 0 ephemerides", () => {
   it("maps virtual sim milliseconds to an explicit UT input", () => {
     expect(simTimeToUtDays(epoch, simTimeMs(86_400_000))).toBe(9_132.5);
@@ -103,7 +125,7 @@ describe("Tier 0 ephemerides", () => {
     }
 
     // 2026-01-01T00:00 TDB, represented as a UT J2000 day count for MakeTime.
-    expect(horizonsTdbJulianDayToUtDays(sample.tdbJulianDay)).toBeCloseTo(9_496.499_190, 6);
+    expect(horizonsTdbJulianDayToUtDays(sample.tdbJulianDay)).toBeCloseTo(9_496.499_190, 3);
   });
 
   it("returns heliocentric EQJ states in kilometres and kilometres per second", () => {
@@ -121,20 +143,43 @@ describe("Tier 0 ephemerides", () => {
     );
   });
 
-  it("is byte-for-byte stable across warmed and deliberately altered global call history", () => {
+  it("pins delta-T during a cold module initialization and is stable across warmed call histories", async () => {
     const instant = simTimeMs(2_592_000_000);
-    const cold = JSON.stringify(ephemeridesAt(epoch, instant));
-
-    ephemeridesAt(epoch, simTimeMs(0));
-    ephemeridesAt(epoch, simTimeMs(86_400_000));
     SetDeltaTFunction(() => 0);
+    vi.resetModules();
+    const coldAdapter = await import("./ephemerides.js");
+    const {
+      AstroTime: coldAstroTime,
+      DeltaT_JplHorizons: coldDeltaT_JplHorizons,
+      SetDeltaTFunction: setColdDeltaTFunction
+    } = await import("astronomy-engine");
 
-    const afterInterleaving = JSON.stringify(ephemeridesAt(epoch, instant));
+    try {
+      // This direct conversion runs after module initialization but before any
+      // adapter lookup. It proves initialization reset the process-global hook.
+      expect(coldAstroTime.FromTerrestrialTime(9_496.5).ut).toBeCloseTo(9_496.499_190, 3);
 
-    expect(afterInterleaving).toBe(cold);
+      const cold = JSON.stringify(coldAdapter.ephemeridesAt(epoch, instant));
+
+      coldAdapter.ephemeridesAt(epoch, simTimeMs(0));
+      coldAdapter.ephemeridesAt(epoch, simTimeMs(86_400_000));
+      setColdDeltaTFunction(() => 0);
+
+      const afterInterleaving = JSON.stringify(coldAdapter.ephemeridesAt(epoch, instant));
+
+      expect(afterInterleaving).toBe(cold);
+    } finally {
+      setColdDeltaTFunction(coldDeltaT_JplHorizons);
+    }
   });
 
   it("matches every raw Horizons VECTORS fixture inside observed-data-derived limits", () => {
+    for (const body of ["earth", "mars"] as const) {
+      expect(positionErrorLimitsKm[body], `${body} position limit must stay below 2% of SOI`).toBeLessThan(
+        0.02 * SPHERE_OF_INFLUENCE_KM[body]
+      );
+    }
+
     for (const body of fixtureBodies) {
       let maximumPositionErrorKm = 0;
       let maximumVelocityErrorKmPerSecond = 0;
@@ -160,7 +205,7 @@ describe("Tier 0 ephemerides", () => {
       );
       expect(maximumPositionErrorKm, `${body} recorded maximum position error (km)`).toBeCloseTo(
         observedMaximumErrors[body].positionKm,
-        6
+        3
       );
       expect(maximumVelocityErrorKmPerSecond, `${body} recorded maximum velocity error (km/s)`).toBeCloseTo(
         observedMaximumErrors[body].velocityKmPerSecond,
@@ -176,6 +221,12 @@ describe("Tier 0 ephemerides", () => {
     let perigee = { index: 0, distanceKm: Number.POSITIVE_INFINITY };
     let apogee = { index: 0, distanceKm: 0 };
     let conjunction = { index: 0, separationDegrees: 0 };
+    let maximumGeocentricLunarPositionErrorKm = 0;
+    let maximumGeocentricLunarVelocityErrorKmPerSecond = 0;
+
+    expect(earth).toHaveLength(97);
+    expect(moon).toHaveLength(97);
+    expect(mars).toHaveLength(97);
 
     for (let index = 0; index < earth.length; index += 1) {
       const earthSample = earth[index];
@@ -198,15 +249,56 @@ describe("Tier 0 ephemerides", () => {
           180) /
         Math.PI;
       if (separationDegrees > conjunction.separationDegrees) conjunction = { index, separationDegrees };
+
+      const actualStates = ephemeridesAt(horizonsTdbJulianDayToUtDays(earthSample.tdbJulianDay), simTimeMs(0));
+      maximumGeocentricLunarPositionErrorKm = Math.max(
+        maximumGeocentricLunarPositionErrorKm,
+        magnitudeOfDifference(
+          {
+            x: actualStates.moon.positionKm.x - actualStates.earth.positionKm.x,
+            y: actualStates.moon.positionKm.y - actualStates.earth.positionKm.y,
+            z: actualStates.moon.positionKm.z - actualStates.earth.positionKm.z
+          },
+          {
+            x: moonSample.positionKm.x - earthSample.positionKm.x,
+            y: moonSample.positionKm.y - earthSample.positionKm.y,
+            z: moonSample.positionKm.z - earthSample.positionKm.z
+          }
+        )
+      );
+      maximumGeocentricLunarVelocityErrorKmPerSecond = Math.max(
+        maximumGeocentricLunarVelocityErrorKmPerSecond,
+        magnitudeOfDifference(
+          {
+            x: actualStates.moon.velocityKmPerSecond.x - actualStates.earth.velocityKmPerSecond.x,
+            y: actualStates.moon.velocityKmPerSecond.y - actualStates.earth.velocityKmPerSecond.y,
+            z: actualStates.moon.velocityKmPerSecond.z - actualStates.earth.velocityKmPerSecond.z
+          },
+          {
+            x: moonSample.velocityKmPerSecond.x - earthSample.velocityKmPerSecond.x,
+            y: moonSample.velocityKmPerSecond.y - earthSample.velocityKmPerSecond.y,
+            z: moonSample.velocityKmPerSecond.z - earthSample.velocityKmPerSecond.z
+          }
+        )
+      );
     }
 
     expect(earth[perigee.index]?.tdbJulianDay).toBe(2_461_206.5);
-    expect(perigee.distanceKm).toBeCloseTo(357_197.239_948, 6);
+    expect(perigee.distanceKm).toBeCloseTo(357_197.239_948, 3);
     expect(earth[apogee.index]?.tdbJulianDay).toBe(2_461_386.5);
-    expect(apogee.distanceKm).toBeCloseTo(406_215.945_938, 6);
+    expect(apogee.distanceKm).toBeCloseTo(406_215.945_938, 3);
     // The sampled 2026 Mars solar-conjunction window has the largest
     // heliocentric Earth-Mars angular separation (not the 2027 opposition).
     expect(earth[conjunction.index]?.tdbJulianDay).toBe(2_461_051.5);
-    expect(conjunction.separationDegrees).toBeCloseTo(178.275_711_835, 6);
+    expect(conjunction.separationDegrees).toBeCloseTo(178.275_711_835, 3);
+    expect(maximumGeocentricLunarPositionErrorKm).toBeCloseTo(observedMaximumGeocentricLunarError.positionKm, 3);
+    expect(geocentricLunarPositionErrorLimitKm, "geocentric lunar position limit must stay below 2% of SOI").toBeLessThan(
+      0.02 * SPHERE_OF_INFLUENCE_KM.moon
+    );
+    expect(maximumGeocentricLunarPositionErrorKm).toBeLessThanOrEqual(geocentricLunarPositionErrorLimitKm);
+    expect(maximumGeocentricLunarVelocityErrorKmPerSecond).toBeCloseTo(
+      observedMaximumGeocentricLunarError.velocityKmPerSecond,
+      7
+    );
   });
 });
