@@ -19,8 +19,11 @@
 # Each seat type keeps its OWN runtime's credentials readable — masking them
 # breaks the launch outright — and masks the other runtime's entirely.
 
+# OUTPUT: sets the global array `mask` (consumers declare mask=() before sourcing).
+# shellcheck disable=SC2034  # mask is consumed by the sourcing script
 build_mask() {
   local seat="$1" root="$2"; shift 2
+  local CODEX_AUTH_RO=0
   local extra_ro=("$@")
   local uid; uid="$(id -u)"
 
@@ -60,6 +63,17 @@ build_mask() {
       MASK_DIRS+=("$HOME/.codex")
       RO_PATHS+=("$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json" \
                  "$HOME/.claude/CLAUDE.md" "$HOME/.claude/helpers")
+      # DISPATCH EXCEPTION (measured 2026-08-04): the Mayor launches the Forge,
+      # and a child codex inherits this mount namespace — with ~/.codex masked it
+      # cannot authenticate (401). So the directory stays masked and auth.json
+      # alone is re-bound read-only over the tmpfs: the seat sees exactly one
+      # file there, not config.toml, history, sessions, or logs. The seat can
+      # therefore READ that token, which is an accepted exposure on the same
+      # footing as reading its own ~/.claude/.credentials.json: a session that
+      # can already spend the token gains little by seeing it, and the
+      # alternative (dispatching Forge only from an unmasked shell) puts
+      # friction on the fort's core loop. Revisit if Codex gains fd/env auth.
+      CODEX_AUTH_RO=1
       ;;
     *) echo "build_mask: unknown seat type '$seat' (expected codex|claude)" >&2; return 2 ;;
   esac
@@ -70,6 +84,10 @@ build_mask() {
   for d in "${MASK_DIRS[@]}"; do [ -d "$d" ] && mask+=(--tmpfs "$d"); done
   local p
   for p in "${RO_PATHS[@]}" "${extra_ro[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
+
+  if [ "${CODEX_AUTH_RO:-0}" = "1" ] && [ -e "$HOME/.codex/auth.json" ]; then
+    mask+=(--ro-bind "$HOME/.codex/auth.json" "$HOME/.codex/auth.json")
+  fi
 
   # Git hooks under .beads run on the HOST, unsandboxed, on the next commit or
   # push in the main checkout — a writable .beads is a host RCE escape. CLASS
