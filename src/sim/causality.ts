@@ -2,12 +2,8 @@ import type { SimTimeMs } from "./clock.js";
 
 /** Exact SI value, shared by every server-side causality check. */
 export const SPEED_OF_LIGHT_METERS_PER_SECOND = 299_792_458;
-
-/**
- * Endpoint motion during Tier 0 light transit is bounded below one part per
- * thousand: two endpoints at 150 km/s move at most 0.001 of a light path.
- */
-export const CAUSALITY_RELATIVE_TOLERANCE = 0.001;
+const CONVERGENCE_MS = 0.001;
+const MAX_LIGHT_CONE_ITERATIONS = 32;
 
 export interface PositionMeters {
   readonly x: number;
@@ -15,11 +11,14 @@ export interface PositionMeters {
   readonly z: number;
 }
 
+/** Evaluates the receiver worldline at a (possibly fractional) sim millisecond. */
+export type ObserverPositionAt = (timeMs: number) => PositionMeters;
+
 export interface CausalityProvenance {
   readonly eventTime: SimTimeMs;
   readonly emissionTime: SimTimeMs;
   readonly eventPosition: PositionMeters;
-  readonly observerPosition: PositionMeters;
+  readonly observerPositionAt: ObserverPositionAt;
 }
 
 export interface OutboundEvent<T> extends CausalityProvenance {
@@ -27,13 +26,19 @@ export interface OutboundEvent<T> extends CausalityProvenance {
 }
 
 export interface EmittedMessage<T> extends OutboundEvent<T> {
+  /** Receiver position at emission, supplied by the authoritative trajectory. */
+  readonly observerPosition: PositionMeters;
   /** Server-authoritative age for the client to render, in simulation ms. */
   readonly stalenessMs: number;
 }
 
-export interface CausalityIncident extends CausalityProvenance {
-  readonly requiredLightTravelMs: number;
-  readonly actualElapsedMs: number;
+export type CausalityFailureReason = "invalid-provenance" | "invalid-position" | "light-cone-failure" | "early-emission";
+
+export interface CausalityIncident {
+  readonly reason: CausalityFailureReason;
+  readonly provenance: unknown;
+  readonly requiredArrivalTimeMs?: number;
+  readonly actualElapsedMs?: number;
 }
 
 export class CausalityInvariantViolation extends Error {
@@ -46,6 +51,22 @@ export class CausalityInvariantViolation extends Error {
   }
 }
 
+const isSimTimeMs = (value: unknown): value is SimTimeMs => Number.isSafeInteger(value) && (value as number) >= 0;
+
+const validatedPosition = (position: unknown): PositionMeters => {
+  if (
+    typeof position !== "object" ||
+    position === null ||
+    !Number.isFinite((position as PositionMeters).x) ||
+    !Number.isFinite((position as PositionMeters).y) ||
+    !Number.isFinite((position as PositionMeters).z)
+  ) {
+    throw new RangeError("Causality positions must contain finite Cartesian coordinates.");
+  }
+
+  return position as PositionMeters;
+};
+
 const distanceMeters = (left: PositionMeters, right: PositionMeters): number => {
   const distance = Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
   if (!Number.isFinite(distance)) {
@@ -55,60 +76,114 @@ const distanceMeters = (left: PositionMeters, right: PositionMeters): number => 
   return distance;
 };
 
-export const requiredLightTravelMs = (provenance: CausalityProvenance): number =>
-  (distanceMeters(provenance.eventPosition, provenance.observerPosition) / SPEED_OF_LIGHT_METERS_PER_SECOND) *
-  1_000;
+const failure = (
+  reason: CausalityFailureReason,
+  provenance: unknown,
+  requiredArrivalTimeMs?: number,
+  actualElapsedMs?: number
+): CausalityInvariantViolation =>
+  new CausalityInvariantViolation({ reason, provenance, requiredArrivalTimeMs, actualElapsedMs });
 
-/** Throws for a leak so tests and callers can prove the invariant directly. */
+/**
+ * Solves the receiver's arrival-time light cone. The returned value is the
+ * exact floating-point arrival estimate; callers must schedule with ceil().
+ */
+export const requiredArrivalTimeMs = (provenance: CausalityProvenance): number => {
+  try {
+    if (!isSimTimeMs(provenance.eventTime) || !isSimTimeMs(provenance.emissionTime)) {
+      throw failure("invalid-provenance", provenance);
+    }
+    const eventPosition = validatedPosition(provenance.eventPosition);
+    if (typeof provenance.observerPositionAt !== "function") {
+      throw failure("invalid-provenance", provenance);
+    }
+
+    let arrivalTimeMs = provenance.eventTime +
+      (distanceMeters(validatedPosition(provenance.observerPositionAt(provenance.eventTime)), eventPosition) /
+        SPEED_OF_LIGHT_METERS_PER_SECOND) *
+        1_000;
+    for (let iteration = 0; iteration < MAX_LIGHT_CONE_ITERATIONS; iteration += 1) {
+      const nextArrivalTimeMs = provenance.eventTime +
+        (distanceMeters(validatedPosition(provenance.observerPositionAt(arrivalTimeMs)), eventPosition) /
+          SPEED_OF_LIGHT_METERS_PER_SECOND) *
+          1_000;
+      if (!Number.isFinite(nextArrivalTimeMs)) {
+        throw new RangeError("Light-cone solve produced a non-finite arrival time.");
+      }
+      if (Math.abs(nextArrivalTimeMs - arrivalTimeMs) < CONVERGENCE_MS) {
+        return nextArrivalTimeMs;
+      }
+      arrivalTimeMs = nextArrivalTimeMs;
+    }
+  } catch (error: unknown) {
+    if (error instanceof CausalityInvariantViolation) {
+      throw error;
+    }
+    throw failure("invalid-position", provenance);
+  }
+
+  throw failure("light-cone-failure", provenance);
+};
+
+/** The earliest integral simulation tick at which the message may be emitted. */
+export const earliestLegalEmissionTimeMs = (provenance: CausalityProvenance): number =>
+  Math.ceil(requiredArrivalTimeMs(provenance));
+
+/** Throws for every malformed or early emission, so callers can fail closed. */
 export const assertCausalityInvariant = (provenance: CausalityProvenance): void => {
-  const actualElapsedMs = provenance.emissionTime - provenance.eventTime;
-  const requiredLightTravel = requiredLightTravelMs(provenance);
-  const toleratedRequiredLightTravel = requiredLightTravel * (1 - CAUSALITY_RELATIVE_TOLERANCE);
-
-  if (actualElapsedMs < toleratedRequiredLightTravel) {
-    throw new CausalityInvariantViolation({
-      ...provenance,
-      requiredLightTravelMs: requiredLightTravel,
-      actualElapsedMs
-    });
+  const arrivalTimeMs = requiredArrivalTimeMs(provenance);
+  if (provenance.emissionTime < Math.ceil(arrivalTimeMs)) {
+    throw failure("early-emission", provenance, arrivalTimeMs, provenance.emissionTime - provenance.eventTime);
   }
 };
 
 export interface CausalEmissionGateOptions<T> {
-  /** The sole outbound transport callback. No message reaches it unchecked. */
+  /** The sole raw outbound transport callback. No message reaches it unchecked. */
   readonly send: (message: EmittedMessage<T>) => void;
-  /** Incident-grade sink, invoked before a causality violation is suppressed. */
+  /** Incident-grade sink, invoked for every blocked message. */
   readonly recordIncident: (incident: CausalityIncident) => void;
+  /** Counter/alert hook, invoked even if incident recording itself fails. */
+  readonly incrementCausalityFailure: () => void;
 }
 
 export type EmissionResult = { readonly sent: true } | { readonly sent: false };
 
 /**
- * The outbound choke point. Later transports receive this gate, never a raw
- * send callback, so a causality breach fails closed before it reaches a client.
+ * The outbound choke point. Future transports receive this gate, never a raw
+ * send callback. `test/causal-transport-fence.test.ts` enforces that boundary.
  */
 export class CausalEmissionGate<T> {
   readonly #send: (message: EmittedMessage<T>) => void;
   readonly #recordIncident: (incident: CausalityIncident) => void;
+  readonly #incrementCausalityFailure: () => void;
 
-  constructor({ send, recordIncident }: CausalEmissionGateOptions<T>) {
+  constructor({ send, recordIncident, incrementCausalityFailure }: CausalEmissionGateOptions<T>) {
     this.#send = send;
     this.#recordIncident = recordIncident;
+    this.#incrementCausalityFailure = incrementCausalityFailure;
   }
 
   emit(event: OutboundEvent<T>): EmissionResult {
     try {
       assertCausalityInvariant(event);
+      const observerPosition = validatedPosition(event.observerPositionAt(event.emissionTime));
+      this.#send({ ...event, observerPosition, stalenessMs: event.emissionTime - event.eventTime });
+      return { sent: true };
     } catch (error: unknown) {
-      if (error instanceof CausalityInvariantViolation) {
-        this.#recordIncident(error.incident);
-        return { sent: false };
+      const incident = error instanceof CausalityInvariantViolation
+        ? error.incident
+        : { reason: "invalid-position" as const, provenance: event };
+      try {
+        this.#recordIncident(incident);
+      } catch {
+        // Reporting cannot turn a closed gate into a send.
       }
-
-      throw error;
+      try {
+        this.#incrementCausalityFailure();
+      } catch {
+        // Alerting cannot turn a closed gate into a send.
+      }
+      return { sent: false };
     }
-
-    this.#send({ ...event, stalenessMs: event.emissionTime - event.eventTime });
-    return { sent: true };
   }
 }
