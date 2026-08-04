@@ -8,6 +8,7 @@ import {
   SPEED_OF_LIGHT_METERS_PER_SECOND,
   assertCausalityInvariant,
   earliestLegalEmissionTimeMs,
+  requiredArrivalTimeMs,
   type EmittedMessage,
   type PositionMeters
 } from "./causality.js";
@@ -15,6 +16,37 @@ import {
 const ORIGIN: PositionMeters = { x: 0, y: 0, z: 0 };
 const stationaryAt = (position: PositionMeters) => () => position;
 const independentEarliestTick = (distanceMeters: number): number => Math.ceil((distanceMeters / 299_792_458) * 1_000);
+
+/** Independent closed-form light-cone oracle for linear receiver motion. */
+const independentLinearArrivalTimeMs = (
+  eventTime: number,
+  receiverPositionAtEvent: PositionMeters,
+  velocityMetersPerSecond: PositionMeters
+): number => {
+  const c = 299_792_458;
+  const positionSquared = receiverPositionAtEvent.x ** 2 + receiverPositionAtEvent.y ** 2 + receiverPositionAtEvent.z ** 2;
+  const velocitySquared = velocityMetersPerSecond.x ** 2 + velocityMetersPerSecond.y ** 2 + velocityMetersPerSecond.z ** 2;
+  const positionVelocity = receiverPositionAtEvent.x * velocityMetersPerSecond.x +
+    receiverPositionAtEvent.y * velocityMetersPerSecond.y +
+    receiverPositionAtEvent.z * velocityMetersPerSecond.z;
+  const discriminant = (2 * positionVelocity) ** 2 - 4 * (velocitySquared - c ** 2) * positionSquared;
+  const elapsedSeconds = (2 * positionSquared) / (Math.sqrt(discriminant) - 2 * positionVelocity);
+
+  return eventTime + elapsedSeconds * 1_000;
+};
+
+const linearWorldline = (
+  eventTime: number,
+  receiverPositionAtEvent: PositionMeters,
+  velocityMetersPerSecond: PositionMeters
+) => (timeMs: number): PositionMeters => {
+  const elapsedSeconds = (timeMs - eventTime) / 1_000;
+  return {
+    x: receiverPositionAtEvent.x + velocityMetersPerSecond.x * elapsedSeconds,
+    y: receiverPositionAtEvent.y + velocityMetersPerSecond.y * elapsedSeconds,
+    z: receiverPositionAtEvent.z + velocityMetersPerSecond.z * elapsedSeconds
+  };
+};
 
 describe("causality invariant", () => {
   it("blocks one millisecond before the exact legal tick and admits that tick", () => {
@@ -109,6 +141,46 @@ describe("causality invariant", () => {
         }
       ),
       { seed: 0x6ca551, numRuns: 400 }
+    );
+  });
+
+  it("independently generates both sides of moving-receiver light-cone boundaries", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 10_000_000 }),
+        fc.integer({ min: 1_000_000, max: 20_000_000_000 }),
+        fc.integer({ min: -10_000_000_000, max: 10_000_000_000 }),
+        fc.integer({ min: -10_000_000_000, max: 10_000_000_000 }),
+        fc.integer({ min: -100_000, max: 100_000 }),
+        fc.integer({ min: -100_000, max: 100_000 }),
+        fc.integer({ min: -100_000, max: 100_000 }),
+        (eventTime, x, y, z, velocityX, velocityY, velocityZ) => {
+          const receiverPositionAtEvent = { x, y, z };
+          const velocityMetersPerSecond = { x: velocityX, y: velocityY, z: velocityZ };
+          const exactArrivalTimeMs = independentLinearArrivalTimeMs(
+            eventTime, receiverPositionAtEvent, velocityMetersPerSecond
+          );
+          const earliestTick = Math.ceil(exactArrivalTimeMs);
+          // Keep the exact tick clear of the solver's 0.001 ms conservative
+          // margin, while retaining enough motion for stale iterations to leak.
+          fc.pre(earliestTick - exactArrivalTimeMs > 0.01);
+          const observerPositionAt = linearWorldline(eventTime, receiverPositionAtEvent, velocityMetersPerSecond);
+          const base = {
+            eventTime: simTimeMs(eventTime),
+            eventPosition: ORIGIN,
+            observerPositionAt
+          };
+
+          expect(requiredArrivalTimeMs({ ...base, emissionTime: simTimeMs(earliestTick) })).toBeGreaterThanOrEqual(
+            exactArrivalTimeMs
+          );
+          expect(() => assertCausalityInvariant({ ...base, emissionTime: simTimeMs(earliestTick - 1) })).toThrow(
+            CausalityInvariantViolation
+          );
+          expect(() => assertCausalityInvariant({ ...base, emissionTime: simTimeMs(earliestTick) })).not.toThrow();
+        }
+      ),
+      { seed: 0x11c0de, numRuns: 800 }
     );
   });
 

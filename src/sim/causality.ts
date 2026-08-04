@@ -5,6 +5,14 @@ export const SPEED_OF_LIGHT_METERS_PER_SECOND = 299_792_458;
 const CONVERGENCE_MS = 0.001;
 const MAX_LIGHT_CONE_ITERATIONS = 32;
 
+/**
+ * Keeps a converged floating-point estimate on the delayed side of the light
+ * cone. For a convergent fixed point, the remaining error is bounded by the
+ * preceding step; adding that step keeps the estimate on the delayed side.
+ */
+const conservativeArrivalTimeMs = (arrivalTimeMs: number, precedingStepMs: number): number =>
+  arrivalTimeMs + precedingStepMs;
+
 export interface PositionMeters {
   readonly x: number;
   readonly y: number;
@@ -85,8 +93,9 @@ const failure = (
   new CausalityInvariantViolation({ reason, provenance, requiredArrivalTimeMs, actualElapsedMs });
 
 /**
- * Solves the receiver's arrival-time light cone. The returned value is the
- * exact floating-point arrival estimate; callers must schedule with ceil().
+ * Solves the receiver's arrival-time light cone. The returned value is a
+ * conservative floating-point arrival estimate; callers must schedule with
+ * ceil().
  */
 export const requiredArrivalTimeMs = (provenance: CausalityProvenance): number => {
   try {
@@ -110,8 +119,9 @@ export const requiredArrivalTimeMs = (provenance: CausalityProvenance): number =
       if (!Number.isFinite(nextArrivalTimeMs)) {
         throw new RangeError("Light-cone solve produced a non-finite arrival time.");
       }
-      if (Math.abs(nextArrivalTimeMs - arrivalTimeMs) < CONVERGENCE_MS) {
-        return nextArrivalTimeMs;
+      const precedingStepMs = Math.abs(nextArrivalTimeMs - arrivalTimeMs);
+      if (precedingStepMs < CONVERGENCE_MS) {
+        return conservativeArrivalTimeMs(nextArrivalTimeMs, precedingStepMs);
       }
       arrivalTimeMs = nextArrivalTimeMs;
     }
