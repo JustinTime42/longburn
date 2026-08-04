@@ -26,6 +26,17 @@ A change that violates a pillar is treated like a change that violates documente
 5. `.env*` / secrets → deny-listed from all agent access from day zero.
 6. Anything public-facing (domains, store pages, published builds) → Overseer.
 
+## Threat model
+
+Controls in this fort are justified against these threats, in priority order. A control that reduces none of them is ceremony. A gap that only an out-of-scope actor could exploit is documented, not defended against. (Backported from Proofdelve 21f.10, Overseer, 2026-08-04.)
+
+1. **Agent accident** — the wrong command, a bad merge, an unreviewed migration, a destructive path glob. Highest volume and highest realized cost across the civilization: every incident actually recorded in any fort is in this class (a probe that corrupted `.git/config`, a double-launch race, launch scripts emitting as another fort's citizens).
+2. **Prompt injection via untrusted content** — web research today, user-supplied text tomorrow. The untrusted-input standing order is the control.
+3. **Supply chain** — a package or plugin silently overwriting harness files. Observed in this civilization: a ruflo upgrade that severed reflexion capture.
+4. **Credential leakage into transcripts** — a secret reaching a model's context or a log, from which it cannot be recalled.
+
+**Explicitly out of scope: a motivated human adversary who already has shell access on this machine.** Such an actor has no need to defeat a deny glob; they can read the file directly. Controls are not designed against them, findings that require them are documented rather than blocked on, and effort spent hardening against them is effort not spent on 1-4.
+
 ## Standing orders
 
 Inherited from Proofdelve (generic, scar-tested):
@@ -45,6 +56,7 @@ Native to Longburn (from the GDD review, encoded before the first line of code):
 12. **The causality invariant is a test, not a comment**: no message reaches a player before light could. `emission_time - event_time >= distance/c`, asserted mechanically over every emitted state, from Tier 0 onward. Server-side visibility filtering is absolute; the client never computes anything it could be wrong about.
 13. **Tier scope is a fence.** Work beyond the current tier's scope list is filed as a future bead, never built early — the GDD names mutual-dependency scope creep as the way this genre of project dies.
 14. **A Tier 0 fail is ambiguous by design** (fake market, no other players): the pre-committed reading is re-test at T2 with real counterparties before any kill decision. Recorded now so it can't be relitigated in disappointment. A pass is strong signal.
+15. **Infrastructure beads require an observed failure, not an imagined one.** "This broke on Tuesday" files a bead; "an attacker could" is recorded in the threat model as accepted-and-out-of-scope. The excavation discipline used at founding, applied to hardening. (Backported from Proofdelve 21f.10, 2026-08-04.)
 
 ## Seats
 
