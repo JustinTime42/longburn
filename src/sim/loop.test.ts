@@ -1,0 +1,74 @@
+import fc from "fast-check";
+import { describe, expect, it } from "vitest";
+
+import { simTimeMs } from "./clock.js";
+import { InMemorySimulationEventStore } from "./event-store.js";
+import { replayPersistedSegment } from "./event-log.js";
+import { AuthoritativeSimLoop } from "./loop.js";
+
+const actionArbitrary = fc.oneof(
+  fc.record({ kind: fc.constant<"advance">("advance"), elapsedMs: fc.integer({ min: 0, max: 10_000 }) }),
+  fc.record({ kind: fc.constant<"random">("random"), upperExclusive: fc.integer({ min: 1, max: 1_000_000 }) })
+);
+
+describe("authoritative simulation loop", () => {
+  it("persists append-only provenance and resumes to the same state", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({
+      store, stream: { id: "golden", seed: 0x1234_5678, initialTime: simTimeMs(0) }
+    });
+
+    await loop.advance(120, { x: 1, y: 2, z: 3 });
+    await loop.requestRandom(100, { x: 4, y: 5, z: 6 });
+    await loop.advance(380, { x: 7, y: 8, z: 9 });
+
+    const persisted = await loop.persistedStream();
+    expect(persisted.events).toEqual([
+      expect.objectContaining({ sequence: 1, eventTime: 120, eventPosition: { x: 1, y: 2, z: 3 } }),
+      expect.objectContaining({ sequence: 2, eventTime: 120, eventPosition: { x: 4, y: 5, z: 6 } }),
+      expect.objectContaining({ sequence: 3, eventTime: 500, eventPosition: { x: 7, y: 8, z: 9 } })
+    ]);
+    expect(replayPersistedSegment(persisted)).toEqual(loop.state);
+    expect((await AuthoritativeSimLoop.resume(store, "golden")).state).toEqual(loop.state);
+  });
+
+  it("replays every persisted generated segment identically from its recorded seed", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.integer({ min: 0, max: 0xffff_ffff }),
+        fc.array(actionArbitrary, { maxLength: 200 }),
+        async (seed, actions) => {
+          const store = new InMemorySimulationEventStore();
+          const loop = await AuthoritativeSimLoop.create({
+            store, stream: { id: "property", seed, initialTime: simTimeMs(0) }
+          });
+          for (const action of actions) {
+            if (action.kind === "advance") {
+              await loop.advance(action.elapsedMs);
+            } else {
+              await loop.requestRandom(action.upperExclusive);
+            }
+          }
+          const persisted = await loop.persistedStream();
+          expect(replayPersistedSegment(persisted)).toEqual(loop.state);
+          expect((await AuthoritativeSimLoop.resume(store, "property")).state).toEqual(loop.state);
+        }
+      ),
+      { seed: 0xb0b, numRuns: 500 }
+    );
+  });
+
+  it("rejects a persisted record whose provenance time disagrees with the sim clock", async () => {
+    const store = new InMemorySimulationEventStore();
+    await store.createStream({ id: "invalid-time", seed: 1, initialTime: simTimeMs(0) });
+    await store.append("invalid-time", {
+      event: { type: "clockAdvanced", elapsedMs: 10 },
+      eventTime: simTimeMs(9),
+      eventPosition: { x: 0, y: 0, z: 0 }
+    });
+
+    await expect(AuthoritativeSimLoop.resume(store, "invalid-time")).rejects.toThrow(
+      "Persisted event time does not match the authoritative clock."
+    );
+  });
+});

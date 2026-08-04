@@ -29,3 +29,8 @@ export const replaySegment = (seed: number, events: readonly SimEvent[]): SimSta
 
   return { time: clock.now, randomValues };
 };
+
+/** Replays an event-store stream from its persisted seed and append-only order. */
+export const replayPersistedSegment = (
+  stream: { readonly seed: number; readonly events: readonly { readonly event: SimEvent }[] }
+): SimState => replaySegment(stream.seed, stream.events.map(({ event }) => event));
