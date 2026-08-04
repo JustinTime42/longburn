@@ -1,0 +1,153 @@
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+
+import fc from "fast-check";
+import { describe, expect, it } from "vitest";
+
+import { simTimeMs } from "../src/sim/clock.js";
+import { PostgresSimulationEventStore } from "../src/sim/event-store.js";
+import { replayPersistedSegment } from "../src/sim/event-log.js";
+import { AuthoritativeSimLoop } from "../src/sim/loop.js";
+
+const databaseUrl = globalThis.process?.env.LONGBURN_TEST_DATABASE_URL;
+const integrationDescribe = databaseUrl === undefined || databaseUrl.length === 0 ? describe.skip : describe;
+const execFileAsync = promisify(execFile);
+// Sim events are structured numeric data, so this delimiter cannot occur in a
+// returned field while remaining valid for psql's one-byte separator option.
+const FIELD_SEPARATOR = "|";
+
+/**
+ * The production adapter deliberately has no mandated PostgreSQL package.
+ * This test client uses the host's real psql binary, never a mock or embedded
+ * database, and translates the adapter's positional parameters to psql's
+ * safely quoted variables.
+ */
+const psqlClient = {
+  async query(sql, values = []) {
+    const parameterizedSql = sql.replace(/\$(\d+)/g, (_match, index) => `:'p${index}'`);
+    const variables = values.map((value, index) => `--set=p${index + 1}=${String(value)}`);
+    let stdout;
+    try {
+      ({ stdout } = await execFileAsync("psql", [
+        "--no-psqlrc",
+        "--quiet",
+        "--tuples-only",
+        "--no-align",
+        `--field-separator=${FIELD_SEPARATOR}`,
+        "--set=ON_ERROR_STOP=1",
+        "--dbname", databaseUrl,
+        ...variables,
+        "--command", parameterizedSql
+      ]));
+    } catch (error) {
+      // Do not expose a database URL (which may embed credentials) in test logs.
+      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr).trim() : "";
+      throw new Error(`psql query failed: ${stderr || "unknown error"}`);
+    }
+
+    return { rows: deserializeRows(sql, stdout) };
+  }
+};
+
+const deserializeRows = (sql, stdout) => {
+  const lines = stdout.trimEnd();
+  if (lines.length === 0) return [];
+
+  return lines.split("\n").map((line) => {
+    const fields = line.split(FIELD_SEPARATOR);
+    if (sql.includes("RETURNING sequence") || sql.includes("FROM simulation_events")) {
+      return {
+        sequence: Number(fields[0]),
+        event_time_ms: Number(fields[1]),
+        event_position: JSON.parse(fields[2]),
+        event: JSON.parse(fields[3])
+      };
+    }
+    if (sql.includes("FROM simulation_streams")) {
+      return {
+        stream_id: fields[0],
+        seed: Number(fields[1]),
+        initial_time_ms: Number(fields[2])
+      };
+    }
+    return {};
+  });
+};
+
+const actionArbitrary = fc.oneof(
+  fc.record({ kind: fc.constant("advance"), elapsedMs: fc.integer({ min: 0, max: 10_000 }) }),
+  fc.record({ kind: fc.constant("random"), upperExclusive: fc.integer({ min: 1, max: 1_000_000 }) })
+);
+
+integrationDescribe(
+  "PostgresSimulationEventStore integration (requires LONGBURN_TEST_DATABASE_URL; intentionally skipped in the Forge sandbox)",
+  () => {
+    it("asserts the migration schema is present before exercising the adapter", async () => {
+      await expect(psqlClient.query("SELECT 1 FROM simulation_streams LIMIT 1")).resolves.toEqual({ rows: [{}] });
+    });
+
+    it("appends, reads back in sequence order, and surfaces append-only trigger errors", async () => {
+      const adapter = new PostgresSimulationEventStore(psqlClient);
+      const streamId = `contract-${randomUUID()}`;
+      await adapter.createStream({ id: streamId, seed: 0x1234_5678, initialTime: simTimeMs(10) });
+
+      await adapter.append(streamId, {
+        event: { type: "clockAdvanced", elapsedMs: 20 },
+        eventTime: simTimeMs(30),
+        eventPosition: { x: 1, y: 2, z: 3 }
+      });
+      await adapter.append(streamId, {
+        event: { type: "randomValueRequested", upperExclusive: 100 },
+        eventTime: simTimeMs(30),
+        eventPosition: { x: 4, y: 5, z: 6 }
+      });
+
+      const persisted = await adapter.readStream(streamId);
+      expect(persisted).toMatchObject({
+        id: streamId,
+        seed: 0x1234_5678,
+        initialTime: simTimeMs(10),
+        events: [
+          { event: { type: "clockAdvanced", elapsedMs: 20 }, eventTime: simTimeMs(30), eventPosition: { x: 1, y: 2, z: 3 } },
+          { event: { type: "randomValueRequested", upperExclusive: 100 }, eventTime: simTimeMs(30), eventPosition: { x: 4, y: 5, z: 6 } }
+        ]
+      });
+      expect(persisted.events[0]?.sequence).toBeLessThan(persisted.events[1]?.sequence ?? 0);
+
+      await expect(psqlClient.query(
+        "UPDATE simulation_streams SET seed = $1 WHERE stream_id = $2", [1, streamId]
+      )).rejects.toThrow("append-only");
+      await expect(psqlClient.query(
+        "DELETE FROM simulation_events WHERE stream_id = $1", [streamId]
+      )).rejects.toThrow("append-only");
+    });
+
+    it("replays every persisted generated segment identically from its recorded seed", async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.integer({ min: 0, max: 0xffff_ffff }),
+          fc.array(actionArbitrary, { maxLength: 20 }),
+          async (seed, actions) => {
+            const store = new PostgresSimulationEventStore(psqlClient);
+            const streamId = `replay-${randomUUID()}`;
+            const loop = await AuthoritativeSimLoop.create({
+              store, stream: { id: streamId, seed, initialTime: simTimeMs(0) }
+            });
+            for (const action of actions) {
+              if (action.kind === "advance") {
+                await loop.advance(action.elapsedMs);
+              } else {
+                await loop.requestRandom(action.upperExclusive);
+              }
+            }
+            const persisted = await loop.persistedStream();
+            expect(replayPersistedSegment(persisted)).toEqual(loop.state);
+            expect((await AuthoritativeSimLoop.resume(store, streamId)).state).toEqual(loop.state);
+          }
+        ),
+        { seed: 0xb0b, numRuns: 25 }
+      );
+    });
+  }
+);

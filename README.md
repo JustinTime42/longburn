@@ -12,4 +12,12 @@ npm run verify
 
 Every outbound state update must pass through `CausalEmissionGate`. It accepts the event position and the observer's authoritative position-at-time resolver, solves the arrival-time light cone conservatively, and permits only the first integral millisecond at or after that arrival. It validates runtime provenance, blocks and reports every failure, increments the causality alert counter, and supplies server-calculated staleness metadata. The gate has no transport-specific behavior; the event-store and visibility-filter work supplies its sole raw transport callback. The `causal-boundary/no-raw-outbound` ESLint rule is a name-based tripwire: it rejects direct `.send`, `.publish`, `.broadcast`, and `.write` calls outside the gate. It does not prove that aliases, computed members, or arbitrary transport method names traverse the gate; `longburn-din.5` must provide a structural transport boundary before it adds transport implementations. `test/causal-transport-fence.test.ts` is the tripwire's deliberate-violation fixture.
 
-The authoritative loop persists each event before applying it locally. `SimulationEventStore` is the narrow durability boundary: `InMemorySimulationEventStore` is the deterministic reference used by property tests, while `PostgresSimulationEventStore` uses [the append-only migration](db/migrations/0001_simulation_event_store.sql). Each stream stores its RNG seed, ordered events, sim event time, and event position, preserving causality provenance for the future emission gate. PostgreSQL integration tests are intentionally skipped in this sandbox because no live server is available; CI or a host must run them against a real database.
+The authoritative loop persists each event before applying it locally. `SimulationEventStore` is the narrow durability boundary: `InMemorySimulationEventStore` is the deterministic reference used by property tests, while `PostgresSimulationEventStore` uses [the append-only migration](db/migrations/0001_simulation_event_store.sql). Each stream stores its RNG seed, ordered events, sim event time, and event position, preserving causality provenance for the future emission gate.
+
+The real PostgreSQL adapter suite is gated by `LONGBURN_TEST_DATABASE_URL`, so the Forge sandbox skips it with an explicit reason. A CI/host job with a migrated database runs it through the host `psql` executable:
+
+```bash
+LONGBURN_TEST_DATABASE_URL='postgresql://user:password@host:5432/database' npm test -- test/event-store.postgres.integration.test.mjs
+```
+
+It asserts the schema, adapter append/read ordering, database append-only triggers, and 25 replay-identical persisted runs. It does not use a mock or embedded database.
