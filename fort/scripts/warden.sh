@@ -60,6 +60,9 @@ fi
 # deny rules that keep secrets out of a review bind SPELLINGS, not files
 # (Proofdelve 21f.8). bwrap closes that: masked paths read empty under every
 # spelling. The Warden never pushes, so there is no escape hatch here.
+mask=()
+# shellcheck source=fort/scripts/lib/seat-sandbox.sh
+# shellcheck disable=SC1091  # resolved at runtime; build_mask fills mask[]
 source "$root/fort/scripts/lib/seat-sandbox.sh"
 require_bwrap || exit $?
 build_mask claude "$root" "$src"
