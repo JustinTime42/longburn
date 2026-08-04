@@ -9,3 +9,4 @@ node_modules/
 fort/events/*.jsonl
 dist/
 *.log
+fort/telemetry/
