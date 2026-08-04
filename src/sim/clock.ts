@@ -14,26 +14,20 @@ export const simTimeMs = (value: number): SimTimeMs => {
  * this class never consults a wall clock.
  */
 export class SimClock {
-  readonly multiplier: number;
   #now: SimTimeMs;
 
-  private constructor(initialTime: SimTimeMs, multiplier: number) {
-    if (!Number.isFinite(multiplier) || multiplier <= 0) {
-      throw new RangeError("Simulation clock multiplier must be finite and greater than zero.");
-    }
-
+  private constructor(initialTime: SimTimeMs) {
     this.#now = initialTime;
-    this.multiplier = multiplier;
   }
 
   /** Production is deliberately fixed to the product's 1:1 clock. */
   static production(initialTime: SimTimeMs = simTimeMs(0)): SimClock {
-    return new SimClock(initialTime, 1);
+    return new SimClock(initialTime);
   }
 
-  /** Tests may use another multiplier, while still providing elapsed time explicitly. */
-  static testing(initialTime: SimTimeMs = simTimeMs(0), multiplier = 1): SimClock {
-    return new SimClock(initialTime, multiplier);
+  /** Tests can advance this virtual clock by any explicit elapsed duration. */
+  static testing(initialTime: SimTimeMs = simTimeMs(0)): SimClock {
+    return new SimClock(initialTime);
   }
 
   get now(): SimTimeMs {
@@ -45,7 +39,7 @@ export class SimClock {
       throw new RangeError("Elapsed time must be a non-negative safe integer in milliseconds.");
     }
 
-    const next = this.#now + elapsedMs * this.multiplier;
+    const next = this.#now + elapsedMs;
     if (!Number.isSafeInteger(next)) {
       throw new RangeError("Simulation time overflowed its safe integer range.");
     }

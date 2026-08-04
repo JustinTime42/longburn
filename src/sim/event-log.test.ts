@@ -15,6 +15,22 @@ const eventArbitrary = fc.oneof(
 );
 
 describe("event log replay", () => {
+  it("replays the recorded golden segment to its literal state", () => {
+    const events: readonly SimEvent[] = [
+      { type: "clockAdvanced", elapsedMs: 120 },
+      { type: "randomValueRequested", upperExclusive: 100 },
+      { type: "clockAdvanced", elapsedMs: 380 },
+      { type: "randomValueRequested", upperExclusive: 1_000_000 },
+      { type: "clockAdvanced", elapsedMs: 5_000 },
+      { type: "randomValueRequested", upperExclusive: 17 }
+    ];
+
+    expect(replaySegment(0x1234_5678, events)).toEqual({
+      time: 5_500,
+      randomValues: [10, 941_276, 15]
+    });
+  });
+
   it("replays every generated sim segment identically from its seed and event log", () => {
     fc.assert(
       fc.property(

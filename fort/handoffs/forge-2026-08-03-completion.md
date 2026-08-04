@@ -10,6 +10,10 @@ Model: GPT-5.6 (Codex)
 - `SimClock.production()` fixes the multiplier at `1`; test clocks accept an explicit multiplier in `src/sim/clock.ts`.
 - `SeededRng` supplies deterministic simulation randomness in `src/sim/rng.ts`; ESLint rejects `Date.now()` and `Math.random()` in `src/sim/` through `eslint.config.mjs`.
 - The 500-run fast-check property in `src/sim/event-log.test.ts` replays generated event segments identically from the recorded seed and append-only log.
+
+## Clarification appended 2026-08-04
+
+- The property proves repeatability of the current replay implementation for generated inputs. It does not independently pin the RNG algorithm or replay semantics; subsequent work added a golden-vector test for that stronger regression guard.
 - `npm run verify` passed: ESLint, strict TypeScript build, and Vitest (3 tests across 2 files).
 
 ## Next actions

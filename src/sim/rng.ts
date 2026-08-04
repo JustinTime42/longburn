@@ -3,11 +3,11 @@ export class SeededRng {
   #state: number;
 
   constructor(seed: number) {
-    if (!Number.isSafeInteger(seed)) {
-      throw new RangeError("Seed must be a safe integer.");
+    if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffff_ffff) {
+      throw new RangeError("Seed must be an unsigned 32-bit integer.");
     }
 
-    this.#state = seed >>> 0;
+    this.#state = seed;
   }
 
   nextFloat(): number {
