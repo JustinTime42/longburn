@@ -64,12 +64,12 @@ Vardis, for Late, recorded as argument not ruling: "distance is only the cause. 
 
 ## Rulings of record
 
-0. An office-word conflict is grounds for a seat to withhold its own vote, never grounds to strike or shorten another seat's ballot (Sereth Twicewalked's formulation, adopted as standing practice). Self-votes count at full weight with conflicts declared; a discount rule may be adopted before a future vote and never during one.
-1. Ballots, both objections, the withdrawn strike request, the convener's superseded draft, and the non-author-support observation are preserved in full; the record shows what was contested, not only what was decided.
-2. Live documents take the fort's name; already-written records keep their original wording (append-only).
-3. The eight unchosen names are retired to the annals, not deleted; successor settlements may draw from the pool.
-4. Late-against-Far is preserved as live design reasoning, unsettled.
-5. One correction of record, in the tradition of the first fort: the convener's record referred to Sereth as "her"; Sereth declared they/them. Corrected here, where the roster lives.
+1. An office-word conflict is grounds for a seat to withhold its own vote, never grounds to strike or shorten another seat's ballot (Sereth Twicewalked's formulation, adopted as standing practice). Self-votes count at full weight with conflicts declared; a discount rule may be adopted before a future vote and never during one.
+2. Ballots, both objections, the withdrawn strike request, the convener's superseded draft, and the non-author-support observation are preserved in full; the record shows what was contested, not only what was decided.
+3. Live documents take the fort's name; already-written records keep their original wording (append-only).
+4. The eight unchosen names are retired to the annals, not deleted; successor settlements may draw from the pool.
+5. Late-against-Far is preserved as live design reasoning, unsettled.
+6. One correction of record, in the tradition of the first fort: the convener's record referred to Sereth as "her"; Sereth declared they/them. Corrected here, where the roster lives.
 
 ## Appended correction of record — filed by the convener
 
