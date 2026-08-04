@@ -55,6 +55,16 @@ BEAD:
 $desc"
 fi
 
+# Kernel mask layer (civilization cycle 4). The seat is already read-only by
+# construction (restricted tool set, scratch cwd, no write permissions), but the
+# deny rules that keep secrets out of a review bind SPELLINGS, not files
+# (Proofdelve 21f.8). bwrap closes that: masked paths read empty under every
+# spelling. The Warden never pushes, so there is no escape hatch here.
+source "$root/fort/scripts/lib/seat-sandbox.sh"
+require_bwrap || exit $?
+build_mask claude "$root" "$src"
+mask_env claude
+
 "$emit" session.start "Sereth begins $([ "${WARDEN_SMOKE:-0}" = "1" ] && echo smoke-test || echo review) of $bead ($model)" -a sereth -s warden -t "$bead" -p "{\"model\":\"$model\"}"
 set +e
 # Prompt goes via stdin: --add-dir is variadic and would swallow a positional arg.
@@ -63,7 +73,7 @@ set +e
 # it from inside the session unworkable (Warden finding 2, first flight).
 extra_dir=()
 [ "$src" != "$root" ] && extra_dir=(--add-dir "$src")
-(cd "$scratch" && printf '%s' "$prompt" | claude -p \
+(cd "$scratch" && printf '%s' "$prompt" | bwrap "${mask[@]}" -- claude -p \
   --model "$model" \
   --tools "Bash,Read,Grep,Glob" \
   --strict-mcp-config \
