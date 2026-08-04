@@ -92,13 +92,41 @@
       "Bash(head *.env*)",
       "Bash(tail *.env*)",
       "Edit(**/.env*)",
+      "Edit(.claude/**)",
       "Edit(.env*)",
+      "Edit(//home/justin/.claude/CLAUDE.md)",
+      "Edit(//home/justin/.claude/helpers/**)",
+      "Edit(//home/justin/.claude/settings.json)",
+      "Edit(//home/justin/.claude/settings.local.json)",
+      "Edit(//home/justin/.codex/**)",
+      "Edit(//home/justin/dev/longburn-worktrees/**/.claude/**)",
+      "Edit(//home/justin/dev/longburn/.claude/**)",
+      "Edit(//home/justin/dev/longburn/fort/charter.md)",
+      "Edit(//home/justin/dev/longburn/fort/profiles/**)",
+      "Edit(//home/justin/dev/longburn/fort/seats/**)",
+      "Edit(fort/charter.md)",
       "Edit(fort/events/*)",
+      "Edit(fort/profiles/**)",
+      "Edit(fort/seats/**)",
       "Read(**/.env*)",
       "Read(.env*)",
       "Write(**/.env*)",
+      "Write(.claude/**)",
       "Write(.env*)",
-      "Write(fort/events/*.jsonl)"
+      "Write(//home/justin/.claude/CLAUDE.md)",
+      "Write(//home/justin/.claude/helpers/**)",
+      "Write(//home/justin/.claude/settings.json)",
+      "Write(//home/justin/.claude/settings.local.json)",
+      "Write(//home/justin/.codex/**)",
+      "Write(//home/justin/dev/longburn-worktrees/**/.claude/**)",
+      "Write(//home/justin/dev/longburn/.claude/**)",
+      "Write(//home/justin/dev/longburn/fort/charter.md)",
+      "Write(//home/justin/dev/longburn/fort/profiles/**)",
+      "Write(//home/justin/dev/longburn/fort/seats/**)",
+      "Write(fort/charter.md)",
+      "Write(fort/events/*.jsonl)",
+      "Write(fort/profiles/**)",
+      "Write(fort/seats/**)"
     ],
     "additionalDirectories": [
       "/home/justin/dev/longburn-worktrees"
@@ -107,8 +135,8 @@
   "autoMode": {
     "allow": [
       "$defaults",
-      "File operations (cp, mv, rm, python/node file writes, in-place edits) whose paths are ALL confined to the session scratchpad under /tmp/claude-* are safe exploration — allow them, including overwrite flags like -f.",
-      "Commands whose working directory or target paths are inside /home/justin/dev/longburn-worktrees (this project's git worktrees) are normal project work — treat those paths exactly like in-project paths."
+      "File operations (cp, mv, rm, python/node file writes, in-place edits) whose paths are ALL confined to the session scratchpad under /tmp/claude-* are safe exploration \u2014 allow them, including overwrite flags like -f.",
+      "Commands whose working directory or target paths are inside /home/justin/dev/longburn-worktrees (this project's git worktrees) are normal project work \u2014 treat those paths exactly like in-project paths."
     ]
   }
 }
