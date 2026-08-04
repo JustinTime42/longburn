@@ -1,0 +1,56 @@
+/** A millisecond timestamp in the simulation's virtual timeline. */
+export type SimTimeMs = number & { readonly __simTimeMs: unique symbol };
+
+export const simTimeMs = (value: number): SimTimeMs => {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError("Simulation time must be a non-negative safe integer in milliseconds.");
+  }
+
+  return value as SimTimeMs;
+};
+
+/**
+ * The only clock available to the simulation. Callers supply elapsed time;
+ * this class never consults a wall clock.
+ */
+export class SimClock {
+  readonly multiplier: number;
+  #now: SimTimeMs;
+
+  private constructor(initialTime: SimTimeMs, multiplier: number) {
+    if (!Number.isFinite(multiplier) || multiplier <= 0) {
+      throw new RangeError("Simulation clock multiplier must be finite and greater than zero.");
+    }
+
+    this.#now = initialTime;
+    this.multiplier = multiplier;
+  }
+
+  /** Production is deliberately fixed to the product's 1:1 clock. */
+  static production(initialTime: SimTimeMs = simTimeMs(0)): SimClock {
+    return new SimClock(initialTime, 1);
+  }
+
+  /** Tests may use another multiplier, while still providing elapsed time explicitly. */
+  static testing(initialTime: SimTimeMs = simTimeMs(0), multiplier = 1): SimClock {
+    return new SimClock(initialTime, multiplier);
+  }
+
+  get now(): SimTimeMs {
+    return this.#now;
+  }
+
+  advance(elapsedMs: number): SimTimeMs {
+    if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0) {
+      throw new RangeError("Elapsed time must be a non-negative safe integer in milliseconds.");
+    }
+
+    const next = this.#now + elapsedMs * this.multiplier;
+    if (!Number.isSafeInteger(next)) {
+      throw new RangeError("Simulation time overflowed its safe integer range.");
+    }
+
+    this.#now = simTimeMs(next);
+    return this.#now;
+  }
+}
