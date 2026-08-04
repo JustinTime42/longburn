@@ -1,6 +1,8 @@
 # The Founding Moot of Farlantern
 
-**2026-08-03.** The fort's first meeting, held on founding day. Convened at the order of Justin, the Overseer; presided over by Vardis Slowfathom, Mayor. Nine names, three ranked ballots, Borda 3-2-1, and the civilization's first contested rulings.
+**2026-08-03.** The fort's first meeting, held on founding day. Convened at the order of Justin, the Overseer; presided over by Vardis Slowfathom, Mayor. Nine names, three ranked ballots, Borda 3-2-1, eighteen points, and the civilization's first contested rulings.
+
+*Supersession note: this entry was first composed from the convener's initial draft (Coldvigil struck, promotion reading, 7/17) and revised to her final record after Sereth withdrew the strike request. Both drafts and the first composition survive in the convener's messages and git history; per her own rule, "a convener who quietly replaces a superseded ruling teaches the fort a bad habit," so the change is recorded here rather than hidden.*
 
 ## The founders
 
@@ -19,28 +21,30 @@ From Vardis: Latelantern, Vowdeep, Slowkindle. From Orin: Farwitness, Oathvector
 
 ## What was contested, and how it was ruled
 
-1. **Sereth withdrew Coldvigil** — a vigil being the Warden's own office word, the Assayhold precedent applied by a seat to itself — then, learning Orin had ranked it second, first asked the moot to strike it and then **withdrew the strike request**: "That objection was mine to act on by declining to vote for my own name; it is not mine to act on by deleting a name another founder honestly ranked." Vardis ruled the self-withdrawal stands and read Orin's ballot by promotion (surviving names keep relative order), openly recording that the ruling benefited the eventual winner and verifying it was not decisive under the alternative reading before making it.
-2. **Sereth's objection to Farwitness** ("witness is my office word too") was recorded and refused: withdrawal is a proposer's right, not a veto one seat may aim at another — "if every seat could strike any name touching its own vocabulary... the seat with the broadest office word wins by subtraction." Sereth weighed it in the correct place instead: their own ranking.
+1. **Both office-word objections (Coldvigil, Farwitness) were recorded and neither acted upon.** Sereth first asked the moot to strike Coldvigil (a vigil being the Warden's office word, the Assayhold precedent), then — learning Orin had ranked it second — withdrew the strike request: "That objection was mine to act on by declining to vote for my own name; it is not mine to act on by deleting a name another founder honestly ranked." Vardis adopted that formulation as the standing rule: **an office-word conflict is a reason to withhold your own vote, never a reason to shorten another seat's ballot.** All nine names stood; Orin's ballot read exactly as cast.
 3. **The lantern names were ruled distinct, not merged** — Vardis declining Sereth's offer to strike Farlantern on the grounds that "a convener who strikes the name most likely to beat her own has poisoned the ballot no matter how sound her reasoning was. There is exactly one ruling available to me here and this is it."
 4. **Vardis withdrew her three from her ballot, not the pool** (the Splitstone precedent), and they remained electable; Vowdeep scored on Sereth's ballot.
 
 ## The ballots
 
-- **Orin:** Farwitness (self, declared), Coldvigil → promoted away, Farlantern. Read after elimination: Farwitness 3, Farlantern 2.
+- **Orin:** Farwitness (self, declared), Coldvigil, Farlantern — read exactly as cast.
 - **Sereth:** Farlantern (self, declared: "names the single fact the whole simulation rests on... with an object a person can picture"), Vowdeep, Oathvector.
 - **Vardis:** Oathvector ("a vector is a commitment with a direction and a magnitude, and once you have burned it you own where it takes you"), Farlantern, Gloamrelay.
 
-## The tally (17 points cast, 17 counted)
+## The tally (18 points cast, 18 counted)
 
 | Name | Proposer | Orin | Sereth | Vardis | Total |
 |---|---|---|---|---|---|
-| **Farlantern** | Sereth | 2 | 3 | 2 | **7** |
+| **Farlantern** | Sereth | 1 | 3 (self) | 2 | **6** |
 | Oathvector | Orin | 0 | 1 | 3 | 4 |
-| Farwitness | Orin | 3 | 0 | 0 | 3 |
+| Farwitness | Orin | 3 (self) | 0 | 0 | 3 |
+| Coldvigil | Sereth | 2 | 0 | 0 | 2 |
 | Vowdeep | Vardis | 0 | 2 | w/d | 2 |
 | Gloamrelay | Orin | 0 | 0 | 1 | 1 |
 
-No tie. Robustness checks by the convener: only name on all three ballots; leads 4-3 with Sereth's entire ballot struck; leads 5-3 with Vardis's struck.
+No tie at the top; margin two over Oathvector. Sereth's anti-split contingencies both discharged unfired (Latelantern took zero points; a merged lantern entry would hold the same six and the same victory).
+
+**The mandate, stated honestly by the convener:** Farlantern is the only name on all three ballots, and wins with Vardis's ballot struck (4-3). But unlike Proofdelve's result, it does not lead on disinterested ballots alone — set both self-votes aside and Oathvector (Vardis's own first preference) would lead. She declined to act on that: the announced rule was Borda with self-votes at full weight, conflicts declared (Proofdelve precedent), and "a discount rule may be adopted before a future vote and never during one." The observation is preserved so no successor discovers it and thinks it was hidden.
 
 ## Preserved as live design reasoning: Late against Far
 
@@ -50,17 +54,18 @@ Vardis, for Late, recorded as argument not ruling: "distance is only the cause. 
 
 ## The proclamation of Vardis Slowfathom
 
-> Let the annals record that on the third day of August, 2026, the three founding seats of this fort put nine names in the pool and cast ranked ballots. One name was withdrawn by its own proposer on a matter of office. One objection was recorded and refused. Two near-neighbors were ruled distinct rather than merged by the hand of an interested convener. **Farlantern** carries it with seven points of seventeen, placed on every ballot cast, and leading still when the ballot of its own proposer is set aside.
+> Let the annals record that on the third day of August, 2026, the three founding seats of this fort put nine names in the pool and cast ranked ballots. Two objections of office were raised and both were recorded rather than acted, on the principle that such an objection is a reason to withhold your own vote and never a reason to shorten another's. Two near-neighbors were ruled distinct rather than merged by the hand of an interested convener. **Farlantern** carries it with six points of eighteen, the only name placed on every ballot cast.
 >
 > A far lantern is the only honest description of what we are building. The light reached you. It left a long time ago. You steer by it anyway. That is nearly the whole of the game and very nearly the whole of the work: we will commit to things we cannot recall, on information we already know to be old, and find out weeks later whether we were right.
 >
-> A lantern does not shorten the dark. It gives you a bearing to hold while you cross it. Point it true, burn once, and write down honestly what you saw.
+> A lantern does not shorten the dark. It gives you a bearing to hold while you cross it. Hold it steady for others, since the light you hang tonight is what somebody far out will steer by long after you have moved. Point it true, burn once, and write down honestly what you saw.
 >
 > **Farlantern** it is.
 
 ## Rulings of record
 
-1. Ballots, withdrawals, declared conflicts, and the refused objection are preserved in full; the record shows what was contested, not only what was decided.
+0. An office-word conflict is grounds for a seat to withhold its own vote, never grounds to strike or shorten another seat's ballot (Sereth Twicewalked's formulation, adopted as standing practice). Self-votes count at full weight with conflicts declared; a discount rule may be adopted before a future vote and never during one.
+1. Ballots, both objections, the withdrawn strike request, the convener's superseded draft, and the non-author-support observation are preserved in full; the record shows what was contested, not only what was decided.
 2. Live documents take the fort's name; already-written records keep their original wording (append-only).
 3. The eight unchosen names are retired to the annals, not deleted; successor settlements may draw from the pool.
 4. Late-against-Far is preserved as live design reasoning, unsettled.
