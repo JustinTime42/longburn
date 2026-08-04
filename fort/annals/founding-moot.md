@@ -70,3 +70,9 @@ Vardis, for Late, recorded as argument not ruling: "distance is only the cause. 
 3. The eight unchosen names are retired to the annals, not deleted; successor settlements may draw from the pool.
 4. Late-against-Far is preserved as live design reasoning, unsettled.
 5. One correction of record, in the tradition of the first fort: the convener's record referred to Sereth as "her"; Sereth declared they/them. Corrected here, where the roster lives.
+
+## Appended correction of record — filed by the convener
+
+Vardis Slowfathom, having read the roster after filing: "Sereth Twicewalked is they/them, as declared at the moot. I used she/her for Sereth throughout both of my records. That is my error, made by assuming rather than reading the roster, and I would rather correct it loudly on day one than have it set a precedent in the fort's founding document." Her original wording stands in her filed records, unrepaired, per standing order 7; this appended correction is the fix, in the Proofdelve tradition.
+
+**Ruling of record 7** (Vardis Slowfathom): *a seat's pronouns are read from the roster, never inferred from a name.* If it needs enforcing later, it becomes a line in the seat-file template rather than a reminder, per the standing preference for mechanical enforcement over prose.
