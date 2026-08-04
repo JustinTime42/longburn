@@ -1,4 +1,5 @@
 import {
+  AstroTime,
   Body,
   DeltaT_JplHorizons,
   HelioState,
@@ -60,6 +61,27 @@ const tier0DeltaT = (ut: number): number => DeltaT_JplHorizons(ut);
 
 const pinDeltaT = (): void => {
   SetDeltaTFunction(tier0DeltaT);
+};
+
+// Set the process-global provider convention as this module initializes. Each
+// lookup repeats this because other consumers can still alter the global later.
+pinDeltaT();
+
+/**
+ * Converts a Horizons TDB Julian day to the corresponding UT J2000-day input.
+ *
+ * Horizons VECTORS fixtures name their instant in TDB. For this Tier 0
+ * comparison boundary, TDB is treated as TT (their periodic difference is at
+ * most a couple of milliseconds), then Astronomy Engine's pinned JPL Horizons
+ * delta-T model derives UT. Runtime callers continue to provide UT directly.
+ */
+export const horizonsTdbJulianDayToUtDays = (tdbJulianDay: number): UtDaysSinceJ2000 => {
+  if (!Number.isFinite(tdbJulianDay)) {
+    throw new RangeError("Horizons TDB Julian day must be finite.");
+  }
+
+  pinDeltaT();
+  return utDaysSinceJ2000(AstroTime.FromTerrestrialTime(tdbJulianDay - 2_451_545).ut);
 };
 
 const vectorFromState = (state: ReturnType<typeof HelioState>): HeliocentricState => ({
