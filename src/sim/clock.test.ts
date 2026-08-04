@@ -9,9 +9,4 @@ describe("SimClock", () => {
     expect(clock.advance(45)).toBe(165);
   });
 
-  it("lets tests advance virtual time independently of wall time", () => {
-    const clock = SimClock.testing(simTimeMs(0));
-
-    expect(clock.advance(40_000)).toBe(40_000);
-  });
 });

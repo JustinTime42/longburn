@@ -28,3 +28,8 @@ Model: GPT-5.6 (Codex)
 ## Failed attempts
 
 - None in this continuation. The preceding handoff records the earlier filesystem-lock failure, which is now resolved.
+
+## Record clarification appended 2026-08-04
+
+- The two bullets under "Clarification appended 2026-08-04" above were appended into the middle of this historical handoff. Their verification result belongs to that date, and its test count is not a claim about the current suite.
+- Future clarifications and corrections must be appended at the end of a handoff, in a new dated section, so earlier facts retain their original date and context.

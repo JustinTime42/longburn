@@ -25,11 +25,6 @@ export class SimClock {
     return new SimClock(initialTime);
   }
 
-  /** Tests can advance this virtual clock by any explicit elapsed duration. */
-  static testing(initialTime: SimTimeMs = simTimeMs(0)): SimClock {
-    return new SimClock(initialTime);
-  }
-
   get now(): SimTimeMs {
     return this.#now;
   }
