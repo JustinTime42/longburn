@@ -5,6 +5,11 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // This fixture intentionally violates the sim rules. Its contents are
+    // linted by determinism-lint.test.ts using the sim path below instead.
+    ignores: ["test/fixtures/**"]
+  },
+  {
     files: ["src/sim/**/*.ts", "test/fixtures/sim/**/*.ts"],
     rules: {
       "no-restricted-properties": [

@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 
 describe("simulation determinism lint guard", () => {
   it("rejects wall-clock access patterns that would bypass property restrictions", async () => {
-    const eslint = new ESLint();
-
+    // The fixture is ignored during broad linting because it is deliberately
+    // invalid. Disable ignores only for this targeted lint run; the fixture
+    // still receives the production configuration and rules.
+    const eslint = new ESLint({ ignore: false });
     const [result] = await eslint.lintFiles(["test/fixtures/sim/wall-clock-access.ts"]);
 
     // Date.now() is deliberately caught by both the legacy property rule and
     // the syntax guard; the remaining four expressions each add one error.
-    expect(result.errorCount).toBe(6);
+    expect(result?.errorCount).toBe(6);
   });
 });
