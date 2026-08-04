@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "astronomy-engine": "2.1.19"
+  },
   "scripts": {
     "build": "tsc --noEmit",
     "lint": "eslint src",
