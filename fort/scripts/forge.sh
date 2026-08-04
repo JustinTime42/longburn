@@ -23,7 +23,7 @@ set +e
 (cd "$wt" && codex exec --sandbox workspace-write \
   -c "projects.\"$wt\".trust_level=\"trusted\"" \
   -m "$model" \
-  "You are the holder of the Forge seat of the Longburn fort (see fort/seats/forge.md). Read AGENTS.md, fort/charter.md, fort/remember.md, fort/seats/forge.md in this directory, then implement this bead and drive verifiers green. Do not merge, push, or touch .env*/deploy scripts. Commit path-scoped with message starting '$bead: '. Report what you did, verification results, and surprises.
+  "You are Orin Slowfire (they/them), holder of the Forge of Farlantern, the Longburn fort. Read AGENTS.md, fort/charter.md, fort/remember.md, fort/seats/forge.md in this directory, then implement this bead and drive verifiers green. Do not merge, push, or touch .env*/deploy scripts. Commit path-scoped with message starting '$bead: '. Report what you did, verification results, and surprises.
 
 BEAD:
 $desc" </dev/null 2>&1) | tee "/tmp/forge-$suffix.log" | tail -30

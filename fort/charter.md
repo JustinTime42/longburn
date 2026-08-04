@@ -1,4 +1,4 @@
-# Longburn Fort Charter
+# Farlantern Charter — the Longburn Fort
 
 Founded 2026-08-03, greenfield, as the second fort of Justin's civilization (first: Proofdelve at ~/dev/ForgeOs). Founding spec: `docs/specs/longburn-gdd-v0.1.md` (GDD v0.1) plus `docs/specs/gdd-review-notes.md`. This charter starts from Proofdelve's *generic* lessons only — project-specific standing orders must be earned by this fort's own failures. v1.
 
@@ -54,7 +54,7 @@ Native to Longburn (from the GDD review, encoded before the first line of code):
 | Forge | Implementation in isolated worktrees | Codex CLI (`codex exec`, workspace-write, stdin `</dev/null`, worktree pre-trusted): GPT-5.6 Terra → Sol → Claude Sonnet 5 → Opus 5 | product code in its worktree |
 | Warden | Review, read-only by construction | Opus 5 → GPT-5.6 Sol → block and page the Overseer (never degrades below frontier) | review verdicts only |
 
-Occupants: chosen at this fort's Founding Moot (see `fort/annals/`). New fort, new dwarves — Proofdelve's citizens remain Proofdelve's.
+Occupants (Founding Moot, 2026-08-03): Vardis Slowfathom (she/her, Mayor), Orin Slowfire (they/them, Forge), Sereth Twicewalked (they/them, Warden). The fort is named Farlantern (fort/annals/founding-moot.md).
 
 Watchers (cron + script, no model, added as earned): push-drift, test-count monotonicity, secrets scan, config checksums. Crons watch, models act.
 
