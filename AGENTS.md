@@ -125,3 +125,14 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## The Longburn Fort
+
+This repo is operated by an agent fort (the civilization's second settlement; first: Proofdelve at ~/dev/ForgeOs). Before doing any work:
+1. Read `fort/charter.md` — purpose, the six constitution-tier design pillars (REFUSE violating changes), human gates, standing orders (note 10-14: virtual clock, determinism, causality invariant, tier fence, T0 fail reading).
+2. Read `fort/remember.md` (operational facts) and `docs/specs/longburn-gdd-v0.1.md` (the founding spec) with `docs/specs/gdd-review-notes.md`.
+3. Find your seat in `fort/seats/` and follow its session protocols, including the structured handoff.
+4. Work flows through beads: `bd ready`, claim atomically, reference bead IDs in commits, close only after verifiers green + review.
+5. Emit events via `fort/scripts/emit.sh` (schema: `fort/events/README.md`).
+
+Hard rules: never read `.env*`; never `git add .`; path-scoped staging only; sim code never reads the wall clock; seeded RNG only in the sim core; no work beyond the current tier's scope.
