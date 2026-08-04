@@ -125,7 +125,7 @@ describe("Tier 0 ephemerides", () => {
     }
 
     // 2026-01-01T00:00 TDB, represented as a UT J2000 day count for MakeTime.
-    expect(horizonsTdbJulianDayToUtDays(sample.tdbJulianDay)).toBeCloseTo(9_496.499_190, 3);
+    expect(horizonsTdbJulianDayToUtDays(sample.tdbJulianDay)).toBeCloseTo(9_496.499_190, 6);
   });
 
   it("returns heliocentric EQJ states in kilometres and kilometres per second", () => {
@@ -145,7 +145,6 @@ describe("Tier 0 ephemerides", () => {
 
   it("pins delta-T during a cold module initialization and is stable across warmed call histories", async () => {
     const instant = simTimeMs(2_592_000_000);
-    SetDeltaTFunction(() => 0);
     vi.resetModules();
     const coldAdapter = await import("./ephemerides.js");
     const {
@@ -155,9 +154,10 @@ describe("Tier 0 ephemerides", () => {
     } = await import("astronomy-engine");
 
     try {
-      // This direct conversion runs after module initialization but before any
-      // adapter lookup. It proves initialization reset the process-global hook.
-      expect(coldAstroTime.FromTerrestrialTime(9_496.5).ut).toBeCloseTo(9_496.499_190, 3);
+      // This direct conversion runs after cold module initialization but before
+      // any adapter lookup. It checks that initialization selected the adapter's
+      // documented delta-T convention.
+      expect(coldAstroTime.FromTerrestrialTime(9_496.5).ut).toBeCloseTo(9_496.499_190, 6);
 
       const cold = JSON.stringify(coldAdapter.ephemeridesAt(epoch, instant));
 
@@ -244,10 +244,17 @@ describe("Tier 0 ephemerides", () => {
         earthSample.positionKm.x * marsSample.positionKm.x +
         earthSample.positionKm.y * marsSample.positionKm.y +
         earthSample.positionKm.z * marsSample.positionKm.z;
-      const separationDegrees =
-        (Math.acos(dot / (Math.hypot(...Object.values(earthSample.positionKm)) * Math.hypot(...Object.values(marsSample.positionKm)))) *
-          180) /
-        Math.PI;
+      const earthDistanceKm = Math.hypot(
+        earthSample.positionKm.x,
+        earthSample.positionKm.y,
+        earthSample.positionKm.z
+      );
+      const marsDistanceKm = Math.hypot(
+        marsSample.positionKm.x,
+        marsSample.positionKm.y,
+        marsSample.positionKm.z
+      );
+      const separationDegrees = (Math.acos(dot / (earthDistanceKm * marsDistanceKm)) * 180) / Math.PI;
       if (separationDegrees > conjunction.separationDegrees) conjunction = { index, separationDegrees };
 
       const actualStates = ephemeridesAt(horizonsTdbJulianDayToUtDays(earthSample.tdbJulianDay), simTimeMs(0));
