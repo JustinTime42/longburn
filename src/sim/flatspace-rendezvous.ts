@@ -36,15 +36,22 @@ export interface FlatspaceRendezvousPlan {
 
 export interface FlatspaceRendezvousInfeasible {
   readonly kind: "infeasible";
-  /**
-   * `unconverged` means the fixed 200-step solve did not satisfy the position
-   * equation closely enough to issue an irreversible flight plan.
-   */
-  readonly reason: "negative-coast" | "unconverged";
+  /** Physics forbids this duration: the required burns overlap. */
+  readonly reason: "negative-coast";
   readonly coastDurationSeconds: number;
 }
 
-export type FlatspaceRendezvousResult = FlatspaceRendezvousPlan | FlatspaceRendezvousInfeasible;
+/** The deterministic planner could not validate a result; this is not physics. */
+export interface FlatspaceRendezvousIndeterminate {
+  readonly kind: "indeterminate";
+  readonly reason: "unconverged";
+  readonly coastDurationSeconds: number;
+}
+
+export type FlatspaceRendezvousResult =
+  | FlatspaceRendezvousPlan
+  | FlatspaceRendezvousInfeasible
+  | FlatspaceRendezvousIndeterminate;
 
 export interface MinimumTimeSearch {
   /** Supplies target state at each candidate flight duration. */
@@ -64,13 +71,19 @@ export interface MinimumTimeNoFeasibleDuration {
   readonly kind: "no-feasible-duration";
 }
 
-export type MinimumTimeSearchResult = MinimumTimeResult | MinimumTimeNoFeasibleDuration;
+export interface MinimumTimeIndeterminate {
+  readonly kind: "indeterminate";
+  readonly reason: "unconverged";
+}
+
+export type MinimumTimeSearchResult = MinimumTimeResult | MinimumTimeNoFeasibleDuration | MinimumTimeIndeterminate;
 
 const ITERATIONS = 200;
 const DAMPING = 0.5;
 const BISECTION_ITERATIONS = 80;
 const MAX_BRACKET_DOUBLINGS = 80;
 const RESIDUAL_TOLERANCE = 256 * Number.EPSILON;
+const REFINEMENT_ITERATIONS = 200;
 
 const subtract = (left: FlatspaceVector, right: FlatspaceVector): FlatspaceVector => ({
   x: left.x - right.x,
@@ -140,6 +153,104 @@ const positionResidual = (
 
 const residualIsAcceptable = (residual: number, driftCorrectedDisplacement: FlatspaceVector): boolean =>
   residual <= RESIDUAL_TOLERANCE * Math.max(1, magnitude(driftCorrectedDisplacement));
+
+const outer = (left: FlatspaceVector, right: FlatspaceVector): readonly [number, number, number, number, number, number, number, number, number] => [
+  left.x * right.x, left.x * right.y, left.x * right.z,
+  left.y * right.x, left.y * right.y, left.y * right.z,
+  left.z * right.x, left.z * right.y, left.z * right.z
+];
+
+type Matrix3 = readonly [number, number, number, number, number, number, number, number, number];
+
+const solveLinear3 = (matrix: Matrix3, rhs: FlatspaceVector): FlatspaceVector | undefined => {
+  const augmented: [number, number, number, number][] = [
+    [matrix[0], matrix[1], matrix[2], rhs.x],
+    [matrix[3], matrix[4], matrix[5], rhs.y],
+    [matrix[6], matrix[7], matrix[8], rhs.z]
+  ];
+  for (let column = 0; column < 3; column += 1) {
+    let pivot = column;
+    for (let row = column + 1; row < 3; row += 1) {
+      if (Math.abs(augmented[row]![column]!) > Math.abs(augmented[pivot]![column]!)) pivot = row;
+    }
+    if (augmented[pivot]![column]! === 0) return undefined;
+    [augmented[column], augmented[pivot]] = [augmented[pivot]!, augmented[column]!];
+    const divisor = augmented[column]![column]!;
+    for (let entry = column; entry < 4; entry += 1) augmented[column]![entry]! /= divisor;
+    for (let row = 0; row < 3; row += 1) {
+      if (row === column) continue;
+      const factor = augmented[row]![column]!;
+      for (let entry = column; entry < 4; entry += 1) augmented[row]![entry]! -= factor * augmented[column]![entry]!;
+    }
+  }
+  return { x: augmented[0]![3]!, y: augmented[1]![3]!, z: augmented[2]![3]! };
+};
+
+/**
+ * Refines the six-equation solution after the required fixed-point pass.  The
+ * Jacobian is analytic and the fixed work budget keeps planner results
+ * reproducible.  This handles a general 3-D wall, where collinearity is not
+ * available to reduce the problem to a quadratic.
+ */
+const refineGeneral = (
+  initialImpulse: FlatspaceVector,
+  driftCorrectedDisplacement: FlatspaceVector,
+  deltaVelocity: FlatspaceVector,
+  acceleration: number,
+  duration: number
+): FlatspaceRendezvousPlan | undefined => {
+  let firstImpulse = initialImpulse;
+  for (let iteration = 0; iteration < REFINEMENT_ITERATIONS; iteration += 1) {
+    const firstMagnitude = magnitude(firstImpulse);
+    const secondImpulse = subtract(deltaVelocity, firstImpulse);
+    const secondMagnitude = magnitude(secondImpulse);
+    if (firstMagnitude === 0 || secondMagnitude === 0) continue;
+    const firstDuration = firstMagnitude / acceleration;
+    const secondDuration = secondMagnitude / acceleration;
+    const coastDuration = duration - firstDuration - secondDuration;
+    const residualVector = subtract(add(
+      scale(firstImpulse, duration - firstDuration / 2),
+      scale(secondImpulse, secondDuration / 2)
+    ), driftCorrectedDisplacement);
+    const residual = magnitude(residualVector);
+    if (residualIsAcceptable(residual, driftCorrectedDisplacement) && coastDuration >= -RESIDUAL_TOLERANCE * duration) {
+      return {
+        kind: "feasible",
+        firstBurnImpulseMetersPerSecond: firstImpulse,
+        secondBurnImpulseMetersPerSecond: secondImpulse,
+        firstBurnDurationSeconds: firstDuration,
+        coastDurationSeconds: Math.max(0, coastDuration),
+        secondBurnDurationSeconds: secondDuration,
+        totalDeltaVMetersPerSecond: acceleration * (firstDuration + secondDuration),
+        burnDutyCycle: (firstDuration + secondDuration) / duration
+      };
+    }
+
+    const firstOuter = outer(firstImpulse, firstImpulse);
+    const secondOuter = outer(secondImpulse, secondImpulse);
+    const jacobian = Array.from({ length: 9 }, (_, index) => {
+      const diagonal = index % 4 === 0 ? duration - (firstDuration + secondDuration) / 2 : 0;
+      return diagonal - firstOuter[index]! / (2 * acceleration * firstMagnitude) - secondOuter[index]! / (2 * acceleration * secondMagnitude);
+    }) as unknown as Matrix3;
+    // Levenberg damping makes the wall's singular Jacobian a deterministic
+    // least-squares step instead of an accidental numerical refusal.
+    const normal = Array.from({ length: 9 }, (_, index) => {
+      const row = Math.floor(index / 3);
+      const column = index % 3;
+      let value = row === column ? 1e-24 * duration ** 2 : 0;
+      for (let k = 0; k < 3; k += 1) value += jacobian[k * 3 + row]! * jacobian[k * 3 + column]!;
+      return value;
+    }) as unknown as Matrix3;
+    const normalRhs = {
+      x: -(jacobian[0] * residualVector.x + jacobian[3] * residualVector.y + jacobian[6] * residualVector.z),
+      y: -(jacobian[1] * residualVector.x + jacobian[4] * residualVector.y + jacobian[7] * residualVector.z),
+      z: -(jacobian[2] * residualVector.x + jacobian[5] * residualVector.y + jacobian[8] * residualVector.z)
+    };
+    const step = solveLinear3(normal, normalRhs);
+    if (step !== undefined) firstImpulse = add(firstImpulse, step);
+  }
+  return undefined;
+};
 
 /**
  * At a collinear feasibility wall the fixed-point map has a double root and
@@ -269,10 +380,6 @@ export const solveFlatspaceRendezvous = (request: FlatspaceRendezvousRequest): F
   const secondBurnDurationSeconds = magnitude(secondBurnImpulseMetersPerSecond) / acceleration;
   const coastDurationSeconds = duration - firstBurnDurationSeconds - secondBurnDurationSeconds;
 
-  if (coastDurationSeconds < 0) {
-    return { kind: "infeasible", reason: "negative-coast", coastDurationSeconds };
-  }
-
   const residual = positionResidual(
     driftCorrectedDisplacement,
     deltaVelocity,
@@ -282,9 +389,24 @@ export const solveFlatspaceRendezvous = (request: FlatspaceRendezvousRequest): F
     duration
   );
   if (!residualIsAcceptable(residual, driftCorrectedDisplacement)) {
+    const collinear = magnitude(driftCorrectedDisplacement) > 0 && isCollinear(driftCorrectedDisplacement, deltaVelocity);
     const collinearPlan = solveCollinear(driftCorrectedDisplacement, deltaVelocity, acceleration, duration);
     if (collinearPlan !== undefined) return collinearPlan;
-    return { kind: "infeasible", reason: "unconverged", coastDurationSeconds };
+    if (collinear) return { kind: "infeasible", reason: "negative-coast", coastDurationSeconds };
+    const refinedPlan = refineGeneral(firstImpulse, driftCorrectedDisplacement, deltaVelocity, acceleration, duration);
+    if (refinedPlan !== undefined) return refinedPlan;
+    // The fixed iterate may be residual-bearing, but a negative coast still
+    // proves that its required burn intervals overlap.  The analytic and
+    // residual-refined paths above have both been offered a chance to recover
+    // a validated plan first.
+    if (coastDurationSeconds < 0) return { kind: "infeasible", reason: "negative-coast", coastDurationSeconds };
+    return { kind: "indeterminate", reason: "unconverged", coastDurationSeconds };
+  }
+
+  if (coastDurationSeconds < 0) {
+    // A position-validated solution with overlapping burns is a physics
+    // refusal, unlike an unvalidated fixed-point iterate.
+    return { kind: "infeasible", reason: "negative-coast", coastDurationSeconds };
   }
 
   return {
@@ -356,11 +478,11 @@ export const findMinimumFlatspaceRendezvousTime = (search: MinimumTimeSearch): M
   let lower = 0;
   let upper = 2 * Math.sqrt(search.chordDistanceMeters / search.accelerationMetersPerSecondSquared);
   let upperResult = solveFlatspaceRendezvous(search.requestAtDuration(upper));
-  for (let doubling = 0; upperResult.kind === "infeasible" && doubling < MAX_BRACKET_DOUBLINGS; doubling += 1) {
+  for (let doubling = 0; upperResult.kind !== "feasible" && doubling < MAX_BRACKET_DOUBLINGS; doubling += 1) {
     upper *= 2;
     upperResult = solveFlatspaceRendezvous(search.requestAtDuration(upper));
   }
-  if (upperResult.kind === "infeasible") return { kind: "no-feasible-duration" };
+  if (upperResult.kind !== "feasible") return { kind: "no-feasible-duration" };
 
   for (let iteration = 0; iteration < BISECTION_ITERATIONS; iteration += 1) {
     const midpoint = (lower + upper) / 2;
@@ -369,6 +491,9 @@ export const findMinimumFlatspaceRendezvousTime = (search: MinimumTimeSearch): M
       upper = midpoint;
       upperResult = result;
     } else {
+      // An indeterminate midpoint is never accepted as a plan.  Keeping it
+      // below the bracket preserves a validated upper plan while refinement
+      // resolves the wall from the feasible side.
       lower = midpoint;
     }
   }
