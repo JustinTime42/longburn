@@ -1,6 +1,7 @@
 # Trajectory Subsystem Spec v0.2 — the torch-to-Hohmann continuum, done right
 
 Status: APPROVED by the Overseer, 2026-08-05 (all four §8 decisions resolved as recommended; see §8).
+Amended: Amendment A, 2026-08-05 (Overseer-approved rulings on longburn-5cz and longburn-dr7; see §9).
 Author: Vardis Slowfathom (Mayor). Supersedes the implicit design of bead longburn-din.3 rounds 1–2.
 Foundations: `docs/research/lambert-solvers.md`, `docs/research/mars-windows-porkchop.md`,
 `docs/research/torch-continuum-models.md` (each with validated reference scripts under
@@ -31,10 +32,22 @@ report). The subsystem is therefore:
    `kappa = Dv_flat(T, a) / Dv_flat(T, a→∞)`. Gravity is counted exactly once (in Lambert);
    finite thrust exactly once (in kappa). The naive min() of the two models is FORBIDDEN
    (Lambert is a strict lower bound; min() deletes the thrust constraint).
+   **[Amendment A] This formula applies to EVERY leg, at every eta. There is no regime in which
+   a different delta-v expression is quoted.** Selecting between delta-v models by a regime
+   parameter has no counterpart in real mission-design practice and manufactures a ~9%
+   discontinuity at the switch (Warden din.3.4 r1 finding 1); the multiplicative correction
+   factor applied continuously IS the established practice (Willis, NASA TN D-3606, 1966;
+   research: `finite-thrust-correction-practice.md`). kappa ≥ 1 by construction preserves the
+   Lambert lower bound — the same invariant the min() ban protects.
 
 Regime parameter: `eta = g_sun(r)·T²/(2·D_chord)`. Torch threshold for ships: **0.01 g**
 (the flat-space validity boundary; also Atomic Rockets' torchship definition — physics backs
-fiction). Regime selection is per-leg, never per-ship.
+fiction). **[Amendment A] eta is a DIAGNOSTIC ANNOTATION carried on results (model-fidelity
+note for records and future tiers), never a selector of the delta-v expression.** Computed
+per-leg, never per-ship. Known, documented limitation: at high eta kappa → 1, so the quote
+degrades into the pure impulsive figure — which is exactly the behaviour of the reference
+NASA/JPL porkchop handbooks (no finite-burn correction at all), honest at this fidelity
+provided the duty cycle is reported (see §2 duty ruling).
 
 Out of Tier-0 scope, fenced (SO 13): microthrust spirals / Edelbaum (needed only when a < local g;
 future well-operations tier), multi-revolution *planning* (Type III/IV transfers offered to the
@@ -61,6 +74,19 @@ solver can compute.
   computed analytically (t_b = T/2, coast = 0), never through the quadratic discriminant — the
   discriminant is exactly zero there and its float sign is noise (Warden din.3 r2 finding 1;
   measured firing rate 22.5%).
+- **[Amendment A] Thrust-feasibility gating is graded, and it gates on the QUOTED delta-v.**
+  Every planner result carries `dutyCycle = Dv_helio/(a·T)` as a first-class output (consumed by
+  G's Pareto assembly and displayed by H2). Typed physics refusal ONLY at dutyCycle > 1 — the
+  ship cannot accumulate the quoted delta-v inside the window (pykep-precedent typed feasibility
+  predicate). A soft `finiteBurnCaution` flag is set at dutyCycle > 0.83 (the published 1.2x
+  screening margin, Xie & Dempster 2021) — displayed, never refused: hard pruning of
+  near-feasible candidates is a named failure mode (Englander et al. 2016 false negatives).
+  The gate runs on `Dv_helio = Dv_Lambert × kappa`, never on the flat-space plan's own delta-v,
+  which diverges from Lambert at long transits (11x at 259 d — torch report §1) and would
+  over-refuse. The flat-space solver's own wall (negative discriminant at actual `a`) continues
+  to produce typed refusals through kappa's computation wherever it binds. Per-endpoint impulse
+  bounds (departure/arrival burns against allocated sub-windows) are a future refinement, filed
+  not built (SO 13).
 
 ## 3. Fuel and cargo rulings
 
@@ -139,8 +165,11 @@ Each module is a bead with its own verifiers; dependencies as listed. All pure f
 - **C. flatspace-rendezvous** — §3.2 solver + analytic f=1 path + min-T bisection + duty cycle.
   Verifies: tier-1 flat-space cases; typed infeasibility; t=0-and-nonzero initial-time property
   ranges (min: 0 — Warden r2 finding on excluded fresh-world case). No dependencies.
-- **D. continuum-blend** — eta, kappa, regime selection, `Dv_helio` assembly. Verifies: tier-2.
-  Depends on B, C.
+- **D. continuum-blend** — eta (diagnostic), kappa, `Dv_helio = Dv_Lambert × kappa` on every leg,
+  dutyCycle + finiteBurnCaution + typed duty>1 refusal [Amendment A — no regime selection].
+  Verifies: tier-2; kappa→1 limits; boundary continuity asserted with an INDEPENDENT Lambert cost
+  (no step anywhere on the curve — the near-impulsive self-consistent test is tautological at the
+  boundary and does not discharge this verifier). Depends on B, C.
 - **E. window-search** — porkchop grid over the real ephemerides, ranking, well-term adders.
   Verifies: tier-3 (the NASA handbook fixtures). Depends on B (D optional overlay: torch feasibility
   wall per cell). Performance budget: 64k cells in tens of ms; torchTime-class work hoisted out of
@@ -164,3 +193,25 @@ otherwise superseded; its handoffs stand (SO 7) with the r2-mandated superseding
    ship design deferred to a later tier.
 4. **Bead tree**: approved as specified in §7; filed as children of longburn-din.3 with the branch
    at 6049213 superseded and its Lambert core salvaged into module B.
+
+## 9. Amendment A (approved by the Overseer, 2026-08-05)
+
+Raised by Warden review of din.3.4 (findings 1 and 2 — the code was faithful to the spec as then
+written; the spec had the cliff and the gap). Grounded in commissioned research:
+`docs/research/finite-thrust-correction-practice.md` (Willis 1966 multiplicative correction
+precedent; Sims-Flanagan thrust-as-constraint; no surveyed tool selects between delta-v models by
+regime; Englander false-negative warning; pykep typed-predicate precedent; Xie & Dempster 1.2x
+margin). Beads: longburn-5cz (ruling A), longburn-dr7 (ruling B).
+
+**Ruling A (5cz):** the §1.3 blend formula applies to every leg at every eta; the three-regime
+delta-v selection (eta < 0.2 flat-space / 0.2–0.5 Lambert×kappa / > 0.5 Lambert-only) that din.3.4
+round 1 implemented from the research regime map is retired. eta is demoted to a diagnostic
+annotation. The eta = 0.2 quoted-delta-v cliff (~9%) is thereby removed by construction.
+
+**Ruling B (dr7):** graded thrust-feasibility: `dutyCycle` first-class on every result, typed
+refusal only at dutyCycle > 1, `finiteBurnCaution` at > 0.83, gate computed on the quoted
+`Dv_helio`, never the flat-space plan. The ~10% silent transition-band understatement is dissolved
+(kappa is now applied there and duty is reported).
+
+Amended text carries `[Amendment A]` markers in §1, §2, and §7.D. Implementation bead filed under
+din.3 as the successor to din.3.4's regime logic.
