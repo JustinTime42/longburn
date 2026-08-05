@@ -47,7 +47,7 @@ describe("torch-to-Hohmann continuum", () => {
       if (result.kind === "feasible") {
         expect(result.eta).toBeCloseTo(eta, 12);
         expect(result.heliocentricDeltaVMetersPerSecond).toBeCloseTo(10 * result.kappa, 12);
-        expect(result.dutyCycle).toBeCloseTo(result.heliocentricDeltaVMetersPerSecond / (request.accelerationMetersPerSecondSquared * duration), 12);
+        expect(result.quotedDutyCycle).toBeCloseTo(result.heliocentricDeltaVMetersPerSecond / (request.accelerationMetersPerSecondSquared * duration), 12);
         expect(result.finiteBurnCaution).toBe(false);
       }
     }
@@ -55,14 +55,29 @@ describe("torch-to-Hohmann continuum", () => {
 
   it("has no step anywhere on an independently costed Lambert curve", () => {
     const durationSeconds = 100_000;
-    const request = stationaryRequest(10_000, durationSeconds);
-    const chord = 1_000_000;
-    const radiusForEta = (eta: number) => Math.sqrt((132_712_440_018_000_000_000_000 * durationSeconds ** 2) / (2 * chord * eta));
     const departure = { x: AU_KM, y: 0, z: 0 };
     const departureVelocity = { x: 0, y: Math.sqrt(SUN_MU_KM3_PER_SECOND2 / AU_KM), z: 0 };
     const samples = Array.from({ length: 41 }, (_, index) => {
       const arrivalAngle = 0.1 + index * 0.0001;
       const arrival = { x: 1.01 * AU_KM * Math.cos(arrivalAngle), y: 1.01 * AU_KM * Math.sin(arrivalAngle), z: 0 };
+      const arrivalVelocity = {
+        x: -Math.sqrt(SUN_MU_KM3_PER_SECOND2 / (1.01 * AU_KM)) * Math.sin(arrivalAngle),
+        y: Math.sqrt(SUN_MU_KM3_PER_SECOND2 / (1.01 * AU_KM)) * Math.cos(arrivalAngle),
+        z: 0
+      };
+      // This is the same Earth-to-arrival leg used to price Lambert, not an
+      // unrelated stationary 1,000 km hop. Its finite-burn correction must
+      // therefore contribute materially to every sampled quote.
+      const request = {
+        accelerationMetersPerSecondSquared: 10,
+        durationSeconds,
+        departurePositionMeters: { x: departure.x * 1_000, y: departure.y * 1_000, z: 0 },
+        departureVelocityMetersPerSecond: { x: departureVelocity.x * 1_000, y: departureVelocity.y * 1_000, z: 0 },
+        arrivalPositionMeters: { x: arrival.x * 1_000, y: arrival.y * 1_000, z: 0 },
+        arrivalVelocityMetersPerSecond: { x: arrivalVelocity.x * 1_000, y: arrivalVelocity.y * 1_000, z: 0 }
+      };
+      const chord = magnitude(difference(request.arrivalPositionMeters, request.departurePositionMeters));
+      const radiusForEta = (eta: number) => Math.sqrt((132_712_440_018_000_000_000_000 * durationSeconds ** 2) / (2 * chord * eta));
       const lambert = solveLambertIzzo(SUN_MU_KM3_PER_SECOND2, departure, arrival, durationSeconds);
       const lambertCost = magnitude(difference(lambert.departureVelocityKmPerSecond, departureVelocity)) * 1_000;
       const result = solveContinuumLeg({
@@ -72,12 +87,13 @@ describe("torch-to-Hohmann continuum", () => {
       });
       expect(result.kind).toBe("feasible");
       if (result.kind !== "feasible") throw new Error("Expected a feasible continuum sample.");
-      return result.heliocentricDeltaVMetersPerSecond;
+      return { kappa: result.kappa, quote: result.heliocentricDeltaVMetersPerSecond };
     });
-    const largestStep = Math.max(...samples.slice(1).map((sample, index) => Math.abs(sample - samples[index]!)));
-    // The retired eta switch produced a ~9% cliff (finite-thrust correction research §1);
-    // independently computed Lambert costs may vary smoothly, but must remain below that bound.
-    expect(largestStep / Math.max(...samples)).toBeLessThan(0.09);
+    expect(Math.min(...samples.map((sample) => sample.kappa))).toBeGreaterThan(1.01);
+    const largestStep = Math.max(...samples.slice(1).map((sample, index) => Math.abs(sample.quote - samples[index]!.quote)));
+    // The adjacent independently-computed Lambert samples vary smoothly at
+    // roughly 1e-3 relative. A revived eta switch would create a ~9% cliff.
+    expect(largestStep / Math.max(...samples.map((sample) => sample.quote))).toBeLessThan(0.002);
   });
 
   it("returns caution and typed duty-cycle refusals from the quoted delta-v", () => {
@@ -91,13 +107,17 @@ describe("torch-to-Hohmann continuum", () => {
     const cautious = solveContinuumLeg({ lambertDeltaVMetersPerSecond: quotedLambertForDuty(0.9), flatspaceRequest: request });
     expect(cautious).toMatchObject({ kind: "feasible", finiteBurnCaution: true });
     if (cautious.kind === "feasible") {
-      expect(cautious.dutyCycle).toBeCloseTo(0.9, 12);
-      expect(cautious.dutyCycle).toBeGreaterThan(FINITE_BURN_CAUTION_DUTY_CYCLE);
+      expect(cautious.quotedDutyCycle).toBeCloseTo(0.9, 12);
+      expect(cautious.quotedDutyCycle).toBeGreaterThan(FINITE_BURN_CAUTION_DUTY_CYCLE);
+      expect(cautious.flatspacePlan.burnDutyCycle).not.toBeCloseTo(cautious.quotedDutyCycle, 2);
     }
 
     const refused = solveContinuumLeg({ lambertDeltaVMetersPerSecond: quotedLambertForDuty(1.01), flatspaceRequest: request });
     expect(refused).toMatchObject({ kind: "infeasible", reason: "duty-cycle-exceeded" });
-    if (refused.kind === "infeasible" && refused.reason === "duty-cycle-exceeded") expect(refused.dutyCycle).toBeCloseTo(1.01, 12);
+    if (refused.kind === "infeasible" && refused.reason === "duty-cycle-exceeded") {
+      expect(refused.quotedDutyCycle).toBeCloseTo(1.01, 12);
+      expect(refused.flatspacePlan.burnDutyCycle).toBeGreaterThan(0);
+    }
   });
 
   it("validates flat-space inputs even when eta would previously select pure Lambert", () => {
@@ -124,6 +144,6 @@ describe("torch-to-Hohmann continuum", () => {
     // The committed phase and TOF are rounded to 0.01°, 0.01 d respectively.
     expect(departureVInfinity ** 2).toBeCloseTo(8.671, 1);
     expect(arrivalVInfinity).toBeCloseTo(2.649, 1);
-    expect(gravityLoadingParameter(AU_METERS, durationSeconds, magnitude(difference({ x: mars.x * 1_000, y: mars.y * 1_000, z: 0 }, { x: earth.x * 1_000, y: earth.y * 1_000, z: 0 })))).toBeGreaterThan(0);
+    expect(gravityLoadingParameter(AU_METERS, durationSeconds, magnitude(difference({ x: mars.x * 1_000, y: mars.y * 1_000, z: 0 }, { x: earth.x * 1_000, y: earth.y * 1_000, z: 0 })))).toBeCloseTo(3_928.321, 3);
   });
 });
