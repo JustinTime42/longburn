@@ -39,8 +39,12 @@ export interface ContinuumPlan {
   /** Finite-burn correction from the actual and impulsive flat-space solves. */
   readonly kappa: number;
   readonly heliocentricDeltaVMetersPerSecond: number;
-  /** Fraction of the flight window needed to execute the quoted heliocentric delta-v. */
-  readonly dutyCycle: number;
+  /**
+   * Amendment A gate: fraction of the flight window needed to execute the
+   * quoted heliocentric delta-v. This is intentionally distinct from
+   * flatspacePlan.burnDutyCycle, the flat-space solver's firing fraction.
+   */
+  readonly quotedDutyCycle: number;
   /** A screening warning, not a refusal. */
   readonly finiteBurnCaution: boolean;
   /** The correction's actual-thrust solve, retained as planner diagnostics. */
@@ -62,7 +66,10 @@ export interface ContinuumDutyCycleInfeasible {
   readonly eta: number;
   readonly kappa: number;
   readonly heliocentricDeltaVMetersPerSecond: number;
-  readonly dutyCycle: number;
+  /** Amendment A gate; not the flat-space plan's firing fraction. */
+  readonly quotedDutyCycle: number;
+  /** The actual-thrust solve, retained so refusals preserve planner diagnostics. */
+  readonly flatspacePlan: FlatspaceRendezvousPlan;
 }
 
 export type ContinuumResult =
@@ -134,16 +141,17 @@ export const solveContinuumLeg = (request: ContinuumLegRequest): ContinuumResult
   const eta = gravityLoadingParameter(radius, request.flatspaceRequest.durationSeconds, chord);
   if (correction.kind !== "feasible") return { ...correction, eta };
   const heliocentricDeltaVMetersPerSecond = request.lambertDeltaVMetersPerSecond * correction.kappa;
-  const dutyCycle = heliocentricDeltaVMetersPerSecond /
+  const quotedDutyCycle = heliocentricDeltaVMetersPerSecond /
     (request.flatspaceRequest.accelerationMetersPerSecondSquared * request.flatspaceRequest.durationSeconds);
-  if (dutyCycle > 1) {
+  if (quotedDutyCycle > 1) {
     return {
       kind: "infeasible",
       reason: "duty-cycle-exceeded",
       eta,
       kappa: correction.kappa,
       heliocentricDeltaVMetersPerSecond,
-      dutyCycle
+      quotedDutyCycle,
+      flatspacePlan: correction.actual
     };
   }
   return {
@@ -151,8 +159,8 @@ export const solveContinuumLeg = (request: ContinuumLegRequest): ContinuumResult
     eta,
     kappa: correction.kappa,
     heliocentricDeltaVMetersPerSecond,
-    dutyCycle,
-    finiteBurnCaution: dutyCycle > FINITE_BURN_CAUTION_DUTY_CYCLE,
+    quotedDutyCycle,
+    finiteBurnCaution: quotedDutyCycle > FINITE_BURN_CAUTION_DUTY_CYCLE,
     flatspacePlan: correction.actual
   };
 };
