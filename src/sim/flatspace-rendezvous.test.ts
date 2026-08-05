@@ -39,9 +39,12 @@ describe("flat-space rendezvous", () => {
       const result = solveStationaryFlatspaceRendezvous(distance, acceleration, duration);
       expect(result.kind).toBe("feasible");
       if (result.kind === "infeasible") continue;
-      const expected = acceleration * (duration - Math.sqrt(duration ** 2 - (4 * distance) / acceleration));
-      expect(result.totalDeltaVMetersPerSecond).toBeCloseTo(expected, 9);
-      expect(result.coastDurationSeconds).toBeGreaterThanOrEqual(0);
+      const terminal = propagate(result, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+      expect(Math.abs(terminal.position.x - distance) / distance).toBeLessThan(1e-12);
+      expect(terminal.position.y).toBe(0);
+      expect(terminal.position.z).toBe(0);
+      expect(terminal.velocity.x).toBeCloseTo(0, 9);
+      expect(result.coastDurationSeconds).toBeCloseTo(duration - 2 * result.firstBurnDurationSeconds, 9);
     }
   });
 
@@ -105,30 +108,108 @@ describe("flat-space rendezvous", () => {
         arrivalVelocityMetersPerSecond: { x: -100, y: 0, z: 0 }
       })
     });
-    expect(search.durationSeconds).toBeLessThan(2 * Math.sqrt(1_000_000));
-    expect(search.plan.burnDutyCycle).toBeGreaterThan(0.999_999);
+    expect(search.kind).toBe("feasible");
+    if (search.kind === "no-feasible-duration") return;
+    const truth = -100 + Math.sqrt(4_020_000);
+    expect(search.durationSeconds).toBeCloseTo(truth, 3);
+    expect(search.plan.burnDutyCycle).toBeCloseTo(1, 9);
+    const belowWall = solveFlatspaceRendezvous({
+      accelerationMetersPerSecondSquared: 1,
+      durationSeconds: truth * (1 - 1e-4),
+      departurePositionMeters: { x: 0, y: 0, z: 0 },
+      departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+      arrivalPositionMeters: { x: 1_000_000 - 100 * truth * (1 - 1e-4), y: 0, z: 0 },
+      arrivalVelocityMetersPerSecond: { x: -100, y: 0, z: 0 }
+    });
+    expect(belowWall.kind).toBe("infeasible");
   });
 
-  it("holds rendezvous across fresh-world initial times including zero", () => {
+  it("returns a typed result when no feasible duration can be bracketed", () => {
+    const result = findMinimumFlatspaceRendezvousTime({
+      accelerationMetersPerSecondSquared: 1,
+      chordDistanceMeters: 1,
+      requestAtDuration: (durationSeconds) => ({
+        accelerationMetersPerSecondSquared: 1,
+        durationSeconds,
+        departurePositionMeters: { x: 0, y: 0, z: 0 },
+        departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+        arrivalPositionMeters: { x: 0, y: 0, z: 0 },
+        // Required velocity change alone needs more burn time than the trip.
+        arrivalVelocityMetersPerSecond: { x: 2 * durationSeconds, y: 0, z: 0 }
+      })
+    });
+    expect(result).toEqual({ kind: "no-feasible-duration" });
+  });
+
+  it("matches the Earth-Mars reference-table flat-space delta-v values", () => {
+    const au = 149_597_870_700;
+    const angle = 0.9;
+    const departurePosition = { x: au, y: 0, z: 0 };
+    const departureVelocity = { x: 0, y: 29_780, z: 0 };
+    const marsRadius = 1.524 * au;
+    const marsSpeed = 24_070;
+    const fixtures: ReadonlyArray<readonly [days: number, gee: number, expectedKilometersPerSecond: number]> = [
+      [4, 1, 1252.27], [10, 0.1, 650.14], [20, 0.1, 208.17],
+      [30, 0.1, 131.73], [60, 0.1, 68.35], [120, 0.1, 55.56]
+    ];
+    for (const [days, gee, expectedKilometersPerSecond] of fixtures) {
+      const durationSeconds = days * 86_400;
+      const arrivalAngle = angle + (marsSpeed / marsRadius) * durationSeconds;
+      const result = solveFlatspaceRendezvous({
+        accelerationMetersPerSecondSquared: gee * 9.80665,
+        durationSeconds,
+        departurePositionMeters: departurePosition,
+        departureVelocityMetersPerSecond: departureVelocity,
+        arrivalPositionMeters: { x: marsRadius * Math.cos(arrivalAngle), y: marsRadius * Math.sin(arrivalAngle), z: 0.02 * au },
+        arrivalVelocityMetersPerSecond: { x: -marsSpeed * Math.sin(arrivalAngle), y: marsSpeed * Math.cos(arrivalAngle), z: 0 }
+      });
+      expect(result.kind).toBe("feasible");
+      if (result.kind === "infeasible") continue;
+      // §3.3 prints its oracle values rounded to 0.01 km/s; the circular
+      // arrival-epoch reconstruction is intentionally checked within 0.5 km/s.
+      expect(result.totalDeltaVMetersPerSecond / 1000).toBeCloseTo(expectedKilometersPerSecond, 0);
+    }
+  });
+
+  it("holds general 3D rendezvous across fresh-world initial times including zero", () => {
     fc.assert(
       fc.property(
         fc.integer({ min: 0, max: 1_000_000 }),
         fc.double({ min: 1, max: 10, noNaN: true }),
-        fc.double({ min: 100, max: 1_000, noNaN: true }),
-        (initialTimeSeconds, acceleration, duration) => {
+        fc.double({ min: 1_000, max: 10_000, noNaN: true }),
+        fc.double({ min: -20, max: 20, noNaN: true }),
+        fc.double({ min: -20, max: 20, noNaN: true }),
+        fc.double({ min: -20, max: 20, noNaN: true }),
+        fc.double({ min: -20, max: 20, noNaN: true }),
+        fc.double({ min: -20, max: 20, noNaN: true }),
+        fc.double({ min: -20, max: 20, noNaN: true }),
+        (initialTimeSeconds, acceleration, duration, a1x, a1y, a1z, a2x, a2y, a2z) => {
           const initialPosition = { x: initialTimeSeconds, y: -2 * initialTimeSeconds, z: 3 };
           const initialVelocity = { x: 30, y: -4, z: 2 };
+          const firstImpulse = { x: a1x, y: a1y, z: a1z };
+          const secondImpulse = { x: a2x, y: a2y, z: a2z };
+          const firstBurnDurationSeconds = magnitude(firstImpulse) / acceleration;
+          const secondBurnDurationSeconds = magnitude(secondImpulse) / acceleration;
+          const coastDurationSeconds = duration - firstBurnDurationSeconds - secondBurnDurationSeconds;
+          fc.pre(coastDurationSeconds > 0);
+          const expectedPlan: FlatspaceRendezvousPlan = {
+            kind: "feasible",
+            firstBurnImpulseMetersPerSecond: firstImpulse,
+            secondBurnImpulseMetersPerSecond: secondImpulse,
+            firstBurnDurationSeconds,
+            coastDurationSeconds,
+            secondBurnDurationSeconds,
+            totalDeltaVMetersPerSecond: acceleration * (firstBurnDurationSeconds + secondBurnDurationSeconds),
+            burnDutyCycle: (firstBurnDurationSeconds + secondBurnDurationSeconds) / duration
+          };
+          const expectedTerminal = propagate(expectedPlan, initialPosition, initialVelocity);
           const request = {
             accelerationMetersPerSecondSquared: acceleration,
             durationSeconds: duration,
             departurePositionMeters: initialPosition,
             departureVelocityMetersPerSecond: initialVelocity,
-            arrivalPositionMeters: {
-              x: initialPosition.x + initialVelocity.x * duration + acceleration * duration ** 2 / 8,
-              y: initialPosition.y + initialVelocity.y * duration,
-              z: initialPosition.z + initialVelocity.z * duration
-            },
-            arrivalVelocityMetersPerSecond: { x: initialVelocity.x, y: initialVelocity.y, z: initialVelocity.z }
+            arrivalPositionMeters: expectedTerminal.position,
+            arrivalVelocityMetersPerSecond: expectedTerminal.velocity
           };
           const result = solveFlatspaceRendezvous(request);
           expect(result.kind).toBe("feasible");
@@ -137,7 +218,7 @@ describe("flat-space rendezvous", () => {
           expect(magnitude({ x: terminal.position.x - request.arrivalPositionMeters.x, y: terminal.position.y - request.arrivalPositionMeters.y, z: terminal.position.z - request.arrivalPositionMeters.z })).toBeLessThan(1e-6);
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 100, seed: 2_026_080_5 }
     );
   });
 });
