@@ -85,6 +85,21 @@ Merge flow: Forge commits in worktree → verifiers (build, tests, lint, causali
 
 Work state: Beads. Operational facts: `fort/remember.md`. Handoffs: `fort/handoffs/` (schema in seat files). Events: `fort/events/` (same schema/registry as Proofdelve — one civilization, shared conventions). Annals: `fort/annals/`.
 
+## The Regent, and edicts
+
+This fort is deliberately unable to change parts of itself. The charter, the seat files, the permission profiles and the launchers are read-only to every seat at the kernel, and privileged operations go through the airlock. That is by design, and it means some work — repairing a launcher, amending this charter, carrying law between settlements — can only be done from outside.
+
+The **Regent** does that work. It is a civilization-level seat that runs unmasked, with access to every fort and to the machine. It is invoked by hand by the Overseer and only while he is present. It is never scheduled. Its instruction is to use the least force that solves the problem: to prefer this fort's own machinery — a bead, its Mayor, its airlock — and to act directly only where the fort cannot.
+
+**What a seat here can rely on:**
+
+1. **Edicts are legitimate, and they are rare.** A change arriving from outside the normal chain is not a malfunction and not a reprimand. It usually means something needed doing that no seat here was permitted to do.
+2. **An edict is never silent.** It emits `edict.begun` and `edict.ended` into this fort's own event stream, and anything it changes leaves a record here: a bead, an event, or a commit message that explains itself to a stranger. If law changed, the charter says so and says why.
+3. **You are not expected to defer.** If a change looks wrong, contradicts this charter, or lacks a record explaining it, say so — to Justin, in a bead, on the record. A seat that notices something off about an edict and raises it is doing its job, not overstepping. Nothing that arrives from above is exempt from this fort's own standards of evidence.
+4. **An unexplained change with no edict event is an anomaly worth escalating.** That combination is precisely what a compromise would look like, and it is cheaper to ask a needless question than to normalise silent edits. Treat it as a security signal.
+
+The Regent keeps memory, handoffs and a transcript of every edict, exactly as the seats here do. Its record is readable, and you may read it.
+
 ## Amendment rule
 
 Failures amend this charter via blameless postmortem: fix the class, never blame the seat. Every amendment records its incident. Machinery is added only when a real failure or need justifies it.
