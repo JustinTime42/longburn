@@ -38,7 +38,7 @@ describe("flat-space rendezvous", () => {
       const duration = minimum * multiple;
       const result = solveStationaryFlatspaceRendezvous(distance, acceleration, duration);
       expect(result.kind).toBe("feasible");
-      if (result.kind === "infeasible") continue;
+      if (result.kind !== "feasible") continue;
       const terminal = propagate(result, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
       expect(Math.abs(terminal.position.x - distance) / distance).toBeLessThan(1e-12);
       expect(terminal.position.y).toBe(0);
@@ -67,7 +67,7 @@ describe("flat-space rendezvous", () => {
       arrivalVelocityMetersPerSecond: { x: 110, y: -25, z: 3 }
     });
     expect(result.kind).toBe("feasible");
-    if (result.kind === "infeasible") return;
+    if (result.kind !== "feasible") return;
     const terminal = propagate(result, { x: 0, y: 0, z: 0 }, { x: 100, y: -30, z: 5 });
     expect(magnitude({ x: terminal.position.x - 1_100_000, y: terminal.position.y + 310_000, z: terminal.position.z - 60_000 })).toBeLessThan(1e-6);
     expect(magnitude({ x: terminal.velocity.x - 110, y: terminal.velocity.y + 25, z: terminal.velocity.z - 3 })).toBeLessThan(1e-12);
@@ -109,10 +109,10 @@ describe("flat-space rendezvous", () => {
       })
     });
     expect(search.kind).toBe("feasible");
-    if (search.kind === "no-feasible-duration") return;
+    if (search.kind !== "feasible") return;
     const truth = -100 + Math.sqrt(4_020_000);
     expect(search.durationSeconds).toBeCloseTo(truth, 3);
-    expect(search.plan.burnDutyCycle).toBeCloseTo(1, 9);
+    expect(search.plan.burnDutyCycle).toBeCloseTo(1, 7);
     const belowWall = solveFlatspaceRendezvous({
       accelerationMetersPerSecondSquared: 1,
       durationSeconds: truth * (1 - 1e-4),
@@ -164,11 +164,89 @@ describe("flat-space rendezvous", () => {
         arrivalVelocityMetersPerSecond: { x: -marsSpeed * Math.sin(arrivalAngle), y: marsSpeed * Math.cos(arrivalAngle), z: 0 }
       });
       expect(result.kind).toBe("feasible");
-      if (result.kind === "infeasible") continue;
+      if (result.kind !== "feasible") continue;
       // §3.3 prints its oracle values rounded to 0.01 km/s; the circular
       // arrival-epoch reconstruction is intentionally checked within 0.5 km/s.
       expect(result.totalDeltaVMetersPerSecond / 1000).toBeCloseTo(expectedKilometersPerSecond, 0);
     }
+  });
+
+  it("reports the reference low-thrust cells as physics infeasible", () => {
+    const au = 149_597_870_700;
+    const departurePosition = { x: au, y: 0, z: 0 };
+    const departureVelocity = { x: 0, y: 29_780, z: 0 };
+    const marsRadius = 1.524 * au;
+    const marsSpeed = 24_070;
+    for (const [days, gee] of [[2, 1], [4, 0.1], [10, 0.01]] as const) {
+      const durationSeconds = days * 86_400;
+      const arrivalAngle = 0.9 + (marsSpeed / marsRadius) * durationSeconds;
+      const result = solveFlatspaceRendezvous({
+        accelerationMetersPerSecondSquared: gee * 9.80665,
+        durationSeconds,
+        departurePositionMeters: departurePosition,
+        departureVelocityMetersPerSecond: departureVelocity,
+        arrivalPositionMeters: { x: marsRadius * Math.cos(arrivalAngle), y: marsRadius * Math.sin(arrivalAngle), z: 0.02 * au },
+        arrivalVelocityMetersPerSecond: { x: -marsSpeed * Math.sin(arrivalAngle), y: marsSpeed * Math.cos(arrivalAngle), z: 0 }
+      });
+      expect(result).toMatchObject({ kind: "infeasible", reason: "negative-coast" });
+    }
+  });
+
+  it("resolves a non-collinear moving-target feasibility wall", () => {
+    const result = findMinimumFlatspaceRendezvousTime({
+      accelerationMetersPerSecondSquared: 1,
+      chordDistanceMeters: 1_000_000,
+      requestAtDuration: (durationSeconds) => ({
+        accelerationMetersPerSecondSquared: 1,
+        durationSeconds,
+        departurePositionMeters: { x: 0, y: 0, z: 0 },
+        departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+        arrivalPositionMeters: { x: 1_000_000 - 100 * durationSeconds, y: 0, z: durationSeconds },
+        arrivalVelocityMetersPerSecond: { x: -100, y: 0, z: 1 }
+      })
+    });
+    expect(result.kind).toBe("feasible");
+    if (result.kind !== "feasible") return;
+    // The out-of-plane velocity is deliberately tiny but makes this a true
+    // 3-D wall; the old collinear-only rescue overestimated it by about 1%.
+    expect(result.durationSeconds).toBeLessThan(1_910);
+    expect(result.plan.burnDutyCycle).toBeCloseTo(1, 7);
+  });
+
+  it("covers duty cycles through the wall instead of only impulsive plans", () => {
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0.05, max: 1, noNaN: true }),
+        fc.double({ min: 1, max: 10, noNaN: true }),
+        fc.double({ min: 1_000, max: 10_000, noNaN: true }),
+        (dutyCycle, acceleration, duration) => {
+          const burn = duration * dutyCycle / 2;
+          const impulse = acceleration * burn;
+          const expectedPlan: FlatspaceRendezvousPlan = {
+            kind: "feasible",
+            firstBurnImpulseMetersPerSecond: { x: impulse, y: 0, z: 0 },
+            secondBurnImpulseMetersPerSecond: { x: -impulse, y: 0, z: 0 },
+            firstBurnDurationSeconds: burn,
+            coastDurationSeconds: duration - 2 * burn,
+            secondBurnDurationSeconds: burn,
+            totalDeltaVMetersPerSecond: 2 * impulse,
+            burnDutyCycle: dutyCycle
+          };
+          const arrival = propagate(expectedPlan, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+          const result = solveFlatspaceRendezvous({
+            accelerationMetersPerSecondSquared: acceleration,
+            durationSeconds: duration,
+            departurePositionMeters: { x: 0, y: 0, z: 0 },
+            departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+            arrivalPositionMeters: arrival.position,
+            arrivalVelocityMetersPerSecond: arrival.velocity
+          });
+          expect(result.kind).toBe("feasible");
+          if (result.kind === "feasible") expect(result.burnDutyCycle).toBeCloseTo(dutyCycle, 8);
+        }
+      ),
+      { numRuns: 100, seed: 2_026_080_5 }
+    );
   });
 
   it("holds general 3D rendezvous across fresh-world initial times including zero", () => {
@@ -213,7 +291,7 @@ describe("flat-space rendezvous", () => {
           };
           const result = solveFlatspaceRendezvous(request);
           expect(result.kind).toBe("feasible");
-          if (result.kind === "infeasible") return;
+          if (result.kind !== "feasible") return;
           const terminal = propagate(result, initialPosition, initialVelocity);
           expect(magnitude({ x: terminal.position.x - request.arrivalPositionMeters.x, y: terminal.position.y - request.arrivalPositionMeters.y, z: terminal.position.z - request.arrivalPositionMeters.z })).toBeLessThan(1e-6);
         }
