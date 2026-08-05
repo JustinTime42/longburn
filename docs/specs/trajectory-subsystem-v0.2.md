@@ -91,8 +91,13 @@ return windows, aerocapture, launch azimuth/RAAN.
   implementation-approximated per ECMAScript — NOT bit-reproducible across engines. Therefore:
   **the planner is a planning-layer tool outside the deterministic sim core. A committed maneuver
   stores QUANTIZED burn parameters (fixed-point delta-v / burn seconds) as the authoritative sim
-  input.** The sim replays from quantized values, bit-exact by construction. (Candidate standing
-  order; proposed to the Overseer with this spec.)
+  input.** The sim replays from quantized values, bit-exact by construction. (Adopted as standing
+  order 16, Overseer 2026-08-05.)
+- Quantization resolution (pinned 2026-08-05, Warden din.3.6 finding 5, Mayor ruling on finding 3):
+  **burn duration in integer milliseconds is the SINGLE authoritative committed field**; delta-v is
+  derived exactly as a×t_burn from the fixed ship config and is never stored as an independent
+  second field (two independently-rounded fields = a dispute-replay divergence class). Changing the
+  resolution is a spec amendment, not a code edit.
 - `acos` arguments clamped to [−1, 1]; no `Math.hypot` in the conic core; parallel grid reduction
   in index order if ever parallelized.
 
