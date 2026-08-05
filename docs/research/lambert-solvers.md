@@ -92,7 +92,7 @@ tof = 36000 s
 prograde, high path:   v1 = [ 2.000652697,  0.387688615, -2.666947760]
                        v2 = [-3.79246619,  -1.77707641,   6.856814395]
 retrograde, high path: v1 = [ 2.96616042,  -1.27577231,  -0.75545632]
-                       v2 = [ 5.8437455,   -0.20047673,  -5.48615883]
+                       v2 = [ 5.84375455,  -0.20047673,  -5.48615883]
 ```
 
 **Case 6 — multi-revolution (M=1), same geometry as case 5.** No published multi-rev case with exact numbers was found anywhere, so the agent generated these and verified them independently: computed the orbital elements of the returned arc and integrated Kepler's equation analytically, including the M complete revolutions, to confirm the time of flight. **Relative TOF residual 4.0e-16 and 2.0e-16** — trustworthy to full double precision; the numbers to hard-code.
