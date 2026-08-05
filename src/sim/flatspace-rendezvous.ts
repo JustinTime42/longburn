@@ -65,6 +65,11 @@ export interface MinimumTimeResult {
   readonly kind: "feasible";
   readonly durationSeconds: number;
   readonly plan: FlatspaceRendezvousPlan;
+  /**
+   * Bisection probes the deterministic solver could not validate. The reported
+   * plan is feasible, but its minimum may be above an indeterminate interval.
+   */
+  readonly indeterminateProbeCount: number;
 }
 
 export interface MinimumTimeNoFeasibleDuration {
@@ -487,6 +492,7 @@ export const findMinimumFlatspaceRendezvousTime = (search: MinimumTimeSearch): M
   if (sawIndeterminate) return { kind: "indeterminate", reason: "unconverged" };
   if (upperResult.kind !== "feasible") return { kind: "no-feasible-duration" };
 
+  let indeterminateProbeCount = 0;
   for (let iteration = 0; iteration < BISECTION_ITERATIONS; iteration += 1) {
     const midpoint = (lower + upper) / 2;
     const result = solveFlatspaceRendezvous(search.requestAtDuration(midpoint));
@@ -496,9 +502,11 @@ export const findMinimumFlatspaceRendezvousTime = (search: MinimumTimeSearch): M
     } else {
       // An indeterminate midpoint is never accepted as a plan.  Keeping it
       // below the bracket preserves a validated upper plan while refinement
-      // resolves the wall from the feasible side.
+      // resolves the wall from the feasible side. Record it so consumers do
+      // not mistake a solver artifact for a converged physical wall.
+      if (result.kind === "indeterminate") indeterminateProbeCount += 1;
       lower = midpoint;
     }
   }
-  return { kind: "feasible", durationSeconds: upper, plan: upperResult };
+  return { kind: "feasible", durationSeconds: upper, plan: upperResult, indeterminateProbeCount };
 };

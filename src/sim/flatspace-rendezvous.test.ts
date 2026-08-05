@@ -118,6 +118,7 @@ describe("flat-space rendezvous", () => {
     const truth = -100 + Math.sqrt(4_020_000);
     expect(search.durationSeconds).toBeCloseTo(truth, 3);
     expect(search.plan.burnDutyCycle).toBeCloseTo(1, 7);
+    expect(search.indeterminateProbeCount).toBe(0);
     const belowWall = solveFlatspaceRendezvous({
       accelerationMetersPerSecondSquared: 1,
       durationSeconds: truth * (1 - 1e-4),
@@ -340,6 +341,39 @@ describe("flat-space rendezvous", () => {
       }
     });
     expect(result).toEqual({ kind: "indeterminate", reason: "unconverged" });
+  });
+
+  it("signals indeterminate bisection probes alongside a feasible minimum", () => {
+    const acceleration = 88.98762777559128;
+    const fixtureDuration = 0.6168145210703871;
+    const fixturePosition = { x: 25.02285638038001, y: 12.714294976663657, z: 8.984542438499505 };
+    const fixtureVelocity = { x: 49.085762342555746, y: 19.758563038800165, z: 10.985468596018494 };
+    const result = findMinimumFlatspaceRendezvousTime({
+      accelerationMetersPerSecondSquared: acceleration,
+      // This gives an initial upper bracket of twice fixtureDuration, making
+      // the first bisection midpoint the known unconverged 3-D fixture.
+      chordDistanceMeters: acceleration * fixtureDuration ** 2,
+      requestAtDuration: (durationSeconds) => durationSeconds === fixtureDuration
+        ? {
+            accelerationMetersPerSecondSquared: acceleration,
+            durationSeconds,
+            departurePositionMeters: { x: 0, y: 0, z: 0 },
+            departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+            arrivalPositionMeters: fixturePosition,
+            arrivalVelocityMetersPerSecond: fixtureVelocity
+          }
+        : {
+            accelerationMetersPerSecondSquared: acceleration,
+            durationSeconds,
+            departurePositionMeters: { x: 0, y: 0, z: 0 },
+            departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+            arrivalPositionMeters: { x: acceleration * durationSeconds ** 2 / 4, y: 0, z: 0 },
+            arrivalVelocityMetersPerSecond: { x: 0, y: 0, z: 0 }
+          }
+    });
+    expect(result.kind).toBe("feasible");
+    if (result.kind !== "feasible") return;
+    expect(result.indeterminateProbeCount).toBe(1);
   });
 
   it("preserves an indeterminate bracket probe when later probes are infeasible", () => {
