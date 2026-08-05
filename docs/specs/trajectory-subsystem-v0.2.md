@@ -1,0 +1,157 @@
+# Trajectory Subsystem Spec v0.2 — the torch-to-Hohmann continuum, done right
+
+Status: APPROVED by the Overseer, 2026-08-05 (all four §8 decisions resolved as recommended; see §8).
+Author: Vardis Slowfathom (Mayor). Supersedes the implicit design of bead longburn-din.3 rounds 1–2.
+Foundations: `docs/research/lambert-solvers.md`, `docs/research/mars-windows-porkchop.md`,
+`docs/research/torch-continuum-models.md` (each with validated reference scripts under
+`docs/research/reference/`), plus Warden reviews din.3 r1/r2 (findings recorded on the bead).
+
+## 0. Why a restructure
+
+Two Forge rounds and two Warden reviews established that the single-module, single-model approach
+fails at design level, not implementation level: the delta-v axis summed alternative trajectories,
+no rendezvous constraint existed, and the flat-space torch model was silently extended into a regime
+where it overprices a Hohmann freighter by 10x (research: the flat-space model has a ~55 km/s floor
+where the true answer is 5.6 km/s). The Overseer directed a research-first restructure with
+KSP-level correctness as the bar. Research delivered validated algorithms, published test vectors,
+and quantitative regime boundaries. This spec turns those into buildable, independently verifiable
+modules.
+
+## 1. Architecture ruling: two solvers and a blend factor
+
+There is no single closed form spanning impulsive-to-torch in real gravity (research §1, torch
+report). The subsystem is therefore:
+
+1. **Conic core** — universal-variable Kepler propagator + Izzo (2015) Lambert solver.
+   Owns all gravity physics. Source of the porkchop and all long-transit costs.
+2. **Flat-space rendezvous solver** — the 6-equation accelerate/coast/decelerate solution against a
+   moving target (torch report §3.2), damped fixed-point with FIXED iteration count.
+   Owns feasibility (coast ≥ 0), burn durations, duty cycle. Valid where eta < 0.2.
+3. **The blend** — `Dv_helio(T, a) = Dv_Lambert(T) × kappa(T, a)` where
+   `kappa = Dv_flat(T, a) / Dv_flat(T, a→∞)`. Gravity is counted exactly once (in Lambert);
+   finite thrust exactly once (in kappa). The naive min() of the two models is FORBIDDEN
+   (Lambert is a strict lower bound; min() deletes the thrust constraint).
+
+Regime parameter: `eta = g_sun(r)·T²/(2·D_chord)`. Torch threshold for ships: **0.01 g**
+(the flat-space validity boundary; also Atomic Rockets' torchship definition — physics backs
+fiction). Regime selection is per-leg, never per-ship.
+
+Out of Tier-0 scope, fenced (SO 13): microthrust spirals / Edelbaum (needed only when a < local g;
+future well-operations tier), multi-revolution Lambert (Type III/IV), interception exposure and
+return windows, aerocapture, launch azimuth/RAAN.
+
+## 2. Delta-v bookkeeping rulings
+
+- The budget decomposes as `Dv_total = Dv_depart_well + Dv_helio(T, mode) + Dv_arrive_well`.
+  Only the middle term varies with transit time. Well terms are patched-conic point-model constants
+  per (origin, destination, parking orbit): `Dv_well = sqrt(v∞² + 2μ/r_p) − v_orbit` (Oberth
+  included). Tier 0 ships START in a parking orbit; the player-facing cost is the burn from that
+  orbit, NOT raw v∞ (Oberth is worth ~6 km/s on an Earth→Mars run and C3 is a badly miscalibrated
+  proxy — porkchop report §4.3).
+- v∞ vectors are computed against ephemeris body velocities **at their own epochs** (departure body
+  at t_dep, arrival body at t_arr). Using one epoch for both is a named classic bug.
+- Rendezvous is position AND velocity matching. The rendezvous invariant is a property test:
+  propagate the committed plan and assert terminal position/velocity error against stated tolerances,
+  with a genuinely moving destination from the real ephemerides module.
+- Infeasibility is a typed refusal, never a clamp and never a sentinel zero. The f=1 torch case is
+  computed analytically (t_b = T/2, coast = 0), never through the quadratic discriminant — the
+  discriminant is exactly zero there and its float sign is noise (Warden din.3 r2 finding 1;
+  measured firing rate 22.5%).
+
+## 3. Fuel and cargo rulings
+
+- **Constant-acceleration (throttled) burn model.** `Dv = a·t_burn` exact, `MR = exp(Dv/v_e)` exact;
+  propellant is proportional to burn seconds. Constant-thrust is a documented non-goal (2.3x
+  divergence if mixed; torch report §6).
+- `cargo_fraction = exp(−Dv/v_e) − f_struct`, with `f_struct` the structural fraction of wet mass.
+  Cargo ≤ 0 is a typed "nonviable" result distinct from infeasible-trajectory. The viability wall
+  `Dv_max = v_e·ln(1/f_struct)` is a design constant, not an emergent accident.
+- For a fixed ship the Pareto front is the 2-D curve `(T, Dv*(T))`; cargo is a derived readout.
+  The surface is 3-D only across ships (v_e as decision variable). The planner API returns the
+  per-window curve with feasibility walls; it does not fabricate a third independent axis.
+
+## 4. Window search / porkchop rulings
+
+- Grid: compute on (departure × time-of-flight), render on (departure × arrival). Spans per NASA
+  handbook defaults: 160-day departure span, TOF 100–450 d, C3 display cap 50 km²/s².
+- One prograde zero-rev Lambert per cell; Type I/II emerge from geometry, never special-cased.
+  Guard |Δθ − 180°| < 0.05° as invalid-cell (the ridge is real and rendered; the singular line is
+  not). Rank cells by total Δv; C3 and arrival v∞ are overlays (both required — the 2028 Type I
+  trap: near-identical C3, catastrophic v∞ difference).
+- Windows are 3–4 week soft regions, not instants (JPL/ISRO precedent + off-window sweep: <0.1 km/s
+  penalty within ±30 days; the real cost of slipping is arrival v∞ and trip time — which is the
+  correct feel for LONGBURN's irreversibility pillar).
+
+## 5. Determinism rulings (extends standing orders 10–11)
+
+- All iterative numerics run FIXED iteration counts (Lambert: capped Householder, non-convergence =
+  invalid cell; flat-space solver: fixed 200 iterations, damping 0.5). No tolerance-terminated or
+  time-budgeted loops in anything that can touch sim state.
+- JS transcendentals (`acos`, `exp`, `log`, `pow`, `asinh`, `Math.hypot`) are
+  implementation-approximated per ECMAScript — NOT bit-reproducible across engines. Therefore:
+  **the planner is a planning-layer tool outside the deterministic sim core. A committed maneuver
+  stores QUANTIZED burn parameters (fixed-point delta-v / burn seconds) as the authoritative sim
+  input.** The sim replays from quantized values, bit-exact by construction. (Candidate standing
+  order; proposed to the Overseer with this spec.)
+- `acos` arguments clamped to [−1, 1]; no `Math.hypot` in the conic core; parallel grid reduction
+  in index order if ever parallelized.
+
+## 6. Validation contract (what "super duper right" means, mechanically)
+
+Fixture tiers, all committed as test vectors with sources:
+1. **Solver-level**: the seven published Lambert cases (Vallado 7-5, Curtis 5.2, Battin 7.12,
+   Der I/II, generated multi-rev M=1 and heliocentric M=0/1/2 — exact vectors in
+   `docs/research/lambert-solvers.md` §2) at stated tolerances; the Lambert round-trip property
+   (solve → propagate → land on r2, ~1e-12 km well-conditioned); flat-space solver limits
+   (brachistochrone endpoint exact, 2D/T impulsive limit, stationary closed form to machine
+   precision).
+2. **Physics-level**: circular-coplanar Hohmann degenerate case (C3 8.671, v∞ 2.649, TOF 258.87 d,
+   phase 44.34°); kappa → 1 in both limits; continuum continuity across regime switches (no cliffs
+   in the returned curve — Warden r2 finding 3).
+3. **World-level** (against NASA/TM—2010-216764, band ±2 weeks / ±1.5 km²/s²):
+   2026 Type II (2026-10-31 → 2027-08-19, C3 9.144, v∞ 2.729); 2028 Type II (C3 8.928, v∞ 3.261);
+   2033 Type II (C3 7.781, the 20-year minimum); **2035 must prefer Type I** (the Mars-eccentricity
+   check); synodic closure at +779.94 d.
+
+A world-level failure outside the band is a defect, full stop. The band itself is committed in the
+fixtures with its derivation cited.
+
+## 7. Module decomposition (the bead tree)
+
+Each module is a bead with its own verifiers; dependencies as listed. All pure functions of
+(sim time, ephemerides, ship parameters) — SO 10/11 apply throughout.
+
+- **A. kepler-core** — universal-variable propagator + conic utilities. Verifies: propagation
+  round-trips elements; known-orbit fixtures; near-parabolic conditioning documented (the oracle
+  caution from research §4).
+- **B. lambert-izzo** — port of `reference/izzo-reference.py` with lamberthub as the transcription
+  source (the paper's Eq. 30 successor is misprinted). Verifies: fixture tier 1. Depends on A
+  (round-trip property uses the propagator).
+- **C. flatspace-rendezvous** — §3.2 solver + analytic f=1 path + min-T bisection + duty cycle.
+  Verifies: tier-1 flat-space cases; typed infeasibility; t=0-and-nonzero initial-time property
+  ranges (min: 0 — Warden r2 finding on excluded fresh-world case). No dependencies.
+- **D. continuum-blend** — eta, kappa, regime selection, `Dv_helio` assembly. Verifies: tier-2.
+  Depends on B, C.
+- **E. window-search** — porkchop grid over the real ephemerides, ranking, well-term adders.
+  Verifies: tier-3 (the NASA handbook fixtures). Depends on B (D optional overlay: torch feasibility
+  wall per cell). Performance budget: 64k cells in tens of ms; torchTime-class work hoisted out of
+  inner loops (Warden r2 finding 9).
+- **F. mass-cargo** — rocket equation, viability wall, quantization helpers for commitment.
+  Verifies: MR/cargo tables from research §6; quantization round-trip. No dependencies.
+- **G. planner-api** — the Pareto curve assembly consumed by din.4 (commit-and-burn) and H2 (picker
+  UI): per-window curve, feasibility walls, duty-cycle readout, typed infeasible/nonviable reasons,
+  authoritative-arrivalTime convention documented (Warden r2 finding 12). Depends on D, E, F.
+
+Salvage from `bead/din.3` (at 6049213): the Lambert core Sereth verified faithful to Curtis Alg 5.2
+by inspection feeds B's starting point; the ephemerides-wired test harness feeds E. The branch is
+otherwise superseded; its handoffs stand (SO 7) with the r2-mandated superseding handoff.
+
+## 8. Decisions (resolved by the Overseer, 2026-08-05)
+
+1. **Quantized-commitment determinism rule** (§5): ADOPTED as a charter standing order.
+   Amendment applied same day with this approval as its record.
+2. **Well terms at Tier 0**: patched-conic adders per (body, parking orbit), Oberth-correct.
+3. **Ship parameterization at Tier 0**: fixed (v_e, a, f_struct) tuple in config; 2-D Pareto curve;
+   ship design deferred to a later tier.
+4. **Bead tree**: approved as specified in §7; filed as children of longburn-din.3 with the branch
+   at 6049213 superseded and its Lambert core salvaged into module B.
