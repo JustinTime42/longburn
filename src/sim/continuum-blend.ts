@@ -15,6 +15,8 @@ import {
 /** Sun GM, in m^3/s^2. */
 export const SUN_GRAVITATIONAL_PARAMETER_M3_PER_SECOND2 = 132_712_440_018_000_000_000_000;
 export const FINITE_BURN_CAUTION_DUTY_CYCLE = 0.83;
+const IMPULSIVE_ACCELERATION_MULTIPLIER = 1_000_000;
+const KAPPA_ROUNDOFF_TOLERANCE = 64 * Number.EPSILON;
 
 export interface ContinuumLegRequest {
   /** The conic rendezvous cost: |v_transfer - v_departure| + |v_arrival - v_transfer|, in m/s. */
@@ -106,10 +108,8 @@ const chordDistance = (request: FlatspaceRendezvousRequest): number => magnitude
 const departureRadius = (request: FlatspaceRendezvousRequest): number => magnitude(request.departurePositionMeters);
 
 /**
- * Calculates the finite-burn correction using the flat-space solver twice.
- * Number.MAX_VALUE is the representable a -> infinity limit: the solver's
- * burn durations underflow toward zero while sharing precisely the same path
- * and kinematics as the actual-acceleration solve.
+ * Calculates the finite-burn correction using the same flat-space solver and
+ * request geometry at actual thrust and at a physically scaled impulsive limit.
  */
 export const flatspaceKappa = (request: FlatspaceRendezvousRequest):
   | { readonly kind: "feasible"; readonly kappa: number; readonly actual: FlatspaceRendezvousPlan; readonly impulsive: FlatspaceRendezvousPlan }
@@ -117,13 +117,25 @@ export const flatspaceKappa = (request: FlatspaceRendezvousRequest):
   | FlatspaceRendezvousIndeterminate => {
   const actual = solveFlatspaceRendezvous(request);
   if (actual.kind !== "feasible") return actual;
-  const impulsive = solveFlatspaceRendezvous({ ...request, accelerationMetersPerSecondSquared: Number.MAX_VALUE });
+  // A six-order acceleration separation makes the limiting burns negligible
+  // without sending the solver through MAX_VALUE overflow/subnormal paths.
+  // At the representable ceiling the actual solve is already the best finite
+  // approximation of that limit, so avoid manufacturing an overflowing input.
+  const impulsiveAcceleration = request.accelerationMetersPerSecondSquared >
+    Number.MAX_VALUE / IMPULSIVE_ACCELERATION_MULTIPLIER
+    ? undefined
+    : request.accelerationMetersPerSecondSquared * IMPULSIVE_ACCELERATION_MULTIPLIER;
+  const impulsive = impulsiveAcceleration === undefined
+    ? actual
+    : solveFlatspaceRendezvous({ ...request, accelerationMetersPerSecondSquared: impulsiveAcceleration });
   // The limiting solve is necessarily feasible if the actual solve was. Keep
   // a typed planner refusal if a future solver changes that contract.
   if (impulsive.kind !== "feasible") return impulsive;
-  const kappa = actual.totalDeltaVMetersPerSecond / impulsive.totalDeltaVMetersPerSecond;
-  if (!Number.isFinite(kappa) || kappa < 1) throw new RangeError("Flat-space kappa must be finite and at least one.");
-  return { kind: "feasible", kappa, actual, impulsive };
+  const unroundedKappa = actual.totalDeltaVMetersPerSecond / impulsive.totalDeltaVMetersPerSecond;
+  if (!Number.isFinite(unroundedKappa) || unroundedKappa < 1 - KAPPA_ROUNDOFF_TOLERANCE) {
+    return { kind: "indeterminate", reason: "kappa-below-one", coastDurationSeconds: actual.coastDurationSeconds };
+  }
+  return { kind: "feasible", kappa: Math.max(1, unroundedKappa), actual, impulsive };
 };
 
 /**
