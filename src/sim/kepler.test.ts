@@ -86,7 +86,7 @@ describe("kepler core", () => {
     }).not.toThrow();
     if (propagated === undefined) throw new Error("Expected accepted propagation to produce a state.");
     const result = conicElements(EARTH_MU, propagated);
-    expect(result.eccentricity - initialElements.eccentricity).toBeLessThanOrEqual(1e-14);
+    expect(Math.abs(result.eccentricity - initialElements.eccentricity)).toBeLessThanOrEqual(1e-14);
   });
 
   it("round-trips retrograde equatorial eccentric states", () => {
