@@ -29,11 +29,21 @@ export interface StumpffFunctions {
  * of tolerance and host load. Quantized committed burns, not these results,
  * enter authoritative simulation state.
  */
-export const KEPLER_REFINEMENT_ITERATIONS = 35;
+export const KEPLER_REFINEMENT_ITERATIONS = 200;
+/** Relative residual allowed after the invariant Newton work has completed. */
+export const KEPLER_RESIDUAL_RELATIVE_TOLERANCE = 1e-11;
 
 const PARABOLIC_ALPHA_EPSILON = 1e-12;
 const ELEMENT_EPSILON = 1e-10;
 const NEAR_PARABOLIC_ECCENTRICITY_DISTANCE = 1e-3;
+
+/** A typed refusal: fixed Newton work did not solve the universal Kepler equation. */
+export class KeplerPropagationConvergenceError extends RangeError {
+  public constructor() {
+    super("Universal-variable propagation did not converge within the fixed iteration budget.");
+    this.name = "KeplerPropagationConvergenceError";
+  }
+}
 
 const add = (left: Vector3Km, right: Vector3Km): Vector3Km => ({ x: left.x + right.x, y: left.y + right.y, z: left.z + right.z });
 const subtract = (left: Vector3Km, right: Vector3Km): Vector3Km => ({ x: left.x - right.x, y: left.y - right.y, z: left.z - right.z });
@@ -81,10 +91,10 @@ export const stumpffC2C3 = (psi: number): StumpffFunctions => {
 /**
  * Propagates a two-body state with Vallado's universal-variable formulation.
  *
- * Near e=1 the universal-variable equation is ill-conditioned. The fixed
- * count below prevents tolerance-dependent execution, but it cannot make that
- * physical numerical conditioning disappear; callers that need to present a
- * diagnostic can use isNearParabolic().
+ * The solver always performs the fixed refinement count, then validates its
+ * universal-Kepler residual. A failed residual is a typed refusal rather than
+ * a numerically plausible but off-orbit state. `isNearParabolic` is only a UI
+ * diagnostic: eccentricity alone neither predicts nor explains convergence.
  */
 export const propagateKepler = (mu: number, initial: KeplerState, elapsedSeconds: number): KeplerState => {
   assertInputs(mu, initial);
@@ -105,11 +115,16 @@ export const propagateKepler = (mu: number, initial: KeplerState, elapsedSeconds
     const sign = elapsedSeconds < 0 ? -1 : 1;
     const denominator = rDotV + sign * Math.sqrt(-mu * a) * (1 - r0 * alpha);
     const logarithmArgument = (-2 * mu * alpha * elapsedSeconds) / denominator;
-    chi = logarithmArgument > 0 && Number.isFinite(logarithmArgument)
-      ? sign * Math.sqrt(-a) * Math.log(logarithmArgument)
-      : sqrtMu * elapsedSeconds * alpha;
+    if (!Number.isFinite(logarithmArgument) || logarithmArgument <= 0) {
+      throw new RangeError("Hyperbolic universal-variable initial guess is undefined.");
+    }
+    chi = sign * Math.sqrt(-a) * Math.log(logarithmArgument);
   } else {
-    chi = (sqrtMu * elapsedSeconds) / r0;
+    const angularMomentum = cross(initial.positionKm, initial.velocityKmPerSecond);
+    const semiLatusRectumKm = dot(angularMomentum, angularMomentum) / mu;
+    const s = 0.5 * Math.atan2(1, 3 * Math.sqrt(mu / (semiLatusRectumKm ** 3)) * elapsedSeconds);
+    const w = Math.atan(Math.tan(s) ** (1 / 3));
+    chi = (2 * Math.sqrt(semiLatusRectumKm)) / Math.tan(2 * w);
   }
 
   for (let iteration = 0; iteration < KEPLER_REFINEMENT_ITERATIONS; iteration += 1) {
@@ -126,6 +141,15 @@ export const propagateKepler = (mu: number, initial: KeplerState, elapsedSeconds
 
   const psi = alpha * chi * chi;
   const { c2, c3 } = stumpffC2C3(psi);
+  const target = sqrtMu * elapsedSeconds;
+  const chiCubedC3 = chi * chi * chi * c3;
+  const rDotVTerm = (rDotV / sqrtMu) * chi * chi * c2;
+  const r0Term = r0 * chi * (1 - psi * c3);
+  const residual = target - chiCubedC3 - rDotVTerm - r0Term;
+  const residualScale = Math.max(1, Math.abs(target), Math.abs(chiCubedC3), Math.abs(rDotVTerm), Math.abs(r0Term));
+  if (!Number.isFinite(residual) || Math.abs(residual) > KEPLER_RESIDUAL_RELATIVE_TOLERANCE * residualScale) {
+    throw new KeplerPropagationConvergenceError();
+  }
   const radius = chi * chi * c2 + (rDotV / sqrtMu) * chi * (1 - psi * c3) + r0 * (1 - psi * c2);
   if (!Number.isFinite(radius) || radius <= 0) throw new RangeError("Universal-variable propagation produced an invalid radius.");
   const f = 1 - (chi * chi * c2) / r0;
@@ -136,7 +160,16 @@ export const propagateKepler = (mu: number, initial: KeplerState, elapsedSeconds
   return { positionKm, velocityKmPerSecond: add(scale(initial.positionKm, fDot), scale(initial.velocityKmPerSecond, gDot)) };
 };
 
-/** Returns osculating classical elements, with documented zero-angle conventions for singular cases. */
+/**
+ * Returns osculating classical elements.
+ *
+ * Singular conventions: the ascending-node longitude is zero for equatorial
+ * orbits; circular inclined orbits put the argument of periapsis at zero and
+ * use true anomaly as argument of latitude; circular equatorial orbits put
+ * both angles at zero and use true anomaly as true longitude. For retrograde
+ * equatorial eccentric orbits, the periapsis/true-longitude measurements use
+ * the retrograde orientation so reconstruction remains an inverse.
+ */
 export const conicElements = (mu: number, state: KeplerState): ConicElements => {
   assertInputs(mu, state);
   const r = magnitude(state.positionKm);
@@ -162,7 +195,7 @@ export const conicElements = (mu: number, state: KeplerState): ConicElements => 
     argumentOfPeriapsisRadians = Math.acos(clamp(dot(node, eccentricityVector) / (nodeMagnitude * eccentricity), -1, 1));
     if (eccentricityVector.z < 0) argumentOfPeriapsisRadians = 2 * Math.PI - argumentOfPeriapsisRadians;
   } else if (eccentricity > ELEMENT_EPSILON) {
-    argumentOfPeriapsisRadians = normalizeAngle(Math.atan2(eccentricityVector.y, eccentricityVector.x));
+    argumentOfPeriapsisRadians = normalizeAngle(Math.atan2(inclinationRadians > Math.PI / 2 ? -eccentricityVector.y : eccentricityVector.y, eccentricityVector.x));
   }
 
   let trueAnomalyRadians: number;
@@ -173,7 +206,7 @@ export const conicElements = (mu: number, state: KeplerState): ConicElements => 
     trueAnomalyRadians = Math.acos(clamp(dot(node, state.positionKm) / (nodeMagnitude * r), -1, 1));
     if (state.positionKm.z < 0) trueAnomalyRadians = 2 * Math.PI - trueAnomalyRadians;
   } else {
-    trueAnomalyRadians = normalizeAngle(Math.atan2(state.positionKm.y, state.positionKm.x));
+    trueAnomalyRadians = normalizeAngle(Math.atan2(inclinationRadians > Math.PI / 2 ? -state.positionKm.y : state.positionKm.y, state.positionKm.x));
   }
 
   return { semiMajorAxisKm, semiLatusRectumKm, eccentricity, inclinationRadians, longitudeOfAscendingNodeRadians, argumentOfPeriapsisRadians, trueAnomalyRadians };
@@ -206,6 +239,9 @@ export const stateFromConicElements = (mu: number, elements: ConicElements): Kep
   return { positionKm: rotate(positionPerifocal), velocityKmPerSecond: rotate(velocityPerifocal) };
 };
 
-/** True when universal-variable propagation deserves a conditioning warning, not a Lambert failure label. */
+/**
+ * True for a UI diagnostic around e=1. This is not a convergence boundary and
+ * must not be used to attribute a later Lambert or propagation failure.
+ */
 export const isNearParabolic = (elements: Pick<ConicElements, "eccentricity">): boolean =>
-  Math.abs(elements.eccentricity - 1) <= NEAR_PARABOLIC_ECCENTRICITY_DISTANCE;
+  Math.abs(elements.eccentricity - 1) <= NEAR_PARABOLIC_ECCENTRICITY_DISTANCE + Number.EPSILON;

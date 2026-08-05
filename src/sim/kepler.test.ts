@@ -23,7 +23,7 @@ describe("kepler core", () => {
     expect(propagated.positionKm.y).toBeCloseTo(radiusKm, 7);
     expect(propagated.velocityKmPerSecond.x).toBeCloseTo(-Math.sqrt(EARTH_MU / radiusKm), 9);
     expect(propagated.velocityKmPerSecond.y).toBeCloseTo(0, 9);
-    expect(KEPLER_REFINEMENT_ITERATIONS).toBe(35);
+    expect(KEPLER_REFINEMENT_ITERATIONS).toBe(200);
   });
 
   it("round-trips general three-dimensional elliptic elements", () => {
@@ -44,12 +44,45 @@ describe("kepler core", () => {
     expect(difference(recovered.velocityKmPerSecond, initial.velocityKmPerSecond)).toBeLessThan(1e-10);
   });
 
-  it("labels near-parabolic conditioning as propagator-local rather than a future Lambert failure", () => {
-    // Research §4 observed universal-variable propagation degrading before the
-    // Izzo solver near e=1. This fixture deliberately exercises only module A.
-    const state = stateFromConicElements(EARTH_MU, { semiMajorAxisKm: 10_000_000, semiLatusRectumKm: 10_000_000 * (1 - 0.99975 ** 2), eccentricity: 0.99975, inclinationRadians: 0.4, longitudeOfAscendingNodeRadians: 0.2, argumentOfPeriapsisRadians: 1.1, trueAnomalyRadians: 0.01 });
-    const elements = conicElements(EARTH_MU, state);
-    expect(isNearParabolic(elements)).toBe(true);
-    expect(() => propagateKepler(EARTH_MU, state, 86_400)).not.toThrow();
+  it("preserves orbital invariants across the near-parabolic propagator cases that once silently failed", () => {
+    // Research §4's propagator oracle failures must be distinguished from a
+    // Lambert failure by this module's own invariant checks.
+    for (const eccentricity of [0.995, 0.9968, 0.999, 0.99975]) {
+      const periapsisKm = 7_000;
+      const semiMajorAxisKm = periapsisKm / (1 - eccentricity);
+      const state = stateFromConicElements(EARTH_MU, { semiMajorAxisKm, semiLatusRectumKm: periapsisKm * (1 + eccentricity), eccentricity, inclinationRadians: 0, longitudeOfAscendingNodeRadians: 0, argumentOfPeriapsisRadians: 0, trueAnomalyRadians: 0 });
+      const initialElements = conicElements(EARTH_MU, state);
+      for (const elapsedSeconds of [1_000_000, 2_000_000, 10_000_000]) {
+        const propagated = propagateKepler(EARTH_MU, state, elapsedSeconds);
+        const result = conicElements(EARTH_MU, propagated);
+        expect(result.semiMajorAxisKm / initialElements.semiMajorAxisKm - 1).toBeCloseTo(0, 11);
+        expect(result.eccentricity - initialElements.eccentricity).toBeCloseTo(0, 13);
+        expect(result.semiLatusRectumKm / initialElements.semiLatusRectumKm - 1).toBeCloseTo(0, 11);
+      }
+    }
+  });
+
+  it("keeps near-parabolic labelling diagnostic-only", () => {
+    expect(isNearParabolic({ eccentricity: 0.999 })).toBe(true);
+    expect(isNearParabolic({ eccentricity: 0.9968 })).toBe(false);
+  });
+
+  it("round-trips retrograde equatorial eccentric states", () => {
+    const elements = { semiMajorAxisKm: 20_000, semiLatusRectumKm: 20_000 * (1 - 0.5 ** 2), eccentricity: 0.5, inclinationRadians: Math.PI, longitudeOfAscendingNodeRadians: 0, argumentOfPeriapsisRadians: 1, trueAnomalyRadians: 0.4 };
+    const initial = stateFromConicElements(EARTH_MU, elements);
+    const reconstructed = stateFromConicElements(EARTH_MU, conicElements(EARTH_MU, initial));
+    expect(difference(reconstructed.positionKm, initial.positionKm)).toBeLessThan(1e-8);
+    expect(difference(reconstructed.velocityKmPerSecond, initial.velocityKmPerSecond)).toBeLessThan(1e-11);
+  });
+
+  it("matches Vallado Example 2-4 after 2,400 seconds", () => {
+    const initial: KeplerState = { positionKm: { x: 1_131.340, y: -2_282.343, z: 6_672.423 }, velocityKmPerSecond: { x: -5.64305, y: 4.30333, z: 2.42879 } };
+    const propagated = propagateKepler(EARTH_MU, initial, 2_400);
+    expect(propagated.positionKm.x).toBeCloseTo(-4_219.7527, 4);
+    expect(propagated.positionKm.y).toBeCloseTo(4_363.0292, 4);
+    expect(propagated.positionKm.z).toBeCloseTo(-3_958.7666, 4);
+    expect(propagated.velocityKmPerSecond.x).toBeCloseTo(3.689866, 6);
+    expect(propagated.velocityKmPerSecond.y).toBeCloseTo(-1.916735, 6);
+    expect(propagated.velocityKmPerSecond.z).toBeCloseTo(-6.112511, 6);
   });
 });
