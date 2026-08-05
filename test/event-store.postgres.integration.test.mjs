@@ -69,6 +69,9 @@ const psqlClient = {
 };
 
 const deserializeRows = (sql, stdout) => {
+  const lines = stdout.trimEnd();
+  if (lines.length === 0 && !/\b(?:SELECT|RETURNING)\b/i.test(sql)) return [];
+
   let deserialize;
   if (sql.includes("RETURNING sequence") || sql.includes("FROM simulation_events")) {
     deserialize = (fields) => ({
@@ -98,7 +101,6 @@ const deserializeRows = (sql, stdout) => {
     throw new Error("psql test client cannot deserialize an unrecognized query shape.");
   }
 
-  const lines = stdout.trimEnd();
   if (lines.length === 0) return [];
   return lines.split("\n").map((line) => deserialize(line.split(FIELD_SEPARATOR)));
 };
