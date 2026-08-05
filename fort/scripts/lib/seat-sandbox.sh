@@ -78,7 +78,21 @@ build_mask() {
     *) echo "build_mask: unknown seat type '$seat' (expected codex|claude)" >&2; return 2 ;;
   esac
 
-  mask=(--bind / / --dev /dev --die-with-parent)
+  # FILESYSTEM SCOPING (cycle 5). Before this, the sandbox was "everything
+  # writable except what we masked", so a seat working in one fort could still
+  # rm -rf another project or wipe ~/Documents — threat #1, agent accident, and
+  # the reason a blanket bash allow was indefensible. Inverted here: $HOME goes
+  # read-only and write access is re-granted to exactly what a seat legitimately
+  # writes. Same inversion that beat the deny-glob spelling problem: enumerate
+  # the grants, never the prohibitions. Reads across $HOME stay open by decision
+  # (Overseer, 2026-08-04): cross-fort reads are worth more than the
+  # exfiltration-path reduction, since civ-digest and the Herald both need them.
+  local RW_PATHS=("$root" "$root-worktrees" "$HOME/.claude" "$TMPDIR" /tmp
+                  "$HOME/.npm" "$HOME/.nuget" "$HOME/.cache" "$HOME/.bun"
+                  "$HOME/.local/share/pnpm" "$HOME/.local/state")
+  mask=(--bind / / --dev /dev --die-with-parent --ro-bind "$HOME" "$HOME")
+  local w
+  for w in "${RW_PATHS[@]}"; do [ -n "$w" ] && [ -e "$w" ] && mask+=(--bind "$w" "$w"); done
   for f in "${MASK_FILES[@]}"; do [ -e "$f" ] && mask+=(--ro-bind /dev/null "$f"); done
   local d
   for d in "${MASK_DIRS[@]}"; do [ -d "$d" ] && mask+=(--tmpfs "$d"); done

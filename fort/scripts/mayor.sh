@@ -28,6 +28,15 @@ if [ "${MAYOR_NO_MASK:-0}" = "1" ]; then
   exec "${launch[@]}"
 fi
 require_bwrap || exit $?
+# PROMPT-FREE, BECAUSE THE KERNEL IS THE BOUNDARY (cycle 5, layer 3).
+# --dangerously-skip-permissions bypasses ALL permission checks including the
+# deny lists, so the mask is the only thing standing between this session and
+# the disk. That is exactly why it is passed AFTER require_bwrap succeeds and
+# never on the MAYOR_NO_MASK path above: no kernel boundary, no flag. With the
+# filesystem scoped (layer 1) what remains reachable is this repo, its
+# worktrees, ~/.claude, /tmp and the toolchain caches — all under git or
+# disposable. Unmasked sessions keep the full prompt-and-deny behaviour.
+launch+=(--dangerously-skip-permissions)
 build_mask claude "$REPO"
 mask_env claude
 export FORT_MASKED=1
