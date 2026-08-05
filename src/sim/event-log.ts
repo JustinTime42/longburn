@@ -11,8 +11,12 @@ export interface SimState {
 }
 
 /** Rebuild a segment from its append-only event log and its recorded RNG seed. */
-export const replaySegment = (seed: number, events: readonly SimEvent[]): SimState => {
-  const clock = SimClock.production(simTimeMs(0));
+export const replaySegment = (
+  seed: number,
+  events: readonly SimEvent[],
+  initialTime: SimTimeMs = simTimeMs(0)
+): SimState => {
+  const clock = SimClock.production(initialTime);
   const rng = new SeededRng(seed);
   const randomValues: number[] = [];
 
@@ -29,3 +33,12 @@ export const replaySegment = (seed: number, events: readonly SimEvent[]): SimSta
 
   return { time: clock.now, randomValues };
 };
+
+/** Replays an event-store stream from its persisted seed and append-only order. */
+export const replayPersistedSegment = (
+  stream: {
+    readonly seed: number;
+    readonly initialTime: SimTimeMs;
+    readonly events: readonly { readonly event: SimEvent }[];
+  }
+): SimState => replaySegment(stream.seed, stream.events.map(({ event }) => event), stream.initialTime);
