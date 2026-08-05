@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { conicElements, isNearParabolic, KEPLER_REFINEMENT_ITERATIONS, propagateKepler, stateFromConicElements, stumpffC2C3, type KeplerState } from "./kepler.js";
+import { conicElements, isNearParabolic, KEPLER_REFINEMENT_ITERATIONS, KEPLER_RESIDUAL_RELATIVE_TOLERANCE, KeplerPropagationConvergenceError, propagateKepler, stateFromConicElements, stumpffC2C3, type KeplerState } from "./kepler.js";
 
 const EARTH_MU = 398_600.4418;
 
 const magnitude = (value: { readonly x: number; readonly y: number; readonly z: number }): number => Math.sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
 const difference = (left: { readonly x: number; readonly y: number; readonly z: number }, right: { readonly x: number; readonly y: number; readonly z: number }) => magnitude({ x: left.x - right.x, y: left.y - right.y, z: left.z - right.z });
+const stateAtPeriapsis = (eccentricity: number): KeplerState => {
+  const periapsisKm = 7_000;
+  const semiMajorAxisKm = periapsisKm / (1 - eccentricity);
+  return stateFromConicElements(EARTH_MU, { semiMajorAxisKm, semiLatusRectumKm: periapsisKm * (1 + eccentricity), eccentricity, inclinationRadians: 0, longitudeOfAscendingNodeRadians: 0, argumentOfPeriapsisRadians: 0, trueAnomalyRadians: 0 });
+};
 
 describe("kepler core", () => {
   it("uses Stumpff series at the removable singularity", () => {
@@ -65,6 +70,23 @@ describe("kepler core", () => {
   it("keeps near-parabolic labelling diagnostic-only", () => {
     expect(isNearParabolic({ eccentricity: 0.999 })).toBe(true);
     expect(isNearParabolic({ eccentricity: 0.9968 })).toBe(false);
+  });
+
+  it("refuses a stagnated extreme-eccentricity propagation at the pinned residual tolerance", () => {
+    expect(KEPLER_RESIDUAL_RELATIVE_TOLERANCE).toBe(1e-11);
+    expect(() => propagateKepler(EARTH_MU, stateAtPeriapsis(0.99999), 100_000_000)).toThrow(KeplerPropagationConvergenceError);
+  });
+
+  it("accepts the adjacent extreme-eccentricity case when it remains on-orbit", () => {
+    const initial = stateAtPeriapsis(0.9999999);
+    const initialElements = conicElements(EARTH_MU, initial);
+    let propagated: KeplerState | undefined;
+    expect(() => {
+      propagated = propagateKepler(EARTH_MU, initial, 1_000_000_000);
+    }).not.toThrow();
+    if (propagated === undefined) throw new Error("Expected accepted propagation to produce a state.");
+    const result = conicElements(EARTH_MU, propagated);
+    expect(Math.abs(result.eccentricity - initialElements.eccentricity)).toBeLessThanOrEqual(1e-14);
   });
 
   it("round-trips retrograde equatorial eccentric states", () => {
