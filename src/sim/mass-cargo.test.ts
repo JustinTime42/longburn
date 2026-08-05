@@ -30,17 +30,24 @@ describe("mass and cargo", () => {
   });
 
   it("matches the research cargo table and makes payload failure typed", () => {
-    const  highStructure = { ...TIER0_SHIP, exhaustVelocityKmPerSecond: 100, structuralMassFraction: 0.15 };
-    const lowStructure = { ...highStructure, structuralMassFraction: 0.05 };
-    const viable = assessCargo(200, lowStructure);
-    const nonviable = assessCargo(200, highStructure);
-    const torchCargo = assessCargo(1_750, TIER0_SHIP);
-    expect(viable.kind).toBe("viable");
-    expect(viable.cargoFraction).toBeCloseTo(0.085335, 5);
-    expect(nonviable.kind).toBe("nonviable");
-    expect(nonviable.cargoFraction).toBeCloseTo(-0.014665, 5);
-    expect(torchCargo.kind).toBe("viable");
-    expect(torchCargo.cargoFraction).toBeCloseTo(0.023774, 5);
+    const rows = [
+      [100, 200, 0.085335, -0.014665],
+      [100, 600, -0.047521, -0.147521],
+      [300, 600, 0.085335, -0.014665],
+      [300, 1_750, -0.047072, -0.147072],
+      [1_000, 1_750, 0.123774, 0.023774],
+      [1_000, 600, 0.498812, 0.398812]
+    ] as const;
+    for (const [exhaustVelocityKmPerSecond, deltaVKmPerSecond, lowStructureCargo, highStructureCargo] of rows) {
+      const lowStructure = { ...TIER0_SHIP, exhaustVelocityKmPerSecond, structuralMassFraction: 0.05 };
+      const highStructure = { ...lowStructure, structuralMassFraction: 0.15 };
+      const lowStructureResult = assessCargo(deltaVKmPerSecond, lowStructure);
+      const highStructureResult = assessCargo(deltaVKmPerSecond, highStructure);
+      expect(lowStructureResult.cargoFraction).toBeCloseTo(lowStructureCargo, 5);
+      expect(highStructureResult.cargoFraction).toBeCloseTo(highStructureCargo, 5);
+      expect(lowStructureResult.kind).toBe(lowStructureCargo > 0 ? "viable" : "nonviable");
+      expect(highStructureResult.kind).toBe(highStructureCargo > 0 ? "viable" : "nonviable");
+    }
   });
 
   it("places the 15% structural viability wall at 1.90 exhaust velocities", () => {

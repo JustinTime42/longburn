@@ -125,7 +125,7 @@ export const viabilityWallDeltaV = (ship: ShipMassConfig): number => {
 export const assessCargo = (deltaVKmPerSecond: number, ship: ShipMassConfig = TIER0_SHIP): CargoAssessment => {
   validateShip(ship);
   const massRatio = massRatioForDeltaV(deltaVKmPerSecond, ship.exhaustVelocityKmPerSecond);
-  const cargoFraction = 1 / massRatio - ship.structuralMassFraction;
+  const cargoFraction = Math.exp(-deltaVKmPerSecond / ship.exhaustVelocityKmPerSecond) - ship.structuralMassFraction;
   const viabilityWallDeltaVKmPerSecond = viabilityWallDeltaV(ship);
 
   // The logarithmic wall is authoritative. Comparing against it prevents a
