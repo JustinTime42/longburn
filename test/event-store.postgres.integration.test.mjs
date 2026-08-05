@@ -1,6 +1,5 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -12,10 +11,29 @@ import { AuthoritativeSimLoop } from "../src/sim/loop.js";
 
 const databaseUrl = globalThis.process?.env.LONGBURN_TEST_DATABASE_URL;
 const integrationDescribe = databaseUrl === undefined || databaseUrl.length === 0 ? describe.skip : describe;
-const execFileAsync = promisify(execFile);
 // Sim events are structured numeric data, so this delimiter cannot occur in a
 // returned field while remaining valid for psql's one-byte separator option.
 const FIELD_SEPARATOR = "|";
+
+const runPsql = (arguments_, sql) => new Promise((resolve, reject) => {
+  const child = spawn("psql", arguments_, { stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.on("error", reject);
+  child.on("close", (exitCode) => {
+    if (exitCode === 0) {
+      resolve(stdout);
+      return;
+    }
+    reject(new Error(stderr.trim() || `psql exited with status ${exitCode}`));
+  });
+  child.stdin.end(sql);
+});
 
 /**
  * The production adapter deliberately has no mandated PostgreSQL package.
@@ -29,7 +47,7 @@ const psqlClient = {
     const variables = values.flatMap((value, index) => ["-v", `p${index + 1}=${String(value)}`]);
     let stdout;
     try {
-      ({ stdout } = await execFileAsync("psql", [
+      stdout = await runPsql([
         "--no-psqlrc",
         "--quiet",
         "--tuples-only",
@@ -38,11 +56,11 @@ const psqlClient = {
         "-v", "ON_ERROR_STOP=1",
         "--dbname", databaseUrl,
         ...variables,
-        "--command", parameterizedSql
-      ]));
+        "--file=-"
+      ], parameterizedSql);
     } catch (error) {
       // Do not expose a database URL (which may embed credentials) in test logs.
-      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr).trim() : "";
+      const stderr = error instanceof Error ? error.message.trim() : "";
       throw new Error(`psql query failed: ${stderr || "unknown error"}`);
     }
 
