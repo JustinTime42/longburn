@@ -30,4 +30,6 @@ fi
 require_bwrap || exit $?
 build_mask claude "$REPO"
 mask_env claude
+export FORT_MASKED=1
+mask+=(--setenv FORT_MASKED 1)
 exec bwrap "${mask[@]}" -- "${launch[@]}"
