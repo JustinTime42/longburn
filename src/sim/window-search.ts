@@ -50,7 +50,7 @@ export interface InvalidPorkchopCell {
   readonly departureUtDays: UtDaysSinceJ2000;
   readonly arrivalUtDays: UtDaysSinceJ2000;
   readonly timeOfFlightDays: number;
-  readonly reason: "near-180-degree-transfer" | "lambert-unavailable";
+  readonly reason: "near-180-degree-transfer" | "lambert-unavailable" | "non-finite-result";
 }
 
 export type PorkchopCell = ValidPorkchopCell | InvalidPorkchopCell;
@@ -112,6 +112,7 @@ export const searchEarthMarsPorkchop = (input: PorkchopSearchInput): PorkchopGri
   const minimumTimeOfFlightDays = input.minimumTimeOfFlightDays ?? NASA_MINIMUM_TIME_OF_FLIGHT_DAYS;
   const maximumTimeOfFlightDays = input.maximumTimeOfFlightDays ?? NASA_MAXIMUM_TIME_OF_FLIGHT_DAYS;
   const timeOfFlightStepDays = input.timeOfFlightStepDays ?? 1;
+  positiveFinite("Minimum time of flight", minimumTimeOfFlightDays);
   const departureSteps = integerSteps("Departure span", departureSpanDays, departureStepDays);
   if (maximumTimeOfFlightDays < minimumTimeOfFlightDays) throw new RangeError("Maximum time of flight must not precede minimum time of flight.");
   const timeOfFlightSteps = integerSteps("Time-of-flight span", maximumTimeOfFlightDays - minimumTimeOfFlightDays, timeOfFlightStepDays);
@@ -153,16 +154,26 @@ export const searchEarthMarsPorkchop = (input: PorkchopSearchInput): PorkchopGri
         const departureVInfinityKmPerSecond = differenceMagnitude(solution.departureVelocityKmPerSecond, earth.velocityKmPerSecond);
         // This intentionally uses Mars at arrival, not the departure epoch.
         const arrivalVInfinityKmPerSecond = differenceMagnitude(solution.arrivalVelocityKmPerSecond, mars.velocityKmPerSecond);
+        const c3Km2PerSecond2 = departureVInfinityKmPerSecond ** 2;
+        if (![c3Km2PerSecond2, arrivalVInfinityKmPerSecond].every(Number.isFinite)) {
+          cells.push({ ...base, kind: "invalid", reason: "non-finite-result" });
+          continue;
+        }
         const departureWellDeltaVKmPerSecond = parkingOrbitWellDeltaV(departureVInfinityKmPerSecond, EARTH_MU, EARTH_PARKING_RADIUS_KM);
         const arrivalWellDeltaVKmPerSecond = parkingOrbitWellDeltaV(arrivalVInfinityKmPerSecond, MARS_MU, MARS_PARKING_RADIUS_KM);
+        const totalDeltaVKmPerSecond = departureWellDeltaVKmPerSecond + arrivalWellDeltaVKmPerSecond;
+        if (![departureWellDeltaVKmPerSecond, arrivalWellDeltaVKmPerSecond, totalDeltaVKmPerSecond].every(Number.isFinite)) {
+          cells.push({ ...base, kind: "invalid", reason: "non-finite-result" });
+          continue;
+        }
         cells.push({
           ...base,
           kind: "valid",
-          c3Km2PerSecond2: departureVInfinityKmPerSecond ** 2,
+          c3Km2PerSecond2,
           arrivalVInfinityKmPerSecond,
           departureWellDeltaVKmPerSecond,
           arrivalWellDeltaVKmPerSecond,
-          totalDeltaVKmPerSecond: departureWellDeltaVKmPerSecond + arrivalWellDeltaVKmPerSecond
+          totalDeltaVKmPerSecond
         });
       } catch (error) {
         if (error instanceof LambertConvergenceError || error instanceof LambertGeometryError || error instanceof LambertNoFeasibleSolutionError) {
