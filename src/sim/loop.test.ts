@@ -26,9 +26,9 @@ describe("authoritative simulation loop", () => {
 
     const persisted = await loop.persistedStream();
     expect(persisted.events).toEqual([
-      expect.objectContaining({ sequence: 1, eventTime: 130, eventPosition: { x: 1, y: 2, z: 3 } }),
-      expect.objectContaining({ sequence: 2, eventTime: 130, eventPosition: { x: 4, y: 5, z: 6 } }),
-      expect.objectContaining({ sequence: 3, eventTime: 510, eventPosition: { x: 7, y: 8, z: 9 } })
+      expect.objectContaining({ streamSequence: 1, globalPosition: 1, eventTime: 130, eventPosition: { x: 1, y: 2, z: 3 } }),
+      expect.objectContaining({ streamSequence: 2, globalPosition: 2, eventTime: 130, eventPosition: { x: 4, y: 5, z: 6 } }),
+      expect.objectContaining({ streamSequence: 3, globalPosition: 3, eventTime: 510, eventPosition: { x: 7, y: 8, z: 9 } })
     ]);
     expect(replayPersistedSegment(persisted)).toEqual(loop.state);
     expect((await AuthoritativeSimLoop.resume(store, "golden")).state).toEqual(loop.state);

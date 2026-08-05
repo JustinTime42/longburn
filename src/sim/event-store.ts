@@ -15,7 +15,17 @@ export interface SimulationStream {
  * transport supplies its observer position at emission time.
  */
 export interface StoredSimEvent {
-  readonly sequence: number;
+  /**
+   * Per-stream logical ordering. It is contiguous and one-based for every
+   * stream, and is the only key suitable for replay, gap detection, and
+   * stream-local resume.
+   */
+  readonly streamSequence: number;
+  /**
+   * Globally monotone physical ordering for subscriptions. It is never a
+   * contiguity contract: PostgreSQL identities may contain gaps.
+   */
+  readonly globalPosition: number;
   readonly eventTime: SimTimeMs;
   readonly eventPosition: PositionMeters;
   readonly event: SimEvent;
@@ -25,10 +35,28 @@ export interface PersistedSimulationStream extends SimulationStream {
   readonly events: readonly StoredSimEvent[];
 }
 
+export interface AppendedSimEvent {
+  readonly kind: "appended";
+  readonly event: StoredSimEvent;
+}
+
+/** Optimistic-concurrency mismatch; callers may retry from `actualStreamSequence`. */
+export interface StreamSequenceConflict {
+  readonly kind: "conflict";
+  readonly expectedStreamSequence: number;
+  readonly actualStreamSequence: number;
+}
+
+export type AppendSimEventResult = AppendedSimEvent | StreamSequenceConflict;
+
 /** Narrow persistence boundary used by the authoritative simulation. */
 export interface SimulationEventStore {
   createStream(stream: SimulationStream): Promise<void>;
-  append(streamId: string, event: Omit<StoredSimEvent, "sequence">): Promise<StoredSimEvent>;
+  append(
+    streamId: string,
+    event: Omit<StoredSimEvent, "streamSequence" | "globalPosition">,
+    expectedStreamSequence?: number
+  ): Promise<AppendSimEventResult>;
   readStream(streamId: string): Promise<PersistedSimulationStream>;
 }
 
@@ -50,6 +78,7 @@ const cloneStream = (stream: PersistedSimulationStream): PersistedSimulationStre
 /** Deterministic reference implementation used by replay and property tests. */
 export class InMemorySimulationEventStore implements SimulationEventStore {
   readonly #streams = new Map<string, PersistedSimulationStream>();
+  #nextGlobalPosition = 1;
 
   async createStream(stream: SimulationStream): Promise<void> {
     if (this.#streams.has(stream.id)) {
@@ -58,15 +87,28 @@ export class InMemorySimulationEventStore implements SimulationEventStore {
     this.#streams.set(stream.id, { ...stream, events: [] });
   }
 
-  async append(streamId: string, event: Omit<StoredSimEvent, "sequence">): Promise<StoredSimEvent> {
+  async append(
+    streamId: string,
+    event: Omit<StoredSimEvent, "streamSequence" | "globalPosition">,
+    expectedStreamSequence?: number
+  ): Promise<AppendSimEventResult> {
     const stream = this.#streams.get(streamId);
     if (stream === undefined) {
       throw new Error(`Unknown simulation stream: ${streamId}`);
     }
 
-    const stored = cloneStoredEvent({ ...event, sequence: stream.events.length + 1 });
+    const actualStreamSequence = stream.events.length;
+    if (expectedStreamSequence !== undefined && expectedStreamSequence !== actualStreamSequence) {
+      return { kind: "conflict", expectedStreamSequence, actualStreamSequence };
+    }
+
+    const stored = cloneStoredEvent({
+      ...event,
+      streamSequence: actualStreamSequence + 1,
+      globalPosition: this.#nextGlobalPosition++
+    });
     this.#streams.set(streamId, { ...stream, events: [...stream.events, stored] });
-    return cloneStoredEvent(stored);
+    return { kind: "appended", event: cloneStoredEvent(stored) };
   }
 
   async readStream(streamId: string): Promise<PersistedSimulationStream> {
@@ -93,7 +135,9 @@ interface StreamRow extends Record<string, unknown> {
 }
 
 interface EventRow extends Record<string, unknown> {
-  readonly sequence: number;
+  readonly stream_sequence: number | null;
+  readonly global_position: number | null;
+  readonly actual_stream_sequence?: number | null;
   readonly event_time_ms: number;
   readonly event_position: PositionMeters;
   readonly event: SimEvent;
@@ -117,20 +161,51 @@ export class PostgresSimulationEventStore implements SimulationEventStore {
     );
   }
 
-  async append(streamId: string, event: Omit<StoredSimEvent, "sequence">): Promise<StoredSimEvent> {
+  async append(
+    streamId: string,
+    event: Omit<StoredSimEvent, "streamSequence" | "globalPosition">,
+    expectedStreamSequence?: number
+  ): Promise<AppendSimEventResult> {
     const result = await this.#client.query<EventRow>(
-      `INSERT INTO simulation_events (stream_id, event_time_ms, event_position, event)
-       VALUES ($1, $2, $3::jsonb, $4::jsonb)
-       RETURNING sequence::double precision AS sequence,
-                 event_time_ms::double precision AS event_time_ms,
-                 event_position, event`,
-      [streamId, event.eventTime, JSON.stringify(event.eventPosition), JSON.stringify(event.event)]
+      `WITH locked_stream AS (
+         SELECT stream_id FROM simulation_streams WHERE stream_id = $1 FOR UPDATE
+       ), next_sequence AS (
+         SELECT COALESCE(MAX(event.stream_sequence), 0) + 1 AS stream_sequence
+         FROM simulation_events AS event JOIN locked_stream USING (stream_id)
+       ), inserted AS (
+         INSERT INTO simulation_events (stream_id, stream_sequence, event_time_ms, event_position, event)
+         SELECT locked_stream.stream_id, next_sequence.stream_sequence, $2, $3::jsonb, $4::jsonb
+         FROM locked_stream CROSS JOIN next_sequence
+         WHERE NULLIF($5::text, '')::bigint IS NULL
+            OR NULLIF($5::text, '')::bigint = next_sequence.stream_sequence - 1
+         RETURNING stream_sequence::double precision AS stream_sequence,
+                   sequence::double precision AS global_position,
+                   event_time_ms::double precision AS event_time_ms, event_position, event
+       )
+       SELECT stream_sequence, global_position, NULL::double precision AS actual_stream_sequence,
+              event_time_ms, event_position, event FROM inserted
+       UNION ALL
+       SELECT NULL::double precision, NULL::double precision,
+              (stream_sequence - 1)::double precision, NULL::double precision, NULL::jsonb, NULL::jsonb
+       FROM next_sequence
+       WHERE NOT EXISTS (SELECT 1 FROM inserted)`,
+      [streamId, event.eventTime, JSON.stringify(event.eventPosition), JSON.stringify(event.event), expectedStreamSequence ?? null]
     );
     const row = result.rows[0];
     if (row === undefined) {
-      throw new Error("Postgres event insert returned no event.");
+      throw new Error(`Unknown simulation stream: ${streamId}`);
     }
-    return deserializeStoredEvent(row);
+    if (row.stream_sequence === null || row.global_position === null) {
+      if (expectedStreamSequence === undefined) {
+        throw new Error("Postgres event insert returned no event.");
+      }
+      return {
+        kind: "conflict",
+        expectedStreamSequence,
+        actualStreamSequence: validatedNonnegativeSequence(row.actual_stream_sequence ?? -1)
+      };
+    }
+    return { kind: "appended", event: deserializeStoredEvent(row) };
   }
 
   async readStream(streamId: string): Promise<PersistedSimulationStream> {
@@ -145,9 +220,10 @@ export class PostgresSimulationEventStore implements SimulationEventStore {
       throw new Error(`Unknown simulation stream: ${streamId}`);
     }
     const events = await this.#client.query<EventRow>(
-      `SELECT sequence::double precision AS sequence,
+      `SELECT stream_sequence::double precision AS stream_sequence,
+              sequence::double precision AS global_position,
               event_time_ms::double precision AS event_time_ms, event_position, event
-       FROM simulation_events WHERE stream_id = $1 ORDER BY sequence ASC`,
+       FROM simulation_events WHERE stream_id = $1 ORDER BY stream_sequence ASC`,
       [streamId]
     );
     return {
@@ -160,7 +236,8 @@ export class PostgresSimulationEventStore implements SimulationEventStore {
 }
 
 const deserializeStoredEvent = (row: EventRow): StoredSimEvent => ({
-  sequence: validatedSequence(row.sequence),
+  streamSequence: validatedSequence(row.stream_sequence ?? 0),
+  globalPosition: validatedSequence(row.global_position ?? 0),
   eventTime: simTimeMs(row.event_time_ms),
   eventPosition: clonePosition(row.event_position),
   event: cloneEvent(row.event)
@@ -169,6 +246,13 @@ const deserializeStoredEvent = (row: EventRow): StoredSimEvent => ({
 const validatedSequence = (sequence: number): number => {
   if (!Number.isSafeInteger(sequence) || sequence < 1) {
     throw new RangeError("Persisted event sequence must be a positive safe integer.");
+  }
+  return sequence;
+};
+
+const validatedNonnegativeSequence = (sequence: number): number => {
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    throw new RangeError("Persisted stream sequence must be a nonnegative safe integer.");
   }
   return sequence;
 };
