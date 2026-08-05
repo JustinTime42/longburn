@@ -28,7 +28,11 @@ CREATE TRIGGER simulation_streams_no_update
   BEFORE UPDATE ON simulation_streams FOR EACH ROW EXECUTE FUNCTION reject_simulation_event_mutation();
 CREATE TRIGGER simulation_streams_no_delete
   BEFORE DELETE ON simulation_streams FOR EACH ROW EXECUTE FUNCTION reject_simulation_event_mutation();
+CREATE TRIGGER simulation_streams_no_truncate
+  BEFORE TRUNCATE ON simulation_streams FOR EACH STATEMENT EXECUTE FUNCTION reject_simulation_event_mutation();
 CREATE TRIGGER simulation_events_no_update
   BEFORE UPDATE ON simulation_events FOR EACH ROW EXECUTE FUNCTION reject_simulation_event_mutation();
 CREATE TRIGGER simulation_events_no_delete
   BEFORE DELETE ON simulation_events FOR EACH ROW EXECUTE FUNCTION reject_simulation_event_mutation();
+CREATE TRIGGER simulation_events_no_truncate
+  BEFORE TRUNCATE ON simulation_events FOR EACH STATEMENT EXECUTE FUNCTION reject_simulation_event_mutation();

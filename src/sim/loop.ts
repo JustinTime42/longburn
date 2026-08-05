@@ -9,8 +9,6 @@ import {
 import { type SimEvent, type SimState } from "./event-log.js";
 import { SeededRng } from "./rng.js";
 
-const ORIGIN: PositionMeters = { x: 0, y: 0, z: 0 };
-
 export interface AuthoritativeSimLoopOptions {
   readonly stream: SimulationStream;
   readonly store: SimulationEventStore;
@@ -54,7 +52,7 @@ export class AuthoritativeSimLoop {
   }
 
   /** One host tick. The stored event is durable before it mutates local state. */
-  async advance(elapsedMs: number, eventPosition: PositionMeters = ORIGIN): Promise<SimTimeMs> {
+  async advance(elapsedMs: number, eventPosition: PositionMeters): Promise<SimTimeMs> {
     const event: SimEvent = { type: "clockAdvanced", elapsedMs };
     const eventTime = simTimeMs(this.#clock.now + elapsedMs);
     await this.#append({ event, eventTime, eventPosition });
@@ -63,7 +61,7 @@ export class AuthoritativeSimLoop {
   }
 
   /** Records each simulation RNG decision so replay never relies on host order. */
-  async requestRandom(upperExclusive: number, eventPosition: PositionMeters = ORIGIN): Promise<number> {
+  async requestRandom(upperExclusive: number, eventPosition: PositionMeters): Promise<number> {
     const event: SimEvent = { type: "randomValueRequested", upperExclusive };
     await this.#append({ event, eventTime: this.#clock.now, eventPosition });
     this.#apply(event);

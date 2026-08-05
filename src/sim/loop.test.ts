@@ -11,11 +11,13 @@ const actionArbitrary = fc.oneof(
   fc.record({ kind: fc.constant<"random">("random"), upperExclusive: fc.integer({ min: 1, max: 1_000_000 }) })
 );
 
+const eventPosition = { x: 0, y: 0, z: 0 };
+
 describe("authoritative simulation loop", () => {
   it("persists append-only provenance and resumes to the same state", async () => {
     const store = new InMemorySimulationEventStore();
     const loop = await AuthoritativeSimLoop.create({
-      store, stream: { id: "golden", seed: 0x1234_5678, initialTime: simTimeMs(0) }
+      store, stream: { id: "golden", seed: 0x1234_5678, initialTime: simTimeMs(10) }
     });
 
     await loop.advance(120, { x: 1, y: 2, z: 3 });
@@ -24,9 +26,9 @@ describe("authoritative simulation loop", () => {
 
     const persisted = await loop.persistedStream();
     expect(persisted.events).toEqual([
-      expect.objectContaining({ sequence: 1, eventTime: 120, eventPosition: { x: 1, y: 2, z: 3 } }),
-      expect.objectContaining({ sequence: 2, eventTime: 120, eventPosition: { x: 4, y: 5, z: 6 } }),
-      expect.objectContaining({ sequence: 3, eventTime: 500, eventPosition: { x: 7, y: 8, z: 9 } })
+      expect.objectContaining({ sequence: 1, eventTime: 130, eventPosition: { x: 1, y: 2, z: 3 } }),
+      expect.objectContaining({ sequence: 2, eventTime: 130, eventPosition: { x: 4, y: 5, z: 6 } }),
+      expect.objectContaining({ sequence: 3, eventTime: 510, eventPosition: { x: 7, y: 8, z: 9 } })
     ]);
     expect(replayPersistedSegment(persisted)).toEqual(loop.state);
     expect((await AuthoritativeSimLoop.resume(store, "golden")).state).toEqual(loop.state);
@@ -36,17 +38,18 @@ describe("authoritative simulation loop", () => {
     await fc.assert(
       fc.asyncProperty(
         fc.integer({ min: 0, max: 0xffff_ffff }),
+        fc.integer({ min: 1, max: 1_000_000 }),
         fc.array(actionArbitrary, { maxLength: 200 }),
-        async (seed, actions) => {
+        async (seed, initialTime, actions) => {
           const store = new InMemorySimulationEventStore();
           const loop = await AuthoritativeSimLoop.create({
-            store, stream: { id: "property", seed, initialTime: simTimeMs(0) }
+            store, stream: { id: "property", seed, initialTime: simTimeMs(initialTime) }
           });
           for (const action of actions) {
             if (action.kind === "advance") {
-              await loop.advance(action.elapsedMs);
+              await loop.advance(action.elapsedMs, eventPosition);
             } else {
-              await loop.requestRandom(action.upperExclusive);
+              await loop.requestRandom(action.upperExclusive, eventPosition);
             }
           }
           const persisted = await loop.persistedStream();

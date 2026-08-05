@@ -69,38 +69,38 @@ const psqlClient = {
 };
 
 const deserializeRows = (sql, stdout) => {
+  let deserialize;
+  if (sql.includes("RETURNING sequence") || sql.includes("FROM simulation_events")) {
+    deserialize = (fields) => ({
+      sequence: Number(fields[0]),
+      event_time_ms: Number(fields[1]),
+      event_position: JSON.parse(fields[2]),
+      event: JSON.parse(fields[3])
+    });
+  } else if (sql.includes("FROM simulation_streams")) {
+    deserialize = (fields) => ({
+      stream_id: fields[0],
+      seed: Number(fields[1]),
+      initial_time_ms: Number(fields[2])
+    });
+  } else if (sql.includes("AS streams_present")) {
+    deserialize = (fields) => ({
+      streams_present: fields[0] === "t",
+      events_present: fields[1] === "t",
+      streams_no_update_trigger_present: fields[2] === "t",
+      streams_no_delete_trigger_present: fields[3] === "t",
+      streams_no_truncate_trigger_present: fields[4] === "t",
+      events_no_update_trigger_present: fields[5] === "t",
+      events_no_delete_trigger_present: fields[6] === "t",
+      events_no_truncate_trigger_present: fields[7] === "t"
+    });
+  } else {
+    throw new Error("psql test client cannot deserialize an unrecognized query shape.");
+  }
+
   const lines = stdout.trimEnd();
   if (lines.length === 0) return [];
-
-  return lines.split("\n").map((line) => {
-    const fields = line.split(FIELD_SEPARATOR);
-    if (sql.includes("RETURNING sequence") || sql.includes("FROM simulation_events")) {
-      return {
-        sequence: Number(fields[0]),
-        event_time_ms: Number(fields[1]),
-        event_position: JSON.parse(fields[2]),
-        event: JSON.parse(fields[3])
-      };
-    }
-    if (sql.includes("FROM simulation_streams")) {
-      return {
-        stream_id: fields[0],
-        seed: Number(fields[1]),
-        initial_time_ms: Number(fields[2])
-      };
-    }
-    if (sql.includes("AS streams_present")) {
-      return {
-        streams_present: fields[0] === "t",
-        events_present: fields[1] === "t",
-        streams_no_update_trigger_present: fields[2] === "t",
-        streams_no_delete_trigger_present: fields[3] === "t",
-        events_no_update_trigger_present: fields[4] === "t",
-        events_no_delete_trigger_present: fields[5] === "t"
-      };
-    }
-    return {};
-  });
+  return lines.split("\n").map((line) => deserialize(line.split(FIELD_SEPARATOR)));
 };
 
 const actionArbitrary = fc.oneof(
@@ -118,16 +118,20 @@ integrationDescribe(
           to_regclass('public.simulation_events') IS NOT NULL AS events_present,
           EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_update' AND NOT tgisinternal) AS streams_no_update_trigger_present,
           EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_delete' AND NOT tgisinternal) AS streams_no_delete_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_truncate' AND NOT tgisinternal) AS streams_no_truncate_trigger_present,
           EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_update' AND NOT tgisinternal) AS events_no_update_trigger_present,
-          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_delete' AND NOT tgisinternal) AS events_no_delete_trigger_present
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_delete' AND NOT tgisinternal) AS events_no_delete_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_truncate' AND NOT tgisinternal) AS events_no_truncate_trigger_present
       `)).resolves.toEqual({
         rows: [{
           streams_present: true,
           events_present: true,
           streams_no_update_trigger_present: true,
           streams_no_delete_trigger_present: true,
+          streams_no_truncate_trigger_present: true,
           events_no_update_trigger_present: true,
-          events_no_delete_trigger_present: true
+          events_no_delete_trigger_present: true,
+          events_no_truncate_trigger_present: true
         }]
       });
     });
@@ -166,24 +170,26 @@ integrationDescribe(
       await expect(psqlClient.query(
         "DELETE FROM simulation_events WHERE stream_id = $1", [streamId]
       )).rejects.toThrow("append-only");
+      await expect(psqlClient.query("TRUNCATE simulation_events")).rejects.toThrow("append-only");
     });
 
     it("replays every persisted generated segment identically from its recorded seed", { timeout: 60_000 }, async () => {
       await fc.assert(
         fc.asyncProperty(
           fc.integer({ min: 0, max: 0xffff_ffff }),
+          fc.integer({ min: 1, max: 1_000_000 }),
           fc.array(actionArbitrary, { maxLength: 20 }),
-          async (seed, actions) => {
+          async (seed, initialTime, actions) => {
             const store = new PostgresSimulationEventStore(psqlClient);
             const streamId = `replay-${randomUUID()}`;
             const loop = await AuthoritativeSimLoop.create({
-              store, stream: { id: streamId, seed, initialTime: simTimeMs(0) }
+              store, stream: { id: streamId, seed, initialTime: simTimeMs(initialTime) }
             });
             for (const action of actions) {
               if (action.kind === "advance") {
-                await loop.advance(action.elapsedMs);
+                await loop.advance(action.elapsedMs, { x: 0, y: 0, z: 0 });
               } else {
-                await loop.requestRandom(action.upperExclusive);
+                await loop.requestRandom(action.upperExclusive, { x: 0, y: 0, z: 0 });
               }
             }
             const persisted = await loop.persistedStream();
