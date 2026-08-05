@@ -26,7 +26,7 @@ const FIELD_SEPARATOR = "|";
 const psqlClient = {
   async query(sql, values = []) {
     const parameterizedSql = sql.replace(/\$(\d+)/g, (_match, index) => `:'p${index}'`);
-    const variables = values.map((value, index) => `--set=p${index + 1}=${String(value)}`);
+    const variables = values.flatMap((value, index) => ["-v", `p${index + 1}=${String(value)}`]);
     let stdout;
     try {
       ({ stdout } = await execFileAsync("psql", [
@@ -35,7 +35,7 @@ const psqlClient = {
         "--tuples-only",
         "--no-align",
         `--field-separator=${FIELD_SEPARATOR}`,
-        "--set=ON_ERROR_STOP=1",
+        "-v", "ON_ERROR_STOP=1",
         "--dbname", databaseUrl,
         ...variables,
         "--command", parameterizedSql
@@ -71,6 +71,16 @@ const deserializeRows = (sql, stdout) => {
         initial_time_ms: Number(fields[2])
       };
     }
+    if (sql.includes("AS streams_present")) {
+      return {
+        streams_present: fields[0] === "t",
+        events_present: fields[1] === "t",
+        streams_no_update_trigger_present: fields[2] === "t",
+        streams_no_delete_trigger_present: fields[3] === "t",
+        events_no_update_trigger_present: fields[4] === "t",
+        events_no_delete_trigger_present: fields[5] === "t"
+      };
+    }
     return {};
   });
 };
@@ -84,7 +94,24 @@ integrationDescribe(
   "PostgresSimulationEventStore integration (requires LONGBURN_TEST_DATABASE_URL; intentionally skipped in the Forge sandbox)",
   () => {
     it("asserts the migration schema is present before exercising the adapter", async () => {
-      await expect(psqlClient.query("SELECT 1 FROM simulation_streams LIMIT 1")).resolves.toEqual({ rows: [{}] });
+      await expect(psqlClient.query(`
+        SELECT
+          to_regclass('public.simulation_streams') IS NOT NULL AS streams_present,
+          to_regclass('public.simulation_events') IS NOT NULL AS events_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_update' AND NOT tgisinternal) AS streams_no_update_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_delete' AND NOT tgisinternal) AS streams_no_delete_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_update' AND NOT tgisinternal) AS events_no_update_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_delete' AND NOT tgisinternal) AS events_no_delete_trigger_present
+      `)).resolves.toEqual({
+        rows: [{
+          streams_present: true,
+          events_present: true,
+          streams_no_update_trigger_present: true,
+          streams_no_delete_trigger_present: true,
+          events_no_update_trigger_present: true,
+          events_no_delete_trigger_present: true
+        }]
+      });
     });
 
     it("appends, reads back in sequence order, and surfaces append-only trigger errors", async () => {
