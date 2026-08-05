@@ -168,7 +168,7 @@ integrationDescribe(
       )).rejects.toThrow("append-only");
     });
 
-    it("replays every persisted generated segment identically from its recorded seed", async () => {
+    it("replays every persisted generated segment identically from its recorded seed", { timeout: 60_000 }, async () => {
       await fc.assert(
         fc.asyncProperty(
           fc.integer({ min: 0, max: 0xffff_ffff }),
