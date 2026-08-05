@@ -36,6 +36,14 @@ Horizons documents `VECTORS` as Cartesian state-vector output intended for dynam
 
 The contract tests must compare the adapter in the same origin, orientation, units, and physical instant against those fixtures. The test must establish and document absolute position and velocity error for each body. Acceptance is contingent on errors that remain comfortably below the corresponding patched-conic sphere-of-influence scale over the Tier 0 epoch; the exact thresholds must be proposed in the implementation bead with the observed Horizons deltas, rather than invented in this spike. At adapter initialization, pin and assert the deterministic Astronomy Engine delta-T function used by the provider, because `SetDeltaTFunction` is process-global. Determinism tests must compare byte-for-byte results across cold and warmed calls and deliberately varied call order/history, including interleaved queries. The adapter is limited to `HelioState` in EQJ; of-date rotation APIs are off-limits because their cache has a different call-history profile. A provider failure is a test failure, not a reason to relax the fixture.
 
+## Validation result
+
+`longburn-din.1` validated the adapter against unmodified JPL Horizons VECTORS fixtures spanning **2026-01-01 through 2027-04-26** (97 TDB epochs per body). This is the adapter's validated window, not a runtime refusal boundary; whether to refuse inputs outside it is deferred to `longburn-8fo`.
+
+Maximum absolute errors measured over that full fixture range were: Sun 0 km, Earth **1645.5 km**, Moon **1652.1 km** heliocentric, and Mars **4405.0 km**. The Moon's heliocentric figure carries Earth's heliocentric error, so it is not compared to the Moon's SOI. Its geocentric error, which is the relevant cislunar planning value, was **13.946 km** position and **5.19e-5 km/s** velocity, with a 15 km acceptance limit. The accepted heliocentric position thresholds are 0 / 1700 / 1700 / 4500 km (Sun/Earth/Moon/Mars); velocity thresholds are 0 / 0.0016 / 0.0016 / 0.001 km/s. The test mechanically requires the Earth and Mars heliocentric limits, plus the geocentric lunar limit, to be less than 2% of their named patched-conic SOI scales (Earth 924,000 km, Moon 66,000 km, Mars 577,000 km), preventing a threshold from being loosened beyond the decision's acceptance criterion.
+
+This result supersedes the spike's single-epoch Mars figure of 1,982 km and its derived 0.3%-of-SOI estimate. The full-range Mars result is approximately 0.76% of its stated SOI, still below both the enforced 2% criterion and Astronomy Engine's documented accuracy envelope.
+
 ## Alternatives rejected for Tier 0
 
 | Option | Result | Reason |
