@@ -3,8 +3,8 @@ import fc from "fast-check";
 
 import {
   assessCargo,
-  BURN_DURATION_QUANTUM_SECONDS,
-  DELTA_V_QUANTUM_KM_PER_SECOND,
+  burnDurationMs,
+  BURN_DURATION_QUANTUM_MILLISECONDS,
   deltaVForBurn,
   dequantizeBurnParameters,
   massRatioForDeltaV,
@@ -47,6 +47,10 @@ describe("mass and cargo", () => {
       expect(highStructureResult.cargoFraction).toBeCloseTo(highStructureCargo, 5);
       expect(lowStructureResult.kind).toBe(lowStructureCargo > 0 ? "viable" : "nonviable");
       expect(highStructureResult.kind).toBe(highStructureCargo > 0 ? "viable" : "nonviable");
+      if (lowStructureResult.kind === "viable") expect(lowStructureResult.cargoFraction).toBeGreaterThan(0);
+      else expect(lowStructureResult.cargoFraction).toBeLessThanOrEqual(0);
+      if (highStructureResult.kind === "viable") expect(highStructureResult.cargoFraction).toBeGreaterThan(0);
+      else expect(highStructureResult.cargoFraction).toBeLessThanOrEqual(0);
     }
   });
 
@@ -54,31 +58,36 @@ describe("mass and cargo", () => {
     const wall = viabilityWallDeltaV(TIER0_SHIP);
     expect(wall / TIER0_SHIP.exhaustVelocityKmPerSecond).toBeCloseTo(1.89712, 5);
     expect(assessCargo(wall, TIER0_SHIP).kind).toBe("nonviable");
-    expect(assessCargo(wall - DELTA_V_QUANTUM_KM_PER_SECOND, TIER0_SHIP).kind).toBe("viable");
+    expect(assessCargo(wall - 0.000_001, TIER0_SHIP).kind).toBe("viable");
   });
 });
 
 describe("burn commitment quantization", () => {
-  it("round-trips every fixed-point commitment identity", () => {
+  it("round-trips every duration commitment and derives a self-consistent delta-v and propellant triple", () => {
     fc.assert(fc.property(
       fc.record({
-        deltaVQuantum: fc.integer({ min: 0, max: 1_000_000_000 }),
-        burnDurationQuantum: fc.integer({ min: 0, max: 1_000_000_000 })
+        burnDurationMs: fc.integer({ min: 0, max: 1_000_000_000 }).map(burnDurationMs)
       }),
       (committed: QuantizedBurnParameters) => {
-        expect(quantizeBurnParameters(dequantizeBurnParameters(committed))).toEqual(committed);
+        const burn = dequantizeBurnParameters(committed);
+        const cargo = assessCargo(burn.deltaVKmPerSecond);
+        expect(quantizeBurnParameters(burn)).toEqual(committed);
+        expect(burn.deltaVKmPerSecond).toBe(deltaVForBurn(TIER0_SHIP.accelerationKmPerSecond2, burn.burnDurationSeconds));
+        expect(cargo.massRatio).toBe(massRatioForDeltaV(burn.deltaVKmPerSecond, TIER0_SHIP.exhaustVelocityKmPerSecond));
+        if (cargo.kind === "viable") expect(cargo.cargoFraction).toBeGreaterThan(0);
+        else expect(cargo.cargoFraction).toBeLessThanOrEqual(0);
       }
     ));
   });
 
-  it("uses documented fixed-point quanta", () => {
-    expect(quantizeBurnParameters({ deltaVKmPerSecond: 12.3456784, burnDurationSeconds: 98.7654 })).toEqual({
-      deltaVQuantum: 12_345_678,
-      burnDurationQuantum: 98_765
+  it("uses the documented one-millisecond burn-duration quantum", () => {
+    expect(BURN_DURATION_QUANTUM_MILLISECONDS).toBe(1);
+    expect(quantizeBurnParameters({ burnDurationSeconds: 98.7654 })).toEqual({
+      burnDurationMs: burnDurationMs(98_765)
     });
-    expect(dequantizeBurnParameters({ deltaVQuantum: 1, burnDurationQuantum: 1 })).toEqual({
-      deltaVKmPerSecond: DELTA_V_QUANTUM_KM_PER_SECOND,
-      burnDurationSeconds: BURN_DURATION_QUANTUM_SECONDS
+    expect(dequantizeBurnParameters({ burnDurationMs: burnDurationMs(1) })).toEqual({
+      deltaVKmPerSecond: deltaVForBurn(TIER0_SHIP.accelerationKmPerSecond2, 0.001),
+      burnDurationSeconds: 0.001
     });
   });
 });
