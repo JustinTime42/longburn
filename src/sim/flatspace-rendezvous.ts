@@ -44,7 +44,8 @@ export interface FlatspaceRendezvousInfeasible {
 /** The deterministic planner could not validate a result; this is not physics. */
 export interface FlatspaceRendezvousIndeterminate {
   readonly kind: "indeterminate";
-  readonly reason: "unconverged";
+  /** The fixed solver did not converge, or a derived kappa violated its bound. */
+  readonly reason: "unconverged" | "kappa-below-one";
   readonly coastDurationSeconds: number;
 }
 

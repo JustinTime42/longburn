@@ -29,11 +29,26 @@ describe("torch-to-Hohmann continuum", () => {
   it("takes kappa to one for impulsive acceleration and long coast", () => {
     const impulsive = flatspaceKappa(stationaryRequest(1e12));
     expect(impulsive.kind).toBe("feasible");
-    if (impulsive.kind === "feasible") expect(impulsive.kappa).toBeCloseTo(1, 10);
+    if (impulsive.kind === "feasible") {
+      // The measured unrounded value is 1 - 2^-52 on this fixture; the public
+      // lower-bound invariant deliberately clamps that benign roundoff.
+      expect(impulsive.kappa).toBe(1);
+      expect(impulsive.impulsive.firstBurnDurationSeconds).toBeGreaterThan(0);
+      expect(impulsive.impulsive.firstBurnDurationSeconds).toBeLessThan(1e-10);
+    }
 
     const longCoast = flatspaceKappa(stationaryRequest(1, 10_000_000));
     expect(longCoast.kind).toBe("feasible");
     if (longCoast.kind === "feasible") expect(longCoast.kappa).toBeCloseTo(1, 4);
+  });
+
+  it("does not construct an overflowing limit solve at the maximum valid acceleration", () => {
+    const result = flatspaceKappa(stationaryRequest(Number.MAX_VALUE));
+    expect(result.kind).toBe("feasible");
+    if (result.kind === "feasible") {
+      expect(result.kappa).toBe(1);
+      expect(result.impulsive).toBe(result.actual);
+    }
   });
 
   it("quotes Lambert times kappa at low, transition, and high eta", () => {
