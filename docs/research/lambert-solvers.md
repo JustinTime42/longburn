@@ -94,6 +94,9 @@ prograde, high path:   v1 = [ 2.000652697,  0.387688615, -2.666947760]
 retrograde, high path: v1 = [ 2.96616042,  -1.27577231,  -0.75545632]
                        v2 = [ 5.84375455,  -0.20047673,  -5.48615883]
 ```
+(v2.x corrected 2026-08-05: the original report transcribed 5.8437455, dropping a digit; the Forge's
+correction was independently verified by the harness against `reference/izzo-reference.py`, which
+gives 5.843754546793976 — record on longburn-din.3.2.)
 
 **Case 6 — multi-revolution (M=1), same geometry as case 5.** No published multi-rev case with exact numbers was found anywhere, so the agent generated these and verified them independently: computed the orbital elements of the returned arc and integrated Kepler's equation analytically, including the M complete revolutions, to confirm the time of flight. **Relative TOF residual 4.0e-16 and 2.0e-16** — trustworthy to full double precision; the numbers to hard-code.
 ```

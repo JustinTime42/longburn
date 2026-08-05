@@ -37,8 +37,12 @@ Regime parameter: `eta = g_sun(r)·T²/(2·D_chord)`. Torch threshold for ships:
 fiction). Regime selection is per-leg, never per-ship.
 
 Out of Tier-0 scope, fenced (SO 13): microthrust spirals / Edelbaum (needed only when a < local g;
-future well-operations tier), multi-revolution Lambert (Type III/IV), interception exposure and
-return windows, aerocapture, launch azimuth/RAAN.
+future well-operations tier), multi-revolution *planning* (Type III/IV transfers offered to the
+player; the porkchop stays one prograde zero-rev solve per cell per §4), interception exposure and
+return windows, aerocapture, launch azimuth/RAAN. NOTE (Warden din.3.2 finding 9): solver-level
+multi-rev CAPABILITY is in scope — §6 tier 1 and §7.B require multi-rev validation fixtures — and
+must not be stripped citing this fence; the fence is on what the planner offers, not what the
+solver can compute.
 
 ## 2. Delta-v bookkeeping rulings
 
