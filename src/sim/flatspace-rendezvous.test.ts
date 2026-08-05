@@ -404,4 +404,38 @@ describe("flat-space rendezvous", () => {
     });
     expect(result).toEqual({ kind: "indeterminate", reason: "unconverged" });
   });
+
+  it("refuses when an early indeterminate bracket probe is followed by a feasible upper", () => {
+    const acceleration = 88.98762777559128;
+    const fixtureDuration = 0.6168145210703871;
+    const fixturePosition = { x: 25.02285638038001, y: 12.714294976663657, z: 8.984542438499505 };
+    const fixtureVelocity = { x: 49.085762342555746, y: 19.758563038800165, z: 10.985468596018494 };
+    const probedDurations: number[] = [];
+    const result = findMinimumFlatspaceRendezvousTime({
+      accelerationMetersPerSecondSquared: acceleration,
+      chordDistanceMeters: acceleration * fixtureDuration ** 2 / 4,
+      requestAtDuration: (durationSeconds) => {
+        probedDurations.push(durationSeconds);
+        return durationSeconds === fixtureDuration
+          ? {
+              accelerationMetersPerSecondSquared: acceleration,
+              durationSeconds,
+              departurePositionMeters: { x: 0, y: 0, z: 0 },
+              departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+              arrivalPositionMeters: fixturePosition,
+              arrivalVelocityMetersPerSecond: fixtureVelocity
+            }
+          : {
+              accelerationMetersPerSecondSquared: acceleration,
+              durationSeconds,
+              departurePositionMeters: { x: 0, y: 0, z: 0 },
+              departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+              arrivalPositionMeters: { x: 1, y: 0, z: 0 },
+              arrivalVelocityMetersPerSecond: { x: 0, y: 0, z: 0 }
+            };
+      }
+    });
+    expect(probedDurations).toEqual([fixtureDuration, 2 * fixtureDuration]);
+    expect(result).toEqual({ kind: "indeterminate", reason: "unconverged" });
+  });
 });
