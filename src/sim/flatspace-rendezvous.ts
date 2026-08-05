@@ -490,6 +490,11 @@ export const findMinimumFlatspaceRendezvousTime = (search: MinimumTimeSearch): M
     upperResult = solveFlatspaceRendezvous(search.requestAtDuration(upper));
     sawIndeterminate ||= upperResult.kind === "indeterminate";
   }
+  // Policy: a failed doubling probe taints the bracket even if a later probe
+  // is feasible. A minimum-time answer would otherwise rest partly on an
+  // unvalidated solver result, so this planner refuses conservatively before
+  // an irreversible commitment. Bisection deliberately differs: it retains
+  // its validated upper plan and reports failures via indeterminateProbeCount.
   if (sawIndeterminate) return { kind: "indeterminate", reason: "unconverged" };
   if (upperResult.kind !== "feasible") return { kind: "no-feasible-duration" };
 
