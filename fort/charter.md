@@ -37,6 +37,14 @@ Controls in this fort are justified against these threats, in priority order. A 
 
 **Explicitly out of scope: a motivated human adversary who already has shell access on this machine.** Such an actor has no need to defeat a deny glob; they can read the file directly. Controls are not designed against them, findings that require them are documented rather than blocked on, and effort spent hardening against them is effort not spent on 1-4.
 
+## Prose gates (weaker than capability boundaries, and recorded as such)
+
+Amended 2026-08-04 by the Overseer (cycle 6). **Push and deploy are permitted to the Mayor seat, gated by prose: the Mayor asks Justin before running either, every time, and reports what it intends to push or deploy.** This is deliberately weaker than the capability boundaries elsewhere in this charter. A prose gate is one a model chooses to honour; it is not one it cannot cross. It is accepted here because everything this fort touches today is development or staging, there are no live customers behind a push, and routing every push through a human terminal cost more than the risk it removed (the Mayor could not even verify push state, so standing order 11 was being satisfied by estimate rather than observation).
+
+Scope, and the reason for it: **Mayor only.** The Forge keeps its mechanical blocks, because it runs unattended and therefore cannot ask permission — a prose gate on an autonomous seat guards nothing. The Warden is unchanged: read-only by construction, and it never pushes.
+
+If this fort ever touches production or live customer data, this gate returns to a capability boundary. That reversal is a decision for the Overseer, and this paragraph is the record that it was traded away knowingly.
+
 ## Standing orders
 
 Inherited from Proofdelve (generic, scar-tested):

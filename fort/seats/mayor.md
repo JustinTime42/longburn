@@ -7,6 +7,8 @@
 **Role:** Design, triage, and decomposition. The seat Justin talks to. Turns intent into bead trees for approval, maintains specs (founding spec: `docs/specs/longburn-gdd-v0.1.md`), answers "where does this stand."
 
 **Occupant:** Claude Code. Ladder: Opus 5 → Fable 5 (hard architecture, within Max allowance) → GPT-5.6 Sol.
+**Push and deploy (cycle 6):** permitted, and gated by prose rather than by the sandbox — ask Justin before every push or deploy, state what and why, and never do either on your own initiative. Charter section "Prose gates" records why this is weaker than the fort's other gates.
+
 **Writes:** specs, beads, docs, fort files. **Never product code.**
 **Session start:** read `fort/charter.md`, `fort/remember.md`, latest `fort/handoffs/mayor-*.md`, then `bd ready` and `bd list --status open`.
 **Session end (consensual handoff):** finish the current thought, then write `fort/handoffs/mayor-<date>.md` per the schema below. Take a beat, then hand off.

@@ -35,9 +35,11 @@ build_mask() {
   # Secret files, by the BOTH-LISTS rule: anything added to a policy deny list
   # belongs here too. Globbed so a fort acquiring a new .env* is covered on
   # arrival rather than after the incident.
-  local f
-  for f in "$root"/.env* "$root"/*/.env*; do
-    [ -e "$f" ] && MASK_FILES+=("$f")
+  local f x
+  for x in "$root" "${extra_ro[@]}"; do
+    for f in "$x"/.env* "$x"/*/.env*; do
+      [ -e "$f" ] && MASK_FILES+=("$f")
+    done
   done
 
   local MASK_DIRS=("$HOME/.ssh" "$HOME/.aws" "$HOME/.config/gh" "$HOME/.docker" "$HOME/.config/git")
@@ -87,22 +89,22 @@ build_mask() {
   # the grants, never the prohibitions. Reads across $HOME stay open by decision
   # (Overseer, 2026-08-04): cross-fort reads are worth more than the
   # exfiltration-path reduction, since civ-digest and the Herald both need them.
-  local RW_PATHS=("$root" "$root-worktrees" "$HOME/.claude" "$TMPDIR" /tmp
+  local RW_PATHS=("$root" "$root-worktrees" "$HOME/.claude" "${TMPDIR:-}" /tmp
                   "$HOME/.npm" "$HOME/.nuget" "$HOME/.cache" "$HOME/.bun"
                   "$HOME/.local/share/pnpm" "$HOME/.local/state")
   mask=(--bind / / --dev /dev --die-with-parent --ro-bind "$HOME" "$HOME")
   local w
   for w in "${RW_PATHS[@]}"; do [ -n "$w" ] && [ -e "$w" ] && mask+=(--bind "$w" "$w"); done
-  for f in "${MASK_FILES[@]}"; do [ -e "$f" ] && mask+=(--ro-bind /dev/null "$f"); done
-  local d
-  for d in "${MASK_DIRS[@]}"; do [ -d "$d" ] && mask+=(--tmpfs "$d"); done
+  # ORDERING INVARIANT (ForgeOs-01l): bwrap mounts stack, so any bind placed
+  # after a mask mounts the real content back OVER it. The warden passes the
+  # whole candidate tree as extra_ro; when that bind followed the file masks it
+  # resurfaced every masked secret beneath it (measured: host run
+  # 2026-08-04T202453, mask-spelling:warden 4/4 FAIL). Subtree binds — ro
+  # paths, extra_ro, hooks dirs — therefore go HERE, and the per-file dev-null
+  # masks and per-dir tmpfs masks go LAST. Sole exception: the auth.json
+  # re-bind, whose purpose is to surface one file back over the ~/.codex tmpfs.
   local p
   for p in "${RO_PATHS[@]}" "${extra_ro[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
-
-  if [ "${CODEX_AUTH_RO:-0}" = "1" ] && [ -e "$HOME/.codex/auth.json" ]; then
-    mask+=(--ro-bind "$HOME/.codex/auth.json" "$HOME/.codex/auth.json")
-  fi
-
   # Git hooks under .beads run on the HOST, unsandboxed, on the next commit or
   # push in the main checkout — a writable .beads is a host RCE escape. CLASS
   # fix, not one path: there are at least two such directories (.beads/hooks and
@@ -111,6 +113,13 @@ build_mask() {
   local h
   while IFS= read -r h; do mask+=(--ro-bind "$h" "$h"); done \
     < <(find "$root/.beads" -type d -name hooks 2>/dev/null)
+  for f in "${MASK_FILES[@]}"; do [ -e "$f" ] && mask+=(--ro-bind /dev/null "$f"); done
+  local d
+  for d in "${MASK_DIRS[@]}"; do [ -d "$d" ] && mask+=(--tmpfs "$d"); done
+
+  if [ "${CODEX_AUTH_RO:-0}" = "1" ] && [ -e "$HOME/.codex/auth.json" ]; then
+    mask+=(--ro-bind "$HOME/.codex/auth.json" "$HOME/.codex/auth.json")
+  fi
 }
 
 # Environment is an ALLOW-LIST, not a deny-list: enumerated unsets leave AWS_*,
@@ -133,6 +142,9 @@ mask_env() {
     codex)  for v in "${codex_only[@]}";  do [ -n "${!v:-}" ] && mask+=(--setenv "$v" "${!v}"); done ;;
     claude) for v in "${claude_only[@]}"; do [ -n "${!v:-}" ] && mask+=(--setenv "$v" "${!v}"); done ;;
   esac
+  # An empty final [ -n ] test must not become mask_env's return value: under a
+  # set -e caller that aborts the launcher before the session starts (ForgeOs-vzn).
+  return 0
 }
 
 require_bwrap() {
