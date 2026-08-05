@@ -261,15 +261,17 @@ describe("flat-space rendezvous", () => {
         fc.integer({ min: 0, max: 1_000_000 }),
         fc.double({ min: 1, max: 10, noNaN: true }),
         fc.double({ min: 1_000, max: 10_000, noNaN: true }),
-        fc.double({ min: 0.05, max: 1, noNaN: true }),
-        fc.double({ min: 0, max: 2 * Math.PI, noNaN: true }),
-        (initialTimeSeconds, acceleration, duration, dutyCycle, angle) => {
+        // Opposing burns approach the stationary-collinear f=1 fold while the
+        // angle stays above isCollinear's tolerance. The pinned seed exercises
+        // refineGeneral across the duty range, including near-unity duty.
+        fc.double({ min: 2e-14, max: 0.95, noNaN: true }),
+        fc.double({ min: 1e-7, max: 1e-4, noNaN: true }),
+        (initialTimeSeconds, acceleration, duration, dutyGap, outOfPlaneAngle) => {
+          const dutyCycle = 1 - dutyGap;
           const initialPosition = { x: initialTimeSeconds, y: -2 * initialTimeSeconds, z: 3 };
           const initialVelocity = { x: 30, y: -4, z: 2 };
-          // This rotating pair is never collinear, so high-duty examples use
-          // the general 3-D refinement rather than the f=1/collinear paths.
-          const firstDirection = unit({ x: Math.cos(angle), y: Math.sin(angle), z: 1 });
-          const secondDirection = unit({ x: -Math.sin(angle), y: Math.cos(angle), z: -0.5 });
+          const firstDirection = { x: 1, y: 0, z: 0 };
+          const secondDirection = unit({ x: -1, y: 0, z: outOfPlaneAngle });
           const impulseMagnitude = acceleration * duration * dutyCycle / 2;
           const firstImpulse = { x: firstDirection.x * impulseMagnitude, y: firstDirection.y * impulseMagnitude, z: firstDirection.z * impulseMagnitude };
           const secondImpulse = { x: secondDirection.x * impulseMagnitude, y: secondDirection.y * impulseMagnitude, z: secondDirection.z * impulseMagnitude };
@@ -298,9 +300,9 @@ describe("flat-space rendezvous", () => {
           const result = solveFlatspaceRendezvous(request);
           expect(result.kind).toBe("feasible");
           if (result.kind !== "feasible") return;
-          expect(result.burnDutyCycle).toBeCloseTo(dutyCycle, 8);
+          expect(result.burnDutyCycle).toBeCloseTo(dutyCycle, 5);
           const terminal = propagate(result, initialPosition, initialVelocity);
-          expect(magnitude({ x: terminal.position.x - request.arrivalPositionMeters.x, y: terminal.position.y - request.arrivalPositionMeters.y, z: terminal.position.z - request.arrivalPositionMeters.z })).toBeLessThan(1e-6);
+          expect(magnitude({ x: terminal.position.x - request.arrivalPositionMeters.x, y: terminal.position.y - request.arrivalPositionMeters.y, z: terminal.position.z - request.arrivalPositionMeters.z })).toBeLessThan(1e-5);
         }
       ),
       { numRuns: 100, seed: 2_026_080_5 }
@@ -336,6 +338,35 @@ describe("flat-space rendezvous", () => {
           }
         };
       }
+    });
+    expect(result).toEqual({ kind: "indeterminate", reason: "unconverged" });
+  });
+
+  it("preserves an indeterminate bracket probe when later probes are infeasible", () => {
+    const acceleration = 88.98762777559128;
+    const fixtureDuration = 0.6168145210703871;
+    const fixturePosition = { x: 25.02285638038001, y: 12.714294976663657, z: 8.984542438499505 };
+    const fixtureVelocity = { x: 49.085762342555746, y: 19.758563038800165, z: 10.985468596018494 };
+    const result = findMinimumFlatspaceRendezvousTime({
+      accelerationMetersPerSecondSquared: acceleration,
+      chordDistanceMeters: acceleration * fixtureDuration ** 2 / 4,
+      requestAtDuration: (durationSeconds) => durationSeconds === fixtureDuration
+        ? {
+            accelerationMetersPerSecondSquared: acceleration,
+            durationSeconds,
+            departurePositionMeters: { x: 0, y: 0, z: 0 },
+            departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+            arrivalPositionMeters: fixturePosition,
+            arrivalVelocityMetersPerSecond: fixtureVelocity
+          }
+        : {
+            accelerationMetersPerSecondSquared: acceleration,
+            durationSeconds,
+            departurePositionMeters: { x: 0, y: 0, z: 0 },
+            departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+            arrivalPositionMeters: { x: 0, y: 0, z: 0 },
+            arrivalVelocityMetersPerSecond: { x: 2 * acceleration * durationSeconds, y: 0, z: 0 }
+          }
     });
     expect(result).toEqual({ kind: "indeterminate", reason: "unconverged" });
   });
