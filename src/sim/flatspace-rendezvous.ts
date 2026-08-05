@@ -482,6 +482,7 @@ export const findMinimumFlatspaceRendezvousTime = (search: MinimumTimeSearch): M
     upper *= 2;
     upperResult = solveFlatspaceRendezvous(search.requestAtDuration(upper));
   }
+  if (upperResult.kind === "indeterminate") return { kind: "indeterminate", reason: "unconverged" };
   if (upperResult.kind !== "feasible") return { kind: "no-feasible-duration" };
 
   for (let iteration = 0; iteration < BISECTION_ITERATIONS; iteration += 1) {
