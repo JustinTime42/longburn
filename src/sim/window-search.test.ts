@@ -98,6 +98,24 @@ describe("Earth-to-Mars porkchop window search", () => {
     expect(singular).toMatchObject({ kind: "invalid", reason: "near-180-degree-transfer" });
   });
 
+  it("rejects non-finite results as typed invalid cells and validates minimum time of flight", () => {
+    const nonFiniteVelocityStates = (): Readonly<{ earth: HeliocentricState; mars: HeliocentricState }> => ({
+      earth: { positionKm: { x: 149_597_870.7, y: 0, z: 0 }, velocityKmPerSecond: { x: Number.NaN, y: 29.78, z: 0 } },
+      mars: { positionKm: { x: 0, y: 227_939_200, z: 0 }, velocityKmPerSecond: { x: -24.13, y: 0, z: 0 } }
+    });
+    const baseInput = {
+      departureStartUtDays: utcDay(2026, 1, 1), departureSpanDays: 0, departureStepDays: 1,
+      minimumTimeOfFlightDays: 100, maximumTimeOfFlightDays: 100, timeOfFlightStepDays: 1
+    } as const;
+    const [cell] = searchEarthMarsPorkchop({ ...baseInput, statesAt: nonFiniteVelocityStates }).cells;
+    expect(cell).toMatchObject({ kind: "invalid", reason: "non-finite-result" });
+    if (cell === undefined) throw new Error("Expected a porkchop cell.");
+    expect(rankPorkchopCells([cell])).toEqual([]);
+    for (const minimumTimeOfFlightDays of [0, -1]) {
+      expect(() => searchEarthMarsPorkchop({ ...baseInput, minimumTimeOfFlightDays })).toThrow("Minimum time of flight must be a positive finite number.");
+    }
+  });
+
   it("computes a 64k-cell grid with cached ephemeris states and departure-major dimensions", () => {
     const grid = searchEarthMarsPorkchop({
       departureStartUtDays: utcDay(2026, 8, 1), departureSpanDays: 159.375, departureStepDays: 0.625,
