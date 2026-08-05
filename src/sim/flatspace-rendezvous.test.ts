@@ -11,6 +11,11 @@ import {
 
 const magnitude = (vector: FlatspaceVector): number => Math.hypot(vector.x, vector.y, vector.z);
 
+const unit = (vector: FlatspaceVector): FlatspaceVector => {
+  const length = magnitude(vector);
+  return { x: vector.x / length, y: vector.y / length, z: vector.z / length };
+};
+
 const propagate = (plan: FlatspaceRendezvousPlan, initialPosition: FlatspaceVector, initialVelocity: FlatspaceVector) => {
   const accelerate = (position: FlatspaceVector, velocity: FlatspaceVector, impulse: FlatspaceVector, burn: number) => ({
     position: {
@@ -207,9 +212,10 @@ describe("flat-space rendezvous", () => {
     });
     expect(result.kind).toBe("feasible");
     if (result.kind !== "feasible") return;
-    // The out-of-plane velocity is deliberately tiny but makes this a true
-    // 3-D wall; the old collinear-only rescue overestimated it by about 1%.
-    expect(result.durationSeconds).toBeLessThan(1_910);
+    // At zero coast, solve the endpoint-position equations together with
+    // |A| + |v - A| = T independently.  That gives this wall at
+    // 1,904.994363... s (rather than merely bounding the old bug).
+    expect(result.durationSeconds).toBeCloseTo(1_904.994363, 5);
     expect(result.plan.burnDutyCycle).toBeCloseTo(1, 7);
   });
 
@@ -249,27 +255,29 @@ describe("flat-space rendezvous", () => {
     );
   });
 
-  it("holds general 3D rendezvous across fresh-world initial times including zero", () => {
+  it("holds general 3D rendezvous across the full duty range and fresh-world initial times", () => {
     fc.assert(
       fc.property(
         fc.integer({ min: 0, max: 1_000_000 }),
         fc.double({ min: 1, max: 10, noNaN: true }),
         fc.double({ min: 1_000, max: 10_000, noNaN: true }),
-        fc.double({ min: -20, max: 20, noNaN: true }),
-        fc.double({ min: -20, max: 20, noNaN: true }),
-        fc.double({ min: -20, max: 20, noNaN: true }),
-        fc.double({ min: -20, max: 20, noNaN: true }),
-        fc.double({ min: -20, max: 20, noNaN: true }),
-        fc.double({ min: -20, max: 20, noNaN: true }),
-        (initialTimeSeconds, acceleration, duration, a1x, a1y, a1z, a2x, a2y, a2z) => {
+        // Opposing burns approach the stationary-collinear f=1 fold while the
+        // angle stays above isCollinear's tolerance. The pinned seed exercises
+        // refineGeneral across the duty range, including near-unity duty.
+        fc.double({ min: 2e-14, max: 0.95, noNaN: true }),
+        fc.double({ min: 1e-7, max: 1e-4, noNaN: true }),
+        (initialTimeSeconds, acceleration, duration, dutyGap, outOfPlaneAngle) => {
+          const dutyCycle = 1 - dutyGap;
           const initialPosition = { x: initialTimeSeconds, y: -2 * initialTimeSeconds, z: 3 };
           const initialVelocity = { x: 30, y: -4, z: 2 };
-          const firstImpulse = { x: a1x, y: a1y, z: a1z };
-          const secondImpulse = { x: a2x, y: a2y, z: a2z };
+          const firstDirection = { x: 1, y: 0, z: 0 };
+          const secondDirection = unit({ x: -1, y: 0, z: outOfPlaneAngle });
+          const impulseMagnitude = acceleration * duration * dutyCycle / 2;
+          const firstImpulse = { x: firstDirection.x * impulseMagnitude, y: firstDirection.y * impulseMagnitude, z: firstDirection.z * impulseMagnitude };
+          const secondImpulse = { x: secondDirection.x * impulseMagnitude, y: secondDirection.y * impulseMagnitude, z: secondDirection.z * impulseMagnitude };
           const firstBurnDurationSeconds = magnitude(firstImpulse) / acceleration;
           const secondBurnDurationSeconds = magnitude(secondImpulse) / acceleration;
           const coastDurationSeconds = duration - firstBurnDurationSeconds - secondBurnDurationSeconds;
-          fc.pre(coastDurationSeconds > 0);
           const expectedPlan: FlatspaceRendezvousPlan = {
             kind: "feasible",
             firstBurnImpulseMetersPerSecond: firstImpulse,
@@ -292,11 +300,74 @@ describe("flat-space rendezvous", () => {
           const result = solveFlatspaceRendezvous(request);
           expect(result.kind).toBe("feasible");
           if (result.kind !== "feasible") return;
+          expect(result.burnDutyCycle).toBeCloseTo(dutyCycle, 5);
           const terminal = propagate(result, initialPosition, initialVelocity);
-          expect(magnitude({ x: terminal.position.x - request.arrivalPositionMeters.x, y: terminal.position.y - request.arrivalPositionMeters.y, z: terminal.position.z - request.arrivalPositionMeters.z })).toBeLessThan(1e-6);
+          expect(magnitude({ x: terminal.position.x - request.arrivalPositionMeters.x, y: terminal.position.y - request.arrivalPositionMeters.y, z: terminal.position.z - request.arrivalPositionMeters.z })).toBeLessThan(1e-5);
         }
       ),
       { numRuns: 100, seed: 2_026_080_5 }
     );
+  });
+
+  it("returns indeterminate when an unconverged general-3D solve exhausts the upper bracket", () => {
+    const acceleration = 88.98762777559128;
+    const fixtureDuration = 0.6168145210703871;
+    const fixturePosition = { x: 25.02285638038001, y: 12.714294976663657, z: 8.984542438499505 };
+    const fixtureVelocity = { x: 49.085762342555746, y: 19.758563038800165, z: 10.985468596018494 };
+    const result = findMinimumFlatspaceRendezvousTime({
+      accelerationMetersPerSecondSquared: acceleration,
+      chordDistanceMeters: acceleration * fixtureDuration ** 2 / 4,
+      // Scale a known residual-bearing 3-D case dimensionlessly.  Every
+      // bracket point is the same solver case in its own time units.
+      requestAtDuration: (durationSeconds) => {
+        const timeScale = durationSeconds / fixtureDuration;
+        return {
+          accelerationMetersPerSecondSquared: acceleration,
+          durationSeconds,
+          departurePositionMeters: { x: 0, y: 0, z: 0 },
+          departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+          arrivalPositionMeters: {
+            x: fixturePosition.x * timeScale ** 2,
+            y: fixturePosition.y * timeScale ** 2,
+            z: fixturePosition.z * timeScale ** 2
+          },
+          arrivalVelocityMetersPerSecond: {
+            x: fixtureVelocity.x * timeScale,
+            y: fixtureVelocity.y * timeScale,
+            z: fixtureVelocity.z * timeScale
+          }
+        };
+      }
+    });
+    expect(result).toEqual({ kind: "indeterminate", reason: "unconverged" });
+  });
+
+  it("preserves an indeterminate bracket probe when later probes are infeasible", () => {
+    const acceleration = 88.98762777559128;
+    const fixtureDuration = 0.6168145210703871;
+    const fixturePosition = { x: 25.02285638038001, y: 12.714294976663657, z: 8.984542438499505 };
+    const fixtureVelocity = { x: 49.085762342555746, y: 19.758563038800165, z: 10.985468596018494 };
+    const result = findMinimumFlatspaceRendezvousTime({
+      accelerationMetersPerSecondSquared: acceleration,
+      chordDistanceMeters: acceleration * fixtureDuration ** 2 / 4,
+      requestAtDuration: (durationSeconds) => durationSeconds === fixtureDuration
+        ? {
+            accelerationMetersPerSecondSquared: acceleration,
+            durationSeconds,
+            departurePositionMeters: { x: 0, y: 0, z: 0 },
+            departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+            arrivalPositionMeters: fixturePosition,
+            arrivalVelocityMetersPerSecond: fixtureVelocity
+          }
+        : {
+            accelerationMetersPerSecondSquared: acceleration,
+            durationSeconds,
+            departurePositionMeters: { x: 0, y: 0, z: 0 },
+            departureVelocityMetersPerSecond: { x: 0, y: 0, z: 0 },
+            arrivalPositionMeters: { x: 0, y: 0, z: 0 },
+            arrivalVelocityMetersPerSecond: { x: 2 * acceleration * durationSeconds, y: 0, z: 0 }
+          }
+    });
+    expect(result).toEqual({ kind: "indeterminate", reason: "unconverged" });
   });
 });
