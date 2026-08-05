@@ -6,10 +6,19 @@
  * values never become authoritative simulation state.
  */
 
-/** One millimetre per second, expressed in the trajectory module's km/s units. */
-export const DELTA_V_QUANTUM_KM_PER_SECOND = 0.000_001;
-/** One millisecond, expressed in seconds. */
-export const BURN_DURATION_QUANTUM_SECONDS = 0.001;
+/** The one-millisecond resolution pinned by trajectory subsystem spec §5. */
+export const BURN_DURATION_QUANTUM_MILLISECONDS = 1;
+
+/** A quantized burn duration carried in authoritative simulation state. */
+export type BurnDurationMs = number & { readonly __burnDurationMs: unique symbol };
+
+export const burnDurationMs = (value: number): BurnDurationMs => {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError("Burn duration must be a non-negative safe integer in milliseconds.");
+  }
+
+  return value as BurnDurationMs;
+};
 
 export interface ShipMassConfig {
   /** Effective exhaust velocity, in km/s. */
@@ -36,10 +45,12 @@ export interface BurnParameters {
   readonly burnDurationSeconds: number;
 }
 
-/** Integer-only representation carried into authoritative sim state. */
+/**
+ * The sole authoritative maneuver commitment. Delta-v is derived from this
+ * duration and the fixed ship configuration; it is never committed separately.
+ */
 export interface QuantizedBurnParameters {
-  readonly deltaVQuantum: number;
-  readonly burnDurationQuantum: number;
+  readonly burnDurationMs: BurnDurationMs;
 }
 
 export interface ViableCargo {
@@ -118,10 +129,7 @@ export const viabilityWallDeltaV = (ship: ShipMassConfig): number => {
   return ship.exhaustVelocityKmPerSecond * Math.log(1 / ship.structuralMassFraction);
 };
 
-/**
- * Converts an already-feasible trajectory's delta-v into a typed payload
- * result. No clamp is applied: non-positive cargo is meaningful information.
- */
+/** Converts an already-feasible trajectory's delta-v into a typed payload result. */
 export const assessCargo = (deltaVKmPerSecond: number, ship: ShipMassConfig = TIER0_SHIP): CargoAssessment => {
   validateShip(ship);
   const massRatio = massRatioForDeltaV(deltaVKmPerSecond, ship.exhaustVelocityKmPerSecond);
@@ -130,7 +138,7 @@ export const assessCargo = (deltaVKmPerSecond: number, ship: ShipMassConfig = TI
 
   // The logarithmic wall is authoritative. Comparing against it prevents a
   // platform's exp/log rounding from turning an exactly empty ship positive.
-  if (deltaVKmPerSecond >= viabilityWallDeltaVKmPerSecond) {
+  if (deltaVKmPerSecond >= viabilityWallDeltaVKmPerSecond || cargoFraction <= 0) {
     return {
       kind: "nonviable",
       massRatio,
@@ -141,14 +149,23 @@ export const assessCargo = (deltaVKmPerSecond: number, ship: ShipMassConfig = TI
   return { kind: "viable", massRatio, cargoFraction, viabilityWallDeltaVKmPerSecond };
 };
 
-/** Rounds planning-layer values to the commitment representation. */
-export const quantizeBurnParameters = (parameters: BurnParameters): QuantizedBurnParameters => ({
-  deltaVQuantum: quantize("Delta-v", parameters.deltaVKmPerSecond, DELTA_V_QUANTUM_KM_PER_SECOND),
-  burnDurationQuantum: quantize("Burn duration", parameters.burnDurationSeconds, BURN_DURATION_QUANTUM_SECONDS)
+/** Rounds a planning-layer burn duration to the single commitment representation. */
+export const quantizeBurnParameters = (
+  parameters: Pick<BurnParameters, "burnDurationSeconds">
+): QuantizedBurnParameters => ({
+  burnDurationMs: burnDurationMs(quantize("Burn duration", parameters.burnDurationSeconds, 0.001))
 });
 
-/** Reconstructs the planner-unit values exactly represented by a commitment. */
-export const dequantizeBurnParameters = (parameters: QuantizedBurnParameters): BurnParameters => ({
-  deltaVKmPerSecond: quantizedInteger("Delta-v quantum", parameters.deltaVQuantum) * DELTA_V_QUANTUM_KM_PER_SECOND,
-  burnDurationSeconds: quantizedInteger("Burn duration quantum", parameters.burnDurationQuantum) * BURN_DURATION_QUANTUM_SECONDS
-});
+/** Reconstructs derived planner-unit readouts from the authoritative duration. */
+export const dequantizeBurnParameters = (
+  parameters: QuantizedBurnParameters,
+  ship: ShipMassConfig = TIER0_SHIP
+): BurnParameters => {
+  validateShip(ship);
+  const milliseconds = burnDurationMs(parameters.burnDurationMs);
+  const burnDurationSeconds = milliseconds / 1_000;
+  return {
+    burnDurationSeconds,
+    deltaVKmPerSecond: deltaVForBurn(ship.accelerationKmPerSecond2, burnDurationSeconds)
+  };
+};
