@@ -105,6 +105,29 @@ build_mask() {
   # re-bind, whose purpose is to surface one file back over the ~/.codex tmpfs.
   local p
   for p in "${RO_PATHS[@]}" "${extra_ro[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
+  # SSH inside a user namespace (cycle 6). bwrap's userns maps root-owned files
+  # to 'nobody', and OpenSSH refuses any config owned by neither root nor the
+  # invoking user, so it aborts before authenticating: "Bad owner or permissions
+  # on /etc/ssh/ssh_config.d/...". That cost more than convenience — a seat that
+  # cannot fetch cannot verify ahead/behind against the real remote, and standing
+  # order 11 requires committed/pushed/deployed to be separately VERIFIED rather
+  # than estimated. Fix: a user-owned ssh_config, written per launch, shadowing
+  # /etc/ssh inside the sandbox.
+  # ~/.ssh stays masked: keys are never readable here. An agent-held identity
+  # signs instead, so a seat uses a key it cannot read (`ssh-add`, or
+  # AddKeysToAgent yes in ~/.ssh/config).
+  local fort_ssh="${TMPDIR:-/tmp}/fort-ssh-$$"
+  mkdir -p "$fort_ssh"
+  {
+    printf '# Generated per launch by seat-sandbox.sh — user-owned so ssh accepts it.\n'
+    printf 'Host *\n'
+    printf '  StrictHostKeyChecking accept-new\n'
+    printf '  UserKnownHostsFile %s/.ssh/known_hosts\n' "$HOME"
+  } > "$fort_ssh/ssh_config"
+  chmod 600 "$fort_ssh/ssh_config"
+  mask+=(--tmpfs /etc/ssh --ro-bind "$fort_ssh/ssh_config" /etc/ssh/ssh_config)
+  [ -e "$HOME/.ssh/known_hosts" ] && mask+=(--ro-bind "$HOME/.ssh/known_hosts" "$HOME/.ssh/known_hosts")
+
   # Git hooks under .beads run on the HOST, unsandboxed, on the next commit or
   # push in the main checkout — a writable .beads is a host RCE escape. CLASS
   # fix, not one path: there are at least two such directories (.beads/hooks and
