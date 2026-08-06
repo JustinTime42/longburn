@@ -49,6 +49,38 @@ describe("torch-to-Hohmann continuum", () => {
       expect(result.kappa).toBe(1);
       expect(result.impulsive).toBe(result.actual);
     }
+
+    // The quotient comparison used to sit on this rounded overflow boundary.
+    // Product finiteness, rather than a pre-multiplication threshold, must
+    // retain the actual plan when the scaled value is not representable.
+    const boundary = flatspaceKappa(stationaryRequest(Number.MAX_VALUE / 1_000_000));
+    expect(boundary.kind).toBe("feasible");
+    if (boundary.kind === "feasible") expect(boundary.impulsive).toBe(boundary.actual);
+  });
+
+  it("returns kappa one for a zero-delta-v coast instead of a false bound refusal", () => {
+    const request = stationaryRequest(1);
+    const result = flatspaceKappa({ ...request, arrivalPositionMeters: request.departurePositionMeters });
+    expect(result).toMatchObject({ kind: "feasible", kappa: 1 });
+    if (result.kind === "feasible") {
+      expect(result.actual.totalDeltaVMetersPerSecond).toBe(0);
+      expect(result.impulsive.totalDeltaVMetersPerSecond).toBe(0);
+    }
+  });
+
+  it("pins kappa to the stationary closed form within the scaled-limit bias", () => {
+    const acceleration = 1;
+    const durationSeconds = 100_000;
+    const distanceMeters = 1_000_000;
+    const result = flatspaceKappa(stationaryRequest(acceleration, durationSeconds));
+    expect(result.kind).toBe("feasible");
+    if (result.kind !== "feasible") throw new Error("Expected a feasible correction.");
+
+    const exact = acceleration * durationSeconds *
+      (1 - Math.sqrt(1 - 4 * distanceMeters / (acceleration * durationSeconds ** 2))) *
+      durationSeconds / (2 * distanceMeters);
+    expect(result.kappa).toBeLessThanOrEqual(exact);
+    expect(Math.abs(result.kappa / exact - 1)).toBeLessThan(1.1e-6);
   });
 
   it("quotes Lambert times kappa at low, transition, and high eta", () => {

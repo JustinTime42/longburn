@@ -110,6 +110,11 @@ const departureRadius = (request: FlatspaceRendezvousRequest): number => magnitu
 /**
  * Calculates the finite-burn correction using the same flat-space solver and
  * request geometry at actual thrust and at a physically scaled impulsive limit.
+ * The correction clamps benign roundoff to kappa = 1. At the representable
+ * acceleration ceiling, `impulsive` aliases `actual` because no larger finite
+ * comparison solve exists. A non-finite or materially sub-unity ratio is a
+ * typed `kappa-below-one` indeterminate result; a zero-cost coast is instead
+ * the physically valid kappa = 1 limit.
  */
 export const flatspaceKappa = (request: FlatspaceRendezvousRequest):
   | { readonly kind: "feasible"; readonly kappa: number; readonly actual: FlatspaceRendezvousPlan; readonly impulsive: FlatspaceRendezvousPlan }
@@ -120,17 +125,20 @@ export const flatspaceKappa = (request: FlatspaceRendezvousRequest):
   // A six-order acceleration separation makes the limiting burns negligible
   // without sending the solver through MAX_VALUE overflow/subnormal paths.
   // At the representable ceiling the actual solve is already the best finite
-  // approximation of that limit, so avoid manufacturing an overflowing input.
-  const impulsiveAcceleration = request.accelerationMetersPerSecondSquared >
-    Number.MAX_VALUE / IMPULSIVE_ACCELERATION_MULTIPLIER
-    ? undefined
-    : request.accelerationMetersPerSecondSquared * IMPULSIVE_ACCELERATION_MULTIPLIER;
-  const impulsive = impulsiveAcceleration === undefined
-    ? actual
-    : solveFlatspaceRendezvous({ ...request, accelerationMetersPerSecondSquared: impulsiveAcceleration });
+  // approximation of that limit. Test the product itself: comparing against
+  // MAX_VALUE / multiplier is one-ulp fragile at the boundary.
+  const scaledAcceleration = request.accelerationMetersPerSecondSquared * IMPULSIVE_ACCELERATION_MULTIPLIER;
+  const impulsive = Number.isFinite(scaledAcceleration)
+    ? solveFlatspaceRendezvous({ ...request, accelerationMetersPerSecondSquared: scaledAcceleration })
+    : actual;
   // The limiting solve is necessarily feasible if the actual solve was. Keep
   // a typed planner refusal if a future solver changes that contract.
   if (impulsive.kind !== "feasible") return impulsive;
+  // A coast already on course has no delta-v in either solve. Its 0 / 0 is a
+  // numerical indeterminacy only, not the kappa-bound refusal.
+  if (actual.totalDeltaVMetersPerSecond === 0 && impulsive.totalDeltaVMetersPerSecond === 0) {
+    return { kind: "feasible", kappa: 1, actual, impulsive };
+  }
   const unroundedKappa = actual.totalDeltaVMetersPerSecond / impulsive.totalDeltaVMetersPerSecond;
   if (!Number.isFinite(unroundedKappa) || unroundedKappa < 1 - KAPPA_ROUNDOFF_TOLERANCE) {
     return { kind: "indeterminate", reason: "kappa-below-one", coastDurationSeconds: actual.coastDurationSeconds };
