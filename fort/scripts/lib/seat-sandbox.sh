@@ -61,21 +61,26 @@ build_mask() {
       # transcripts Claude Code writes as it runs. Its CONFIG is bound
       # read-only so a session cannot rewrite its own permission rules or the
       # global instructions for the next one (21f.5, applied to Claude seats).
-      # ~/.codex is masked entirely — a Claude seat has no business with it.
-      MASK_DIRS+=("$HOME/.codex")
       RO_PATHS+=("$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json" \
                  "$HOME/.claude/CLAUDE.md" "$HOME/.claude/helpers")
-      # DISPATCH EXCEPTION (measured 2026-08-04): the Mayor launches the Forge,
-      # and a child codex inherits this mount namespace — with ~/.codex masked it
-      # cannot authenticate (401). So the directory stays masked and auth.json
-      # alone is re-bound read-only over the tmpfs: the seat sees exactly one
-      # file there, not config.toml, history, sessions, or logs. The seat can
-      # therefore READ that token, which is an accepted exposure on the same
-      # footing as reading its own ~/.claude/.credentials.json: a session that
-      # can already spend the token gains little by seeing it, and the
-      # alternative (dispatching Forge only from an unmasked shell) puts
-      # friction on the fort's core loop. Revisit if Codex gains fd/env auth.
-      CODEX_AUTH_RO=1
+      # DISPATCH EXCEPTION, redesigned (longburn-1p9, measured 2026-08-05): the
+      # Mayor launches the Forge, and a child codex inherits this mount
+      # namespace, so ~/.codex must be reachable and auth must be able to
+      # ROTATE. The old design (tmpfs over ~/.codex + auth.json re-bound RO as
+      # a FILE) pinned the auth.json inode: codex rotates the token by rename,
+      # so rotation failed at write, the refresh token was reused and revoked
+      # server-side, and a host-side `codex login` stayed invisible to running
+      # sessions — both seat lanes died until session restart. Fix: bind the
+      # real DIRECTORY read-write (name lookups resolve live, so rename
+      # rotation and host re-login both work), keep config.toml read-only (the
+      # injection vector, 21f.5), and mask transcripts/history. Reading the
+      # token remains the same accepted exposure as before: a session that can
+      # already spend it gains little by seeing it. Revisit if Codex gains
+      # fd/env auth.
+      CODEX_DIR_RW=1
+      RO_PATHS+=("$HOME/.codex/config.toml")
+      MASK_DIRS+=("$HOME/.codex/sessions" "$HOME/.codex/log")
+      MASK_FILES+=("$HOME/.codex/history.jsonl")
       ;;
     *) echo "build_mask: unknown seat type '$seat' (expected codex|claude)" >&2; return 2 ;;
   esac
@@ -95,14 +100,17 @@ build_mask() {
   mask=(--bind / / --dev /dev --die-with-parent --ro-bind "$HOME" "$HOME")
   local w
   for w in "${RW_PATHS[@]}"; do [ -n "$w" ] && [ -e "$w" ] && mask+=(--bind "$w" "$w"); done
+  # ~/.codex as a live rw DIRECTORY bind for claude seats (see the dispatch
+  # exception above): placed with the rw grants so the later config.toml RO
+  # bind and transcript masks stack over it per the ordering invariant.
+  [ "${CODEX_DIR_RW:-0}" = "1" ] && [ -d "$HOME/.codex" ] && mask+=(--bind "$HOME/.codex" "$HOME/.codex")
   # ORDERING INVARIANT (ForgeOs-01l): bwrap mounts stack, so any bind placed
   # after a mask mounts the real content back OVER it. The warden passes the
   # whole candidate tree as extra_ro; when that bind followed the file masks it
   # resurfaced every masked secret beneath it (measured: host run
   # 2026-08-04T202453, mask-spelling:warden 4/4 FAIL). Subtree binds — ro
   # paths, extra_ro, hooks dirs — therefore go HERE, and the per-file dev-null
-  # masks and per-dir tmpfs masks go LAST. Sole exception: the auth.json
-  # re-bind, whose purpose is to surface one file back over the ~/.codex tmpfs.
+  # masks and per-dir tmpfs masks go LAST.
   local p
   for p in "${RO_PATHS[@]}" "${extra_ro[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
   # SSH inside a user namespace (cycle 6). bwrap's userns maps root-owned files
@@ -140,9 +148,6 @@ build_mask() {
   local d
   for d in "${MASK_DIRS[@]}"; do [ -d "$d" ] && mask+=(--tmpfs "$d"); done
 
-  if [ "${CODEX_AUTH_RO:-0}" = "1" ] && [ -e "$HOME/.codex/auth.json" ]; then
-    mask+=(--ro-bind "$HOME/.codex/auth.json" "$HOME/.codex/auth.json")
-  fi
 }
 
 # Environment is an ALLOW-LIST, not a deny-list: enumerated unsets leave AWS_*,
