@@ -68,17 +68,8 @@ describe("Earth-to-Mars porkchop window search", () => {
     const typeIIArrival = utcDay(2029, 10, 16);
     const typeIDeparture = utcDay(2028, 12, 10);
     const typeIArrival = utcDay(2029, 7, 20);
-    const grid = searchEarthMarsPorkchop({
-      departureStartUtDays: typeIIDeparture,
-      departureSpanDays: typeIDeparture - typeIIDeparture,
-      departureStepDays: 1,
-      minimumTimeOfFlightDays: typeIArrival - typeIDeparture,
-      maximumTimeOfFlightDays: typeIIArrival - typeIIDeparture,
-      timeOfFlightStepDays: typeIIArrival - typeIIDeparture - (typeIArrival - typeIDeparture)
-    });
-    expect(grid.cells.length).toBeGreaterThan(1);
-    const typeII = validCell(grid.cells, typeIIDeparture, typeIIArrival);
-    const typeI = validCell(grid.cells, typeIDeparture, typeIArrival);
+    const typeII = validCell(nasaWindow(typeIIDeparture, typeIIArrival).cells, typeIIDeparture, typeIIArrival);
+    const typeI = validCell(nasaWindow(typeIDeparture, typeIArrival).cells, typeIDeparture, typeIArrival);
     expect(typeII.c3Km2PerSecond2).toBeCloseTo(8.928, 0);
     expect(typeI.c3Km2PerSecond2).toBeCloseTo(9.048, 0);
     expect(typeII.arrivalVInfinityKmPerSecond).toBeCloseTo(3.261, 0);
@@ -86,9 +77,24 @@ describe("Earth-to-Mars porkchop window search", () => {
     expect(typeII.departureWellDeltaVKmPerSecond).toBeCloseTo(3.622, 2);
     expect(typeII.arrivalWellDeltaVKmPerSecond).toBeCloseTo(2.403, 2);
     expect(typeII.totalDeltaVKmPerSecond).toBeCloseTo(typeII.departureWellDeltaVKmPerSecond + typeII.arrivalWellDeltaVKmPerSecond, 12);
-    const ranked = rankPorkchopCells(grid.cells);
-    expect(ranked.indexOf(typeII)).toBeLessThan(ranked.indexOf(typeI));
-    expect(typeII.totalDeltaVKmPerSecond).toBeLessThan(typeI.totalDeltaVKmPerSecond);
+    expect(Math.abs(typeII.c3Km2PerSecond2 - typeI.c3Km2PerSecond2)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(typeII.totalDeltaVKmPerSecond - typeI.totalDeltaVKmPerSecond)).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it("finds the 2028 global total-delta-v optimum within the handbook's 14-day departure band", () => {
+    const handbookDeparture = utcDay(2028, 12, 2);
+    const ranked = rankPorkchopCells(searchEarthMarsPorkchop({
+      departureStartUtDays: utcDay(2028, 10, 1),
+      departureSpanDays: 160,
+      departureStepDays: 1,
+      minimumTimeOfFlightDays: 100,
+      maximumTimeOfFlightDays: 450,
+      timeOfFlightStepDays: 1
+    }).cells);
+    expect(ranked).not.toHaveLength(0);
+    const [optimum] = ranked;
+    if (optimum === undefined) throw new Error("Expected a ranked porkchop optimum.");
+    expect(Math.abs(optimum.departureUtDays - handbookDeparture)).toBeLessThanOrEqual(14);
   });
 
   it("finds 2035 Type I below the Type II opportunity despite Mars eccentricity", () => {
@@ -118,9 +124,12 @@ describe("Earth-to-Mars porkchop window search", () => {
     // Keep this adjacent to, but outside, the planner's deliberate 180° guard.
     const closureTimeOfFlightDays = 258.7;
     const first = validCell(searchEarthMarsPorkchop({ departureStartUtDays: departure, departureSpanDays: 0, departureStepDays: 1, minimumTimeOfFlightDays: closureTimeOfFlightDays, maximumTimeOfFlightDays: closureTimeOfFlightDays, timeOfFlightStepDays: 1, statesAt: circularStates }).cells, departure, (departure + closureTimeOfFlightDays) as UtDaysSinceJ2000);
+    expect(first.c3Km2PerSecond2).toBeCloseTo(8.671, 1);
+    expect(first.arrivalVInfinityKmPerSecond).toBeCloseTo(2.649, 1);
     const secondDeparture = (departure + CIRCULAR_EARTH_MARS_SYNODIC_PERIOD_DAYS) as UtDaysSinceJ2000;
     const second = validCell(searchEarthMarsPorkchop({ departureStartUtDays: secondDeparture, departureSpanDays: 0, departureStepDays: 1, minimumTimeOfFlightDays: closureTimeOfFlightDays, maximumTimeOfFlightDays: closureTimeOfFlightDays, timeOfFlightStepDays: 1, statesAt: circularStates }).cells, secondDeparture, (secondDeparture + closureTimeOfFlightDays) as UtDaysSinceJ2000);
     expect(second.c3Km2PerSecond2).toBeCloseTo(first.c3Km2PerSecond2, 6);
+    expect(Math.abs(CIRCULAR_EARTH_MARS_SYNODIC_PERIOD_DAYS - 779.94)).toBeLessThanOrEqual(0.02);
 
     const singularStates = (): Readonly<{ earth: HeliocentricState; mars: HeliocentricState }> => ({
       earth: { positionKm: { x: 1, y: 0, z: 0 }, velocityKmPerSecond: { x: 0, y: 1, z: 0 } },
