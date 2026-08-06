@@ -4,6 +4,7 @@ import {
   type PersistedSimulationStream,
   type SimulationEventStore,
   type SimulationStream,
+  type StreamSequenceConflict,
   type StoredSimEvent
 } from "./event-store.js";
 import { type SimEvent, type SimState } from "./event-log.js";
@@ -12,6 +13,22 @@ import { SeededRng } from "./rng.js";
 export interface AuthoritativeSimLoopOptions {
   readonly stream: SimulationStream;
   readonly store: SimulationEventStore;
+}
+
+/** A stale loop instance attempted to append after another writer advanced its stream. */
+export class AuthoritativeSimLoopConflictError extends Error {
+  readonly expectedStreamSequence: number;
+  readonly actualStreamSequence: number;
+
+  constructor(conflict: StreamSequenceConflict) {
+    super(
+      `Authoritative simulation loop stream sequence conflict: expected ${conflict.expectedStreamSequence}, `
+      + `found ${conflict.actualStreamSequence}.`
+    );
+    this.name = "AuthoritativeSimLoopConflictError";
+    this.expectedStreamSequence = conflict.expectedStreamSequence;
+    this.actualStreamSequence = conflict.actualStreamSequence;
+  }
 }
 
 /**
@@ -24,6 +41,7 @@ export class AuthoritativeSimLoop {
   readonly #store: SimulationEventStore;
   readonly #streamId: string;
   readonly #randomValues: number[] = [];
+  #streamSequence = 0;
 
   private constructor({ stream, store }: AuthoritativeSimLoopOptions) {
     this.#clock = SimClock.production(stream.initialTime);
@@ -44,6 +62,7 @@ export class AuthoritativeSimLoop {
       loop.#assertRecordTime(record);
       loop.#apply(record.event);
     }
+    loop.#streamSequence = persisted.events.length;
     return loop;
   }
 
@@ -77,10 +96,11 @@ export class AuthoritativeSimLoop {
   }
 
   async #append(event: Omit<StoredSimEvent, "streamSequence" | "globalPosition">): Promise<void> {
-    const result = await this.#store.append(this.#streamId, event);
+    const result = await this.#store.append(this.#streamId, event, this.#streamSequence);
     if (result.kind === "conflict") {
-      throw new Error("Authoritative simulation loop encountered an unexpected stream sequence conflict.");
+      throw new AuthoritativeSimLoopConflictError(result);
     }
+    this.#streamSequence = result.event.streamSequence;
   }
 
   #assertRecordTime(record: StoredSimEvent): void {

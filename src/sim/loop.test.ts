@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { simTimeMs } from "./clock.js";
 import { InMemorySimulationEventStore } from "./event-store.js";
 import { replayPersistedSegment } from "./event-log.js";
-import { AuthoritativeSimLoop } from "./loop.js";
+import { AuthoritativeSimLoop, AuthoritativeSimLoopConflictError } from "./loop.js";
 
 const actionArbitrary = fc.oneof(
   fc.record({ kind: fc.constant<"advance">("advance"), elapsedMs: fc.integer({ min: 0, max: 10_000 }) }),
@@ -73,5 +73,28 @@ describe("authoritative simulation loop", () => {
     await expect(AuthoritativeSimLoop.resume(store, "invalid-time")).rejects.toThrow(
       "Persisted event time does not match the authoritative clock."
     );
+  });
+
+  it("rejects a stale loop instance with the typed stream sequence conflict", async () => {
+    const store = new InMemorySimulationEventStore();
+    const firstLoop = await AuthoritativeSimLoop.create({
+      store, stream: { id: "concurrent", seed: 1, initialTime: simTimeMs(0) }
+    });
+    const staleLoop = await AuthoritativeSimLoop.resume(store, "concurrent");
+
+    await firstLoop.advance(10, eventPosition);
+
+    const conflict = await staleLoop.advance(20, eventPosition).then(
+      () => { throw new Error("Expected stale loop append to conflict."); },
+      error => error
+    );
+
+    expect(conflict).toBeInstanceOf(AuthoritativeSimLoopConflictError);
+    expect(conflict).toMatchObject({
+      expectedStreamSequence: 0,
+      actualStreamSequence: 1
+    });
+    expect((await store.readStream("concurrent")).events).toHaveLength(1);
+    expect(staleLoop.state.time).toBe(simTimeMs(0));
   });
 });
