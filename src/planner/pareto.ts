@@ -7,9 +7,21 @@
  * rather than owning either, so later fidelity tiers can implement the same
  * `TrajectoryPlanner` interface without changing its consumers.
  */
-import { solveContinuumLeg, type ContinuumResult } from "../sim/continuum-blend.js";
+import {
+  solveContinuumLeg,
+  type ContinuumDutyCycleInfeasible,
+  type ContinuumIndeterminate,
+  type ContinuumInfeasible
+} from "../sim/continuum-blend.js";
 import { assessCargo, type ShipMassConfig } from "../sim/mass-cargo.js";
-import { parkingOrbitWellDeltaV, type PorkchopCell, type ValidPorkchopCell } from "../sim/window-search.js";
+import {
+  parkingOrbitWellDeltaV,
+  TIER0_MARS_GRAVITATIONAL_PARAMETER_KM3_PER_SECOND2,
+  TIER0_MARS_PARKING_RADIUS_KM,
+  type InvalidPorkchopCell,
+  type PorkchopCell,
+  type ValidPorkchopCell
+} from "../sim/window-search.js";
 import type { HeliocentricState, UtDaysSinceJ2000 } from "../sim/ephemerides.js";
 
 const SECONDS_PER_DAY = 86_400;
@@ -17,8 +29,8 @@ const KILOMETERS_TO_METERS = 1_000;
 
 /** Mars 400 km circular-orbit capture, the Tier 0 default. */
 export const TIER0_MARS_CAPTURE_TARGET: ArrivalCaptureTarget = Object.freeze({
-  gravitationalParameterKm3PerSecond2: 42_828.375_214,
-  parkingRadiusKm: 3_396.19 + 400
+  gravitationalParameterKm3PerSecond2: TIER0_MARS_GRAVITATIONAL_PARAMETER_KM3_PER_SECOND2,
+  parkingRadiusKm: TIER0_MARS_PARKING_RADIUS_KM
 });
 
 export interface ArrivalCaptureTarget {
@@ -68,7 +80,42 @@ export interface InfeasibleWall {
   readonly departureUtDays: UtDaysSinceJ2000;
   readonly timeOfFlightDays: number;
   readonly arrivalTime: UtDaysSinceJ2000;
-  readonly reason: string;
+  /** A physics wall: the actual-thrust flat-space burns overlap. */
+  readonly reason: ContinuumInfeasible["reason"];
+  readonly coastDurationSeconds: number;
+}
+
+/** The deterministic solver could not validate a trajectory; this is not physics. */
+export interface IndeterminateWall {
+  readonly kind: "indeterminate";
+  readonly departureUtDays: UtDaysSinceJ2000;
+  readonly timeOfFlightDays: number;
+  readonly arrivalTime: UtDaysSinceJ2000;
+  readonly reason: ContinuumIndeterminate["reason"];
+  readonly coastDurationSeconds: number;
+}
+
+/** The quoted finite-thrust burn cannot fit inside the requested flight window. */
+export interface DutyCycleInfeasibleWall {
+  readonly kind: "infeasible";
+  readonly departureUtDays: UtDaysSinceJ2000;
+  readonly timeOfFlightDays: number;
+  readonly arrivalTime: UtDaysSinceJ2000;
+  readonly reason: ContinuumDutyCycleInfeasible["reason"];
+  /** Amendment A diagnostics are first-class on this typed wall. */
+  readonly quotedDutyCycle: number;
+  readonly kappa: number;
+  readonly eta: number;
+  readonly heliocentricDeltaVMetersPerSecond: number;
+}
+
+/** A porkchop cell was evaluated but has no Lambert solution to assemble. */
+export interface InvalidCellWall {
+  readonly kind: "invalid";
+  readonly departureUtDays: UtDaysSinceJ2000;
+  readonly timeOfFlightDays: number;
+  readonly arrivalTime: UtDaysSinceJ2000;
+  readonly reason: InvalidPorkchopCell["reason"];
 }
 
 export interface NonviableWall {
@@ -80,7 +127,7 @@ export interface NonviableWall {
   readonly viabilityWallDeltaVKmPerSecond: number;
 }
 
-export type ParetoWall = InfeasibleWall | NonviableWall;
+export type ParetoWall = InfeasibleWall | IndeterminateWall | DutyCycleInfeasibleWall | InvalidCellWall | NonviableWall;
 
 /** One departure epoch's curve. Curves are never compared across windows. */
 export interface ParetoWindow {
@@ -103,9 +150,6 @@ const magnitude = (vector: { readonly x: number; readonly y: number; readonly z:
 
 const valid = (cell: PorkchopCell): cell is ValidPorkchopCell => cell.kind === "valid";
 
-const infeasibleReason = (result: Exclude<ContinuumResult, { readonly kind: "feasible" }>): string =>
-  result.reason;
-
 const dominates = (left: ParetoPoint, right: ParetoPoint): boolean =>
   left.timeOfFlightDays <= right.timeOfFlightDays &&
   left.totalDeltaVKmPerSecond <= right.totalDeltaVKmPerSecond &&
@@ -114,6 +158,35 @@ const dominates = (left: ParetoPoint, right: ParetoPoint): boolean =>
 const paretoFront = (points: readonly ParetoPoint[]): readonly ParetoPoint[] =>
   points.filter((point, index) => !points.some((candidate, candidateIndex) => candidateIndex !== index && dominates(candidate, point)))
     .toSorted((left, right) => left.timeOfFlightDays - right.timeOfFlightDays || left.totalDeltaVKmPerSecond - right.totalDeltaVKmPerSecond);
+
+const continuumWall = (
+  result: ContinuumInfeasible | ContinuumIndeterminate | ContinuumDutyCycleInfeasible,
+  cell: ValidPorkchopCell,
+  arrivalTime: UtDaysSinceJ2000
+): ParetoWall => {
+  const base = { departureUtDays: cell.departureUtDays, timeOfFlightDays: cell.timeOfFlightDays, arrivalTime };
+  if (result.kind === "indeterminate") return { kind: "indeterminate", ...base, reason: result.reason, coastDurationSeconds: result.coastDurationSeconds };
+  if (result.reason === "duty-cycle-exceeded") {
+    return {
+      kind: "infeasible",
+      ...base,
+      reason: result.reason,
+      quotedDutyCycle: result.quotedDutyCycle,
+      kappa: result.kappa,
+      eta: result.eta,
+      heliocentricDeltaVMetersPerSecond: result.heliocentricDeltaVMetersPerSecond
+    };
+  }
+  return { kind: "infeasible", ...base, reason: result.reason, coastDurationSeconds: result.coastDurationSeconds };
+};
+
+const invalidCellWall = (cell: InvalidPorkchopCell): InvalidCellWall => ({
+  kind: "invalid",
+  departureUtDays: cell.departureUtDays,
+  timeOfFlightDays: cell.timeOfFlightDays,
+  arrivalTime: cell.arrivalUtDays,
+  reason: cell.reason
+});
 
 const assembleCell = (cell: ValidPorkchopCell, request: ParetoPlannerRequest, capture: ArrivalCaptureTarget): ParetoPoint | ParetoWall => {
   const arrivalTime = (cell.departureUtDays + cell.timeOfFlightDays) as UtDaysSinceJ2000;
@@ -135,13 +208,17 @@ const assembleCell = (cell: ValidPorkchopCell, request: ParetoPlannerRequest, ca
     },
     solarRadiusMeters: magnitude(departure.positionKm) * KILOMETERS_TO_METERS
   });
-  if (continuum.kind !== "feasible") return { kind: "infeasible", departureUtDays: cell.departureUtDays, timeOfFlightDays: cell.timeOfFlightDays, arrivalTime, reason: infeasibleReason(continuum) };
+  if (continuum.kind !== "feasible") return continuumWall(continuum, cell, arrivalTime);
   const arrivalWellDeltaVKmPerSecond = parkingOrbitWellDeltaV(
     cell.arrivalVInfinityKmPerSecond,
     capture.gravitationalParameterKm3PerSecond2,
     capture.parkingRadiusKm
   );
-  const totalDeltaVKmPerSecond = cell.departureWellDeltaVKmPerSecond + continuum.heliocentricDeltaVMetersPerSecond / KILOMETERS_TO_METERS + arrivalWellDeltaVKmPerSecond;
+  // The well burns already impart the two hyperbolic-excess speeds. Lambert's
+  // leg is therefore charged only for its finite-burn correction, not twice.
+  const totalDeltaVKmPerSecond = cell.departureWellDeltaVKmPerSecond +
+    arrivalWellDeltaVKmPerSecond +
+    (continuum.kappa - 1) * heliocentricLambertDeltaVMetersPerSecond / KILOMETERS_TO_METERS;
   const cargo = assessCargo(totalDeltaVKmPerSecond, request.ship);
   if (cargo.kind === "nonviable") return { kind: "nonviable", departureUtDays: cell.departureUtDays, timeOfFlightDays: cell.timeOfFlightDays, arrivalTime, reason: "cargo-exhausted", viabilityWallDeltaVKmPerSecond: cargo.viabilityWallDeltaVKmPerSecond };
   return { kind: "viable", departureUtDays: cell.departureUtDays, timeOfFlightDays: cell.timeOfFlightDays, arrivalTime, totalDeltaVKmPerSecond, cargoFraction: cargo.cargoFraction, massRatio: cargo.massRatio, quotedDutyCycle: continuum.quotedDutyCycle, finiteBurnCaution: continuum.finiteBurnCaution, eta: continuum.eta };
@@ -152,9 +229,8 @@ export const assembleParetoLandscape = (request: ParetoPlannerRequest): ParetoLa
   const capture = request.arrivalCaptureTarget ?? TIER0_MARS_CAPTURE_TARGET;
   const grouped = new Map<UtDaysSinceJ2000, Array<ParetoPoint | ParetoWall>>();
   for (const cell of request.cells) {
-    if (!valid(cell)) continue;
     const entries = grouped.get(cell.departureUtDays) ?? [];
-    entries.push(assembleCell(cell, request, capture));
+    entries.push(valid(cell) ? assembleCell(cell, request, capture) : invalidCellWall(cell));
     grouped.set(cell.departureUtDays, entries);
   }
   return {

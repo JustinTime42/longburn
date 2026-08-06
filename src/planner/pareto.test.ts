@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { TIER0_SHIP } from "../sim/mass-cargo.js";
 import { utDaysSinceJ2000, type HeliocentricState } from "../sim/ephemerides.js";
+import type { PorkchopCell } from "../sim/window-search.js";
 import { assembleParetoLandscape, TIER0_MARS_CAPTURE_TARGET } from "./pareto.js";
 
 const departure = utDaysSinceJ2000(10_000);
@@ -11,7 +12,7 @@ const cell = (departureUtDays: number, timeOfFlightDays: number, c3 = 1, arrival
   kind: "valid" as const, departureUtDays: utDaysSinceJ2000(departureUtDays), arrivalUtDays: utDaysSinceJ2000(departureUtDays + timeOfFlightDays), timeOfFlightDays,
   c3Km2PerSecond2: c3, arrivalVInfinityKmPerSecond: arrivalVInfinity, departureWellDeltaVKmPerSecond: 0.1, arrivalWellDeltaVKmPerSecond: 0.1, totalDeltaVKmPerSecond: 0.2
 });
-const input = (cells: readonly ReturnType<typeof cell>[], ship = TIER0_SHIP, arrivalCaptureTarget = TIER0_MARS_CAPTURE_TARGET) => ({
+const input = (cells: readonly PorkchopCell[], ship = TIER0_SHIP, arrivalCaptureTarget = TIER0_MARS_CAPTURE_TARGET) => ({
   cells, ship, arrivalCaptureTarget,
   ephemerides: { statesAt: (epoch: number) => ({ earth: state, mars: { ...target, positionKm: { ...target.positionKm, y: target.positionKm.y + epoch } } }) }
 });
@@ -51,5 +52,30 @@ describe("planner Pareto landscape", () => {
     const defaultPoint = assembleParetoLandscape(input([candidate])).windows[0]?.points[0];
     const highOrbitPoint = assembleParetoLandscape(input([candidate], TIER0_SHIP, { ...TIER0_MARS_CAPTURE_TARGET, parkingRadiusKm: TIER0_MARS_CAPTURE_TARGET.parkingRadiusKm + 1_000 })).windows[0]?.points[0];
     expect(defaultPoint?.totalDeltaVKmPerSecond).not.toBeCloseTo(highOrbitPoint?.totalDeltaVKmPerSecond ?? 0, 12);
+  });
+
+  it("keeps the 2028 tier-3 fixture near its 6.03 km/s patched-conic cost", () => {
+    const tier3Fixture = {
+      ...cell(departure, 318, 8.928, 3.261),
+      // NASA fixture and the corresponding 200 km LEO well term, km/s.
+      departureWellDeltaVKmPerSecond: 3.622
+    };
+    const point = assembleParetoLandscape(input([tier3Fixture])).windows[0]?.points[0];
+    // kappa is effectively one for this Tier-0 torch, so this proves that the
+    // heliocentric v-infinity terms are not re-added after the two well burns.
+    expect(point?.totalDeltaVKmPerSecond).toBeCloseTo(6.03, 1);
+  });
+
+  it("retains invalid cells and preserves their typed reason", () => {
+    const invalid = {
+      kind: "invalid" as const,
+      departureUtDays: utDaysSinceJ2000(departure),
+      arrivalUtDays: utDaysSinceJ2000(departure + 100),
+      timeOfFlightDays: 100,
+      reason: "near-180-degree-transfer" as const
+    };
+    const [window] = assembleParetoLandscape(input([invalid])).windows;
+    expect(window?.points).toEqual([]);
+    expect(window?.walls).toMatchObject([{ kind: "invalid", reason: "near-180-degree-transfer" }]);
   });
 });

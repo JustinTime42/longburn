@@ -16,8 +16,9 @@ const SINGULAR_TRANSFER_ANGLE_GUARD_DEGREES = 0.05;
 
 const EARTH_MU = 398_600.4418;
 const EARTH_PARKING_RADIUS_KM = 6_378.1363 + 200;
-const MARS_MU = 42_828.375_214;
-const MARS_PARKING_RADIUS_KM = 3_396.19 + 400;
+/** Tier-0 Mars capture constants shared with the planner API. */
+export const TIER0_MARS_GRAVITATIONAL_PARAMETER_KM3_PER_SECOND2 = 42_828.375_214;
+export const TIER0_MARS_PARKING_RADIUS_KM = 3_396.19 + 400;
 
 export interface PorkchopSearchInput {
   /** UT day count for the first departure column. This is supplied virtual time, never a host clock. */
@@ -160,7 +161,11 @@ export const searchEarthMarsPorkchop = (input: PorkchopSearchInput): PorkchopGri
           continue;
         }
         const departureWellDeltaVKmPerSecond = parkingOrbitWellDeltaV(departureVInfinityKmPerSecond, EARTH_MU, EARTH_PARKING_RADIUS_KM);
-        const arrivalWellDeltaVKmPerSecond = parkingOrbitWellDeltaV(arrivalVInfinityKmPerSecond, MARS_MU, MARS_PARKING_RADIUS_KM);
+        const arrivalWellDeltaVKmPerSecond = parkingOrbitWellDeltaV(
+          arrivalVInfinityKmPerSecond,
+          TIER0_MARS_GRAVITATIONAL_PARAMETER_KM3_PER_SECOND2,
+          TIER0_MARS_PARKING_RADIUS_KM
+        );
         const totalDeltaVKmPerSecond = departureWellDeltaVKmPerSecond + arrivalWellDeltaVKmPerSecond;
         if (![departureWellDeltaVKmPerSecond, arrivalWellDeltaVKmPerSecond, totalDeltaVKmPerSecond].every(Number.isFinite)) {
           cells.push({ ...base, kind: "invalid", reason: "non-finite-result" });
