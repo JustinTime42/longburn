@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+
+import { TIER0_SHIP } from "../sim/mass-cargo.js";
+import { utDaysSinceJ2000, type HeliocentricState } from "../sim/ephemerides.js";
+import { assembleParetoLandscape, TIER0_MARS_CAPTURE_TARGET } from "./pareto.js";
+
+const departure = utDaysSinceJ2000(10_000);
+const state: HeliocentricState = { positionKm: { x: 149_597_870.7, y: 0, z: 0 }, velocityKmPerSecond: { x: 0, y: 29.78, z: 0 } };
+const target: HeliocentricState = { positionKm: { x: 227_939_200, y: 1_000_000, z: 0 }, velocityKmPerSecond: { x: -24.13, y: 0, z: 0 } };
+const cell = (departureUtDays: number, timeOfFlightDays: number, c3 = 1, arrivalVInfinity = 1) => ({
+  kind: "valid" as const, departureUtDays: utDaysSinceJ2000(departureUtDays), arrivalUtDays: utDaysSinceJ2000(departureUtDays + timeOfFlightDays), timeOfFlightDays,
+  c3Km2PerSecond2: c3, arrivalVInfinityKmPerSecond: arrivalVInfinity, departureWellDeltaVKmPerSecond: 0.1, arrivalWellDeltaVKmPerSecond: 0.1, totalDeltaVKmPerSecond: 0.2
+});
+const input = (cells: readonly ReturnType<typeof cell>[], ship = TIER0_SHIP, arrivalCaptureTarget = TIER0_MARS_CAPTURE_TARGET) => ({
+  cells, ship, arrivalCaptureTarget,
+  ephemerides: { statesAt: (epoch: number) => ({ earth: state, mars: { ...target, positionKm: { ...target.positionKm, y: target.positionKm.y + epoch } } }) }
+});
+
+describe("planner Pareto landscape", () => {
+  it("returns only within-window nondominated 2-D points and retains later windows", () => {
+    const landscape = assembleParetoLandscape(input([
+      cell(departure, 100, 1), cell(departure, 200, 1), cell(departure, 200, 9),
+      cell(departure + 10, 200, 1)
+    ]));
+    expect(landscape.windows).toHaveLength(2);
+    expect(landscape.windows[0]?.points.map((point) => point.timeOfFlightDays)).toEqual([100, 200]);
+    expect(landscape.windows[1]?.points.map((point) => point.timeOfFlightDays)).toEqual([200]);
+  });
+
+  it("defines arrivalTime as the absolute departure-plus-duration epoch and exposes derived readouts", () => {
+    const [window] = assembleParetoLandscape(input([cell(departure, 200)])).windows;
+    const [point] = window?.points ?? [];
+    expect(point?.arrivalTime).toBe(departure + 200);
+    expect(point?.cargoFraction).toBeGreaterThan(0);
+    expect(point?.quotedDutyCycle).toBeGreaterThan(0);
+  });
+
+  it("keeps nonviable and infeasible candidates as typed walls, never extrapolated points", () => {
+    const nonviableShip = { ...TIER0_SHIP, exhaustVelocityKmPerSecond: 1, structuralMassFraction: 0.9 };
+    const nonviable = assembleParetoLandscape(input([cell(departure, 200)], nonviableShip));
+    expect(nonviable.windows[0]?.points).toEqual([]);
+    expect(nonviable.windows[0]?.walls[0]).toMatchObject({ kind: "nonviable", reason: "cargo-exhausted" });
+    const infeasibleShip = { ...TIER0_SHIP, accelerationKmPerSecond2: 1e-8 };
+    const infeasible = assembleParetoLandscape(input([cell(departure, 100)], infeasibleShip));
+    expect(infeasible.windows[0]?.points).toEqual([]);
+    expect(infeasible.windows[0]?.walls[0]?.kind).toBe("infeasible");
+  });
+
+  it("makes capture orbit explicit and applies it to the assembled total", () => {
+    const candidate = cell(departure, 200, 1, 3);
+    const defaultPoint = assembleParetoLandscape(input([candidate])).windows[0]?.points[0];
+    const highOrbitPoint = assembleParetoLandscape(input([candidate], TIER0_SHIP, { ...TIER0_MARS_CAPTURE_TARGET, parkingRadiusKm: TIER0_MARS_CAPTURE_TARGET.parkingRadiusKm + 1_000 })).windows[0]?.points[0];
+    expect(defaultPoint?.totalDeltaVKmPerSecond).not.toBeCloseTo(highOrbitPoint?.totalDeltaVKmPerSecond ?? 0, 12);
+  });
+});
