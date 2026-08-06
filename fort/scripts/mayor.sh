@@ -1,9 +1,9 @@
 #!/bin/bash
-# Talk to the Mayor. Usage: fort/scripts/mayor.sh  (add an alias: alias mayor='~/dev/ForgeOs/fort/scripts/mayor.sh')
+# Talk to the Mayor. Usage: fort/scripts/mayor.sh  (add an alias: alias mayor-longburn='~/dev/longburn/fort/scripts/mayor.sh')
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || echo /home/justin/dev/longburn)"
-cd "$REPO"
-fort/scripts/emit.sh session.start "The Overseer summons Marrek" -a marrek -s mayor 2>/dev/null || true
-trap 'fort/scripts/emit.sh session.end "Marrek'\''s audience with the Overseer ends" -a marrek -s mayor 2>/dev/null || true' EXIT
+cd "$REPO" || exit 1
+fort/scripts/emit.sh session.start "The Overseer summons Vardis" -a vardis -s mayor 2>/dev/null || true
+trap 'fort/scripts/emit.sh session.end "Vardis'\''s audience with the Overseer ends" -a vardis -s mayor 2>/dev/null || true' EXIT
 # Kernel mask layer (civilization cycle 4). Permission rules bind a SPELLING,
 # not a file (measured, Proofdelve 21f.8): .e"n"v and .??v reach the same inode
 # and no deny rule binds either. bwrap masks the inode, so every spelling of a

@@ -1,6 +1,6 @@
 #!/bin/bash
-# ForgeOS city status — fast, read-only. Usage: fort/scripts/status.sh
-cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || echo /home/justin/dev/longburn)"
+# Farlantern fort status (longburn) — fast, read-only. Usage: fort/scripts/status.sh
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || echo /home/justin/dev/longburn)" || exit 1
 
 echo "══════════════════ FARLANTERN FORT STATUS (LONGBURN) ══════════════════"
 echo
@@ -17,7 +17,7 @@ echo "── Worktrees (active Forge sessions) ──"
 git worktree list | tail -n +2
 echo
 echo "── Recent handoffs ──"
-ls -t fort/handoffs/*.md 2>/dev/null | grep -v gitkeep | head -3 | while read -r f; do
+find fort/handoffs -maxdepth 1 -name '*.md' -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -3 | cut -f2- | while read -r f; do
   echo "  $f  ($(date -r "$f" '+%b %d %H:%M'))"
 done || echo "  (none yet)"
 echo

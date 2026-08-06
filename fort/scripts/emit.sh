@@ -1,5 +1,5 @@
 #!/bin/bash
-# Proofdelve event emitter — append-only stream for the future fortress visualizer.
+# Farlantern event emitter (longburn) — append-only stream for the future fortress visualizer.
 # Usage: emit.sh <category> <detail> [-a actor] [-s seat] [-t target] [-p payload-json] [-T iso-timestamp]
 # Works from the main checkout AND from any worktree (all append to the main repo's stream).
 set -euo pipefail
@@ -9,6 +9,7 @@ while getopts "a:s:t:p:T:" opt; do
   case $opt in
     a) actor="$OPTARG";; s) seat="$OPTARG";; t) target="$OPTARG";;
     p) payload="$OPTARG";; T) ts="$OPTARG";;
+    *) echo "Usage: emit.sh <category> <detail> [-a actor] [-s seat] [-t target] [-p payload-json] [-T iso-timestamp]" >&2; exit 2;;
   esac
 done
 # Resolve the MAIN repo root even when called from a linked worktree.
