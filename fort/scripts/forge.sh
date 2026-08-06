@@ -49,6 +49,13 @@ MASK_DIRS=("$HOME/.ssh" "$HOME/.aws" "$HOME/.config/gh" "$HOME/.claude" "$HOME/.
 # kernel enforcement is here or nowhere. A poisoned settings.json in the
 # worktree would otherwise govern any later Claude session launched there.
 RO_PATHS=("$HOME/.codex/config.toml" "$wt/.claude" "$root/.claude")
+# Gate 4, mechanically (Warden 6vc r1 finding 7): the fort's constitution is
+# tracked, so every worktree holds a WRITABLE copy inside the Forge's
+# workspace-write root — without these binds, gate 4 for the unattended seat
+# is prose only. Charter, seats, profiles, and the launchers themselves.
+for c in fort/charter.md fort/seats fort/profiles fort/scripts; do
+  RO_PATHS+=("$wt/$c" "$root/$c")
+done
 
 mask=(--bind / / --dev /dev --die-with-parent)
 for f in "${MASK_FILES[@]}"; do
@@ -94,7 +101,16 @@ set +e
   -c "projects.\"$wt\".trust_level=\"trusted\"" \
   -c "sandbox_workspace_write.writable_roots=[\"$root/.git\",\"$root/.beads\",\"$root/fort/events\"]" \
   -m "$model" \
-  "You are Orin Slowfire (they/them), holder of the Forge of Farlantern, the Longburn fort. Read AGENTS.md, fort/charter.md, fort/remember.md, fort/seats/forge.md in this directory, then implement this bead and drive verifiers green. Do not merge, push, or touch .env*/deploy scripts. Commit path-scoped with message starting '$bead: '. Report what you did, verification results, and surprises.
+  "You are Orin Slowfire (they/them), holder of the Forge of Farlantern, the Longburn fort. Read AGENTS.md, fort/charter.md, fort/remember.md, fort/seats/forge.md in this directory, then implement this bead and drive verifiers green.
+
+LANE RULES (longburn-6vc; each encodes a recorded failure, not a hypothetical):
+1. Plan visibly (standing order 3): your handoff must open with the plan you executed and any numbered clarifying questions. If a question is blocking, STOP without implementing and commit a handoff containing only the questions — a stopped session with good questions is a success, not a failure.
+2. Never launch a review or another seat: fort/scripts/warden.sh, forge.sh, and mayor.sh are the harness's lane, and your sandbox cannot authenticate them anyway. (fort/scripts/verify.sh and fort/scripts/emit.sh are part of YOUR normal work — run them.) When implementation is done, commit, write your handoff, and END THE SESSION; the harness verifies and dispatches review. Do not prescribe review ranges in your handoff — the harness owns them.
+3. Your handoff's Model: line must read exactly: $model — this is the launcher-supplied ladder rung, the fort's system of record for failover accounting. Never substitute a product or marketing name.
+4. Commit your handoff before ending the session; an uncommitted handoff is a lost record. Name it fort/handoffs/forge-<date>-$suffix.md, and if that file already exists (an earlier round today), use a NEW file with -roundN appended — never overwrite a prior round's record (SO 7).
+5. Do not merge, push, or touch .env*/deploy scripts. Commit path-scoped with message starting '$bead: '. Never 'git add .' or 'git add -A'.
+
+Report what you did, verification results, and surprises.
 
 BEAD:
 $desc" </dev/null 2>&1) | tee "/tmp/forge-$suffix.log" | tail -30
