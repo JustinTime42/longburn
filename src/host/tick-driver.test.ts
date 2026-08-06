@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { simTimeMs } from "../sim/clock.js";
 import { InMemorySimulationEventStore } from "../sim/event-store.js";
-import { AuthoritativeSimLoop } from "../sim/loop.js";
+import { AuthoritativeSimLoop, AuthoritativeSimLoopConflictError } from "../sim/loop.js";
 import { HostTickDriver, type TickScheduler } from "./tick-driver.js";
 
 class FakeScheduler implements TickScheduler {
@@ -52,6 +52,28 @@ describe("host tick driver", () => {
     expect(scheduler.cleared).toEqual([scheduler]);
   });
 
+  it("does not persist a no-op event when the wall clock has not advanced", async () => {
+    const advances: number[] = [];
+    let eventPositionCalls = 0;
+    const scheduler = new FakeScheduler();
+    const driver = new HostTickDriver({
+      simulation: { advance: async (elapsedMs) => { advances.push(elapsedMs); } },
+      eventPosition: () => {
+        eventPositionCalls += 1;
+        return { x: 0, y: 0, z: 0 };
+      },
+      intervalMs: 10,
+      wallClock: () => 1_000,
+      scheduler
+    });
+
+    driver.start();
+    await driver.tick();
+
+    expect(advances).toEqual([]);
+    expect(eventPositionCalls).toBe(0);
+  });
+
   it("coalesces overlapping timer callbacks and reports timer errors without an unhandled rejection", async () => {
     const scheduler = new FakeScheduler();
     let wallClockMs = 0;
@@ -88,6 +110,35 @@ describe("host tick driver", () => {
     await Promise.resolve();
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(RangeError);
+  });
+
+  it("stops permanently when a stale authoritative loop reports a conflict", async () => {
+    const scheduler = new FakeScheduler();
+    const errors: unknown[] = [];
+    let wallClockMs = 0;
+    const conflict = new AuthoritativeSimLoopConflictError({
+      kind: "conflict",
+      expectedStreamSequence: 2,
+      actualStreamSequence: 3
+    });
+    const driver = new HostTickDriver({
+      simulation: { advance: async () => { throw conflict; } },
+      eventPosition: () => ({ x: 0, y: 0, z: 0 }),
+      intervalMs: 10,
+      wallClock: () => wallClockMs,
+      scheduler,
+      onError: (error) => errors.push(error)
+    });
+
+    driver.start();
+    wallClockMs = 10;
+    scheduler.callback?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toEqual([conflict]);
+    expect(driver.running).toBe(false);
+    expect(scheduler.cleared).toEqual([scheduler]);
   });
 
   it("rejects invalid host configuration and wall-clock values before sim advancement", async () => {
