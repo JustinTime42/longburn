@@ -75,10 +75,13 @@ solver can compute.
   discriminant is exactly zero there and its float sign is noise (Warden din.3 r2 finding 1;
   measured firing rate 22.5%).
 - **[Amendment A] Thrust-feasibility gating is graded, and it gates on the QUOTED delta-v.**
-  Every planner result carries `dutyCycle = Dv_helio/(a·T)` as a first-class output (consumed by
-  G's Pareto assembly and displayed by H2). Typed physics refusal ONLY at dutyCycle > 1 — the
-  ship cannot accumulate the quoted delta-v inside the window (pykep-precedent typed feasibility
-  predicate). A soft `finiteBurnCaution` flag is set at dutyCycle > 0.83 (the published 1.2x
+  Every planner result carries `quotedDutyCycle = Dv_helio/(a·T)` as a first-class output
+  (consumed by G's Pareto assembly and displayed by H2; named `quotedDutyCycle` — Overseer-approved
+  rename 2026-08-05, longburn-606 — to be unmistakable next to `flatspacePlan.burnDutyCycle`, the
+  flat-space plan's own firing fraction, which can differ by 11x). Typed physics refusal ONLY at
+  quotedDutyCycle > 1 — the ship cannot accumulate the quoted delta-v inside the window
+  (pykep-precedent typed feasibility predicate). A soft `finiteBurnCaution` flag is set at
+  quotedDutyCycle > 0.83 (the published 1.2x
   screening margin, Xie & Dempster 2021) — displayed, never refused: hard pruning of
   near-feasible candidates is a named failure mode (Englander et al. 2016 false negatives).
   The gate runs on `Dv_helio = Dv_Lambert × kappa`, never on the flat-space plan's own delta-v,
@@ -166,7 +169,7 @@ Each module is a bead with its own verifiers; dependencies as listed. All pure f
   Verifies: tier-1 flat-space cases; typed infeasibility; t=0-and-nonzero initial-time property
   ranges (min: 0 — Warden r2 finding on excluded fresh-world case). No dependencies.
 - **D. continuum-blend** — eta (diagnostic), kappa, `Dv_helio = Dv_Lambert × kappa` on every leg,
-  dutyCycle + finiteBurnCaution + typed duty>1 refusal [Amendment A — no regime selection].
+  quotedDutyCycle + finiteBurnCaution + typed duty>1 refusal [Amendment A — no regime selection].
   Verifies: tier-2; kappa→1 limits; boundary continuity asserted with an INDEPENDENT Lambert cost
   (no step anywhere on the curve — the near-impulsive self-consistent test is tautological at the
   boundary and does not discharge this verifier). Depends on B, C.
@@ -208,8 +211,9 @@ delta-v selection (eta < 0.2 flat-space / 0.2–0.5 Lambert×kappa / > 0.5 Lambe
 round 1 implemented from the research regime map is retired. eta is demoted to a diagnostic
 annotation. The eta = 0.2 quoted-delta-v cliff (~9%) is thereby removed by construction.
 
-**Ruling B (dr7):** graded thrust-feasibility: `dutyCycle` first-class on every result, typed
-refusal only at dutyCycle > 1, `finiteBurnCaution` at > 0.83, gate computed on the quoted
+**Ruling B (dr7):** graded thrust-feasibility: `quotedDutyCycle` first-class on every result
+(field renamed from `dutyCycle` with Overseer approval 2026-08-05, longburn-606), typed
+refusal only at quotedDutyCycle > 1, `finiteBurnCaution` at > 0.83, gate computed on the quoted
 `Dv_helio`, never the flat-space plan. The ~10% silent transition-band understatement is dissolved
 (kappa is now applied there and duty is reported).
 
