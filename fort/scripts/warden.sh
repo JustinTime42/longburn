@@ -39,8 +39,12 @@ rsync -a \
 # route denied — which is the reduced-capacity review the seat is forbidden to
 # give). Copied, not symlinked: the scratch tree must stay isolated from the
 # candidate tree so a build in scratch can never write through into it.
+# Fallback to the main repo's tree (Warden 6vc r1 finding 3): the case 8ur was
+# filed for is precisely a candidate dir WITHOUT its own node_modules.
 if [ -d "$src/node_modules" ]; then
   rsync -a "$src/node_modules/" "$scratch/node_modules/"
+elif [ -d "$root/node_modules" ]; then
+  rsync -a "$root/node_modules/" "$scratch/node_modules/"
 fi
 
 if [ "${WARDEN_SMOKE:-0}" = "1" ]; then
@@ -51,7 +55,7 @@ else
 
 REVIEW: bead $bead. Diff spec against the real repo: '$range' (use git -C $root diff $range / git -C $root show as appropriate). Judge against the bead's spec, the charter's standing orders and human gates, and Justin's bar: good-sense changes adhering to best practices, no hacky nonsense. Reproduce verifiers yourself in cwd when code changed (fort/scripts/verify.sh if present; otherwise the fort's documented gates). Note which model produced the work and weight scrutiny accordingly.
 
-VERIFIER RECIPE (longburn-8ur; each line is a recorded lesson): cwd is pre-seeded with node_modules copied from the candidate tree, so verifiers should run directly. Run them UNPREFIXED from cwd — 'npm run verify' and 'CI=1 fort/scripts/verify.sh --no-emit' are allow-listed; prefixed or absolute-path invocations may be refused by your profile. If node_modules is missing or broken, 'npm ci --offline --ignore-scripts' restores it. If after that you still cannot execute the verifiers, you MUST say so in your verdict header and mark every claim you could not execute as taken on faith — never present a static review as an executed one.
+VERIFIER RECIPE (longburn-8ur; each line is a recorded lesson): cwd should already contain node_modules (the launcher seeds it when a source tree is available). Run verifiers from cwd exactly as spelled here — other spellings (absolute paths, --prefix, the local binaries) may be refused by your profile. The verified-working gate is: CI=1 fort/scripts/verify.sh --no-emit. The allow-listed direct legs are npm run build and npm test. If node_modules is missing or broken, npm ci --offline --ignore-scripts restores it. If after that you still cannot execute the verifiers, you MUST say so in your verdict header and mark every claim you could not execute as taken on faith — never present a static review as an executed one.
 
 THE BAR FOR BLOCKING (ForgeOs-21f.9, Overseer, 2026-08-04). REQUEST-CHANGES and ESCALATE are reserved for findings where MERGING MAKES THE FORT WORSE THAN NOT MERGING: a broken verifier, a false or unsupported claim in a record, a gate that fails against the charter's threat model, or a correctness bug. Everything else is APPROVE-WITH-FINDINGS, and those findings are filed as beads rather than held against the merge. A true observation is not automatically a blocking one, and filing it as a bead is not a downgrade of the finding — it is how the fort keeps it. What does NOT change: the gate-6 mandatory-ESCALATE cases, your right to block and page Justin, the frontier-only ladder, and your standing rule that you stop rather than review at reduced capacity. This narrows what counts as blocking; it does not ask you to look less carefully or to soften anything you find.
 
