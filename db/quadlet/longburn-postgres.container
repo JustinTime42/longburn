@@ -1,0 +1,39 @@
+# Longburn test Postgres — podman quadlet user unit (longburn-667, Option 1).
+#
+# Standing systemd user service so the Mayor seat can run live integration
+# suites over localhost TCP (which crosses the seat mask) without any access
+# to the container runtime itself. The podman socket stays masked; lifecycle
+# is host-side (Justin applies this file — gate 4 + host config).
+#
+# TEST-ONLY INSTANCE. Bound to 127.0.0.1 on the non-default port 5433 so it
+# can never be mistaken for (or collide with) a real database. The password
+# below is deliberately NOT a secret: this instance only ever holds
+# disposable test data, and putting a real secret here would violate the
+# fort's no-secrets-in-repo rule in the other direction.
+#
+# Install (from the repo root):
+#   mkdir -p ~/.config/containers/systemd
+#   cp -f db/quadlet/longburn-postgres.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#   systemctl --user start longburn-postgres.service
+# Verify:
+#   psql 'postgresql://longburn_test:longburn_test@127.0.0.1:5433/postgres' -c 'select version();'
+
+[Unit]
+Description=Longburn test Postgres (127.0.0.1:5433, test-only, longburn-667)
+
+[Container]
+ContainerName=longburn-postgres
+Image=docker.io/library/postgres:17
+PublishPort=127.0.0.1:5433:5432
+Environment=POSTGRES_USER=longburn_test
+Environment=POSTGRES_PASSWORD=longburn_test
+Volume=longburn-postgres-data:/var/lib/postgresql/data
+HealthCmd=pg_isready -U longburn_test
+HealthInterval=10s
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
