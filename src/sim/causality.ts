@@ -41,10 +41,22 @@ export interface EmittedMessage<T> extends OutboundEvent<T> {
 }
 
 export type CausalityFailureReason = "invalid-provenance" | "invalid-position" | "light-cone-failure" | "early-emission";
+export type TransportFailureReason = "transport-failure";
+export type EmissionFailureReason = CausalityFailureReason | TransportFailureReason;
+
+/**
+ * The incident-safe portion of outbound provenance. Payloads and receiver
+ * worldlines are deliberately excluded because incident sinks are logs.
+ */
+export interface IncidentProvenance {
+  readonly eventTime?: unknown;
+  readonly emissionTime?: unknown;
+  readonly eventPosition?: PositionMeters;
+}
 
 export interface CausalityIncident {
-  readonly reason: CausalityFailureReason;
-  readonly provenance: unknown;
+  readonly reason: EmissionFailureReason;
+  readonly provenance: IncidentProvenance;
   readonly requiredArrivalTimeMs?: number;
   readonly actualElapsedMs?: number;
 }
@@ -84,13 +96,44 @@ const distanceMeters = (left: PositionMeters, right: PositionMeters): number => 
   return distance;
 };
 
+const incidentProvenance = (provenance: unknown): IncidentProvenance => {
+  try {
+    if (typeof provenance !== "object" || provenance === null) {
+      return {};
+    }
+    const event = provenance as Partial<CausalityProvenance>;
+    const eventPosition = event.eventPosition;
+    const position = typeof eventPosition === "object" && eventPosition !== null
+      ? eventPosition as Partial<PositionMeters>
+      : undefined;
+    const x = position?.x;
+    const y = position?.y;
+    const z = position?.z;
+    const positionSnapshot = typeof x === "number" && typeof y === "number" && typeof z === "number" &&
+      Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)
+      ? { x, y, z }
+      : undefined;
+
+    return {
+      eventTime: event.eventTime,
+      emissionTime: event.emissionTime,
+      ...(positionSnapshot === undefined ? {} : { eventPosition: positionSnapshot })
+    };
+  } catch {
+    // A throwing getter in malformed input must not make reporting unsafe.
+    return {};
+  }
+};
+
 const failure = (
   reason: CausalityFailureReason,
   provenance: unknown,
   requiredArrivalTimeMs?: number,
   actualElapsedMs?: number
 ): CausalityInvariantViolation =>
-  new CausalityInvariantViolation({ reason, provenance, requiredArrivalTimeMs, actualElapsedMs });
+  new CausalityInvariantViolation({
+    reason, provenance: incidentProvenance(provenance), requiredArrivalTimeMs, actualElapsedMs
+  });
 
 /**
  * Solves the receiver's arrival-time light cone. The returned value is a
@@ -156,7 +199,9 @@ export interface CausalEmissionGateOptions<T> {
   readonly incrementCausalityFailure: () => void;
 }
 
-export type EmissionResult = { readonly sent: true } | { readonly sent: false };
+export type EmissionResult =
+  | { readonly sent: true }
+  | { readonly sent: false; readonly reason: EmissionFailureReason };
 
 /**
  * The outbound choke point. Future transports receive this gate, never a raw
@@ -174,15 +219,15 @@ export class CausalEmissionGate<T> {
   }
 
   emit(event: OutboundEvent<T>): EmissionResult {
+    let message: EmittedMessage<T>;
     try {
       assertCausalityInvariant(event);
       const observerPosition = validatedPosition(event.observerPositionAt(event.emissionTime));
-      this.#send({ ...event, observerPosition, stalenessMs: event.emissionTime - event.eventTime });
-      return { sent: true };
+      message = { ...event, observerPosition, stalenessMs: event.emissionTime - event.eventTime };
     } catch (error: unknown) {
       const incident = error instanceof CausalityInvariantViolation
         ? error.incident
-        : { reason: "invalid-position" as const, provenance: event };
+        : { reason: "invalid-position" as const, provenance: incidentProvenance(event) };
       try {
         this.#recordIncident(incident);
       } catch {
@@ -193,7 +238,19 @@ export class CausalEmissionGate<T> {
       } catch {
         // Alerting cannot turn a closed gate into a send.
       }
-      return { sent: false };
+      return { sent: false, reason: incident.reason };
+    }
+
+    try {
+      this.#send(message);
+      return { sent: true };
+    } catch {
+      try {
+        this.#recordIncident({ reason: "transport-failure", provenance: incidentProvenance(event) });
+      } catch {
+        // Transport reporting cannot change the delivery outcome.
+      }
+      return { sent: false, reason: "transport-failure" };
     }
   }
 }

@@ -79,7 +79,7 @@ describe("causality invariant", () => {
       observerPositionAt: stationaryAt({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 })
     });
 
-    expect(result).toEqual({ sent: false });
+    expect(result).toEqual({ sent: false, reason: "invalid-provenance" });
     expect(send).not.toHaveBeenCalled();
     expect(recordIncident).toHaveBeenCalledOnce();
     expect(incrementCausalityFailure).toHaveBeenCalledOnce();
@@ -98,7 +98,7 @@ describe("causality invariant", () => {
       observerPositionAt: (timeMs) => timeMs <= 0 ? { x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 } : ORIGIN
     });
 
-    expect(result).toEqual({ sent: false });
+    expect(result).toEqual({ sent: false, reason: "light-cone-failure" });
     expect(send).not.toHaveBeenCalled();
     expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "light-cone-failure" }));
     expect(incrementCausalityFailure).toHaveBeenCalledOnce();
@@ -115,6 +115,31 @@ describe("causality invariant", () => {
     expect(() => assertCausalityInvariant({
       eventTime: simTimeMs(0), emissionTime: simTimeMs(earliest - 1), eventPosition, observerPositionAt
     })).toThrow(CausalityInvariantViolation);
+  });
+
+  it("labels transport faults without incrementing the causality alert", () => {
+    const send = vi.fn(() => { throw new Error("connection reset after write"); });
+    const recordIncident = vi.fn();
+    const incrementCausalityFailure = vi.fn();
+    const gate = new CausalEmissionGate({ send, recordIncident, incrementCausalityFailure });
+    const secretPayload = { message: "do not place this in an incident" };
+
+    const result = gate.emit({
+      payload: secretPayload,
+      eventTime: simTimeMs(0),
+      emissionTime: simTimeMs(1_000),
+      eventPosition: ORIGIN,
+      observerPositionAt: stationaryAt({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 })
+    });
+
+    expect(result).toEqual({ sent: false, reason: "transport-failure" });
+    expect(send).toHaveBeenCalledOnce();
+    expect(recordIncident).toHaveBeenCalledWith({
+      reason: "transport-failure",
+      provenance: { eventTime: 0, emissionTime: 1_000, eventPosition: ORIGIN }
+    });
+    expect(recordIncident.mock.calls[0]?.[0].provenance).not.toHaveProperty("payload");
+    expect(incrementCausalityFailure).not.toHaveBeenCalled();
   });
 
   it("independently generates both sides of the stationary light-time boundary", () => {
@@ -204,7 +229,9 @@ describe("causality invariant", () => {
               payload: { seed, index }, eventTime: simTimeMs(eventTime), eventPosition: ORIGIN,
               observerPositionAt: stationaryAt({ x: distance, y: 0, z: 0 })
             };
-            expect(gate.emit({ ...event, emissionTime: simTimeMs(earliest - 1) })).toEqual({ sent: false });
+            expect(gate.emit({ ...event, emissionTime: simTimeMs(earliest - 1) })).toEqual({
+              sent: false, reason: "early-emission"
+            });
             expect(gate.emit({ ...event, emissionTime: simTimeMs(earliest) })).toEqual({ sent: true });
           }
 
