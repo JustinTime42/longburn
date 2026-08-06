@@ -76,8 +76,11 @@ export class AuthoritativeSimLoop {
     return this.#store.readStream(this.#streamId);
   }
 
-  async #append(event: Omit<StoredSimEvent, "sequence">): Promise<void> {
-    await this.#store.append(this.#streamId, event);
+  async #append(event: Omit<StoredSimEvent, "streamSequence" | "globalPosition">): Promise<void> {
+    const result = await this.#store.append(this.#streamId, event);
+    if (result.kind === "conflict") {
+      throw new Error("Authoritative simulation loop encountered an unexpected stream sequence conflict.");
+    }
   }
 
   #assertRecordTime(record: StoredSimEvent): void {
