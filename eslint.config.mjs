@@ -42,9 +42,7 @@ export default tseslint.config(
   },
   {
     files: ["src/sim/**/*.ts", "test/fixtures/sim/**/*.ts"],
-    plugins: { "causal-boundary": causalBoundaryPlugin },
     rules: {
-      "causal-boundary/no-raw-outbound": "error",
       "no-restricted-properties": [
         "error",
         {
@@ -85,6 +83,13 @@ export default tseslint.config(
           message: "Sim code must use SeededRng, never globalThis.Math randomness."
         }
       ]
+    }
+  },
+  {
+    files: ["src/**/*.ts", "test/fixtures/sim/**/*.ts"],
+    plugins: { "causal-boundary": causalBoundaryPlugin },
+    rules: {
+      "causal-boundary/no-raw-outbound": "error"
     }
   }
 );
