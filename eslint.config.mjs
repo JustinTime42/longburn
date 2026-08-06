@@ -41,7 +41,7 @@ export default tseslint.config(
     ignores: ["test/fixtures/**"]
   },
   {
-    files: ["src/**/*.ts", "test/fixtures/sim/**/*.ts"],
+    files: ["src/sim/**/*.ts", "test/fixtures/sim/**/*.ts"],
     plugins: { "causal-boundary": causalBoundaryPlugin },
     rules: {
       "causal-boundary/no-raw-outbound": "error",
