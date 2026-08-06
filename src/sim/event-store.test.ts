@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { simTimeMs } from "./clock.js";
 import {
   InMemorySimulationEventStore,
+  PostgresSimulationEventStore,
   type AppendSimEventResult,
+  type PostgresQueryClient,
   type SimulationEventStore
 } from "./event-store.js";
 
@@ -32,10 +34,10 @@ const assertSequenceContract = (makeStore: () => SimulationEventStore): void => 
 
     expect([firstAlpha.streamSequence, secondAlpha.streamSequence]).toEqual([1, 2]);
     expect(firstBeta.streamSequence).toBe(1);
-    expect(new Set([`${"alpha"}:${firstAlpha.streamSequence}`, `${"beta"}:${firstBeta.streamSequence}`, `${"alpha"}:${secondAlpha.streamSequence}`]).size).toBe(3);
     expect([firstAlpha.globalPosition, firstBeta.globalPosition, secondAlpha.globalPosition]).toEqual(
       [...[firstAlpha.globalPosition, firstBeta.globalPosition, secondAlpha.globalPosition]].sort((a, b) => a - b)
     );
+    expect(secondAlpha.globalPosition - firstBeta.globalPosition).toBeGreaterThan(1);
   });
 
   it("returns a typed conflict without appending when the expected stream sequence is stale", async () => {
@@ -48,8 +50,55 @@ const assertSequenceContract = (makeStore: () => SimulationEventStore): void => 
     });
     expect((await store.readStream("conflict")).events).toHaveLength(1);
   });
+
+  it("rejects appends and reads for unknown streams", async () => {
+    const store = makeStore();
+
+    await expect(store.append("missing", event(1))).rejects.toThrow("Unknown simulation stream: missing");
+    await expect(store.append("missing", event(1), 0)).rejects.toThrow("Unknown simulation stream: missing");
+    await expect(store.readStream("missing")).rejects.toThrow("Unknown simulation stream: missing");
+  });
 };
 
 describe("InMemorySimulationEventStore", () => {
   assertSequenceContract(() => new InMemorySimulationEventStore());
+});
+
+describe("PostgresSimulationEventStore", () => {
+  it("retries its sequence constraint race and returns the typed conflict", async () => {
+    let calls = 0;
+    const client: PostgresQueryClient = {
+      query: <Row extends Record<string, unknown>>() => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.reject(Object.assign(new Error("duplicate stream sequence"), {
+            code: "23505",
+            constraint: "simulation_events_stream_sequence_unique"
+          }));
+        }
+        const rows = [{
+          stream_sequence: null,
+          global_position: null,
+          actual_stream_sequence: 1,
+          event_time_ms: null,
+          event_position: null,
+          event: null
+        }] as unknown as readonly Row[];
+        return Promise.resolve({ rows });
+      }
+    };
+    const store = new PostgresSimulationEventStore(client);
+
+    await expect(store.append("race", event(1), 0)).resolves.toEqual({
+      kind: "conflict", expectedStreamSequence: 0, actualStreamSequence: 1
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("reports an unknown stream when append returns no row", async () => {
+    const client: PostgresQueryClient = { query: () => Promise.resolve({ rows: [] }) };
+    const store = new PostgresSimulationEventStore(client);
+
+    await expect(store.append("missing", event(1), 0)).rejects.toThrow("Unknown simulation stream: missing");
+  });
 });

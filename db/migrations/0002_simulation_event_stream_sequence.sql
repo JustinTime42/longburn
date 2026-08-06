@@ -1,10 +1,13 @@
 -- `sequence` remains the global, physical identity used for subscriptions.
 -- `stream_sequence` is the contiguous one-based logical ordering for replay.
+BEGIN;
+
 ALTER TABLE simulation_events ADD COLUMN stream_sequence BIGINT;
 
 -- This is an upgrade migration: the append-only trigger protects application
 -- traffic, while this one-time migration derives the immutable logical order
--- for rows that predate the column. Migration runners execute this atomically.
+-- for rows that predate the column. The explicit transaction ensures a failed
+-- backfill cannot leave the append-only trigger disabled.
 ALTER TABLE simulation_events DISABLE TRIGGER simulation_events_no_update;
 WITH numbered_events AS (
   SELECT ctid,
@@ -20,3 +23,5 @@ ALTER TABLE simulation_events ENABLE TRIGGER simulation_events_no_update;
 ALTER TABLE simulation_events ALTER COLUMN stream_sequence SET NOT NULL;
 ALTER TABLE simulation_events
   ADD CONSTRAINT simulation_events_stream_sequence_unique UNIQUE (stream_id, stream_sequence);
+
+COMMIT;

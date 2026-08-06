@@ -43,8 +43,12 @@ const runPsql = (arguments_, sql) => new Promise((resolve, reject) => {
  */
 const psqlClient = {
   async query(sql, values = []) {
-    const parameterizedSql = sql.replace(/\$(\d+)/g, (_match, index) => `:'p${index}'`);
-    const variables = values.flatMap((value, index) => ["-v", `p${index + 1}=${value == null ? "" : String(value)}`]);
+    const parameterizedSql = sql.replace(/\$(\d+)/g, (_match, index) => (
+      values[Number(index) - 1] == null ? "NULL" : `:'p${index}'`
+    ));
+    const variables = values.flatMap((value, index) => (
+      value == null ? [] : ["-v", `p${index + 1}=${String(value)}`]
+    ));
     let stdout;
     try {
       stdout = await runPsql([
@@ -61,7 +65,14 @@ const psqlClient = {
     } catch (error) {
       // Do not expose a database URL (which may embed credentials) in test logs.
       const stderr = error instanceof Error ? error.message.trim() : "";
-      throw new Error(`psql query failed: ${stderr || "unknown error"}`);
+      const sanitized = new Error(`psql query failed: ${stderr || "unknown error"}`);
+      if (stderr.includes('duplicate key value violates unique constraint "simulation_events_stream_sequence_unique"')) {
+        Object.assign(sanitized, {
+          code: "23505",
+          constraint: "simulation_events_stream_sequence_unique"
+        });
+      }
+      throw sanitized;
     }
 
     return { rows: deserializeRows(sql, stdout) };
@@ -74,14 +85,19 @@ const deserializeRows = (sql, stdout) => {
 
   let deserialize;
   if (sql.includes("RETURNING stream_sequence") || sql.includes("SELECT stream_sequence")) {
-    deserialize = (fields) => ({
-      stream_sequence: fields[0] === "" ? null : Number(fields[0]),
-      global_position: fields[1] === "" ? null : Number(fields[1]),
-      actual_stream_sequence: fields[2] === "" ? null : Number(fields[2]),
-      event_time_ms: fields[3] === "" ? null : Number(fields[3]),
-      event_position: fields[4] === "" ? null : JSON.parse(fields[4]),
-      event: fields[5] === "" ? null : JSON.parse(fields[5])
-    });
+    deserialize = (fields) => {
+      if (fields.length !== 6) {
+        throw new Error(`Expected 6 event fields from psql, received ${fields.length}.`);
+      }
+      return {
+        stream_sequence: fields[0] === "" ? null : Number(fields[0]),
+        global_position: fields[1] === "" ? null : Number(fields[1]),
+        actual_stream_sequence: fields[2] === "" ? null : Number(fields[2]),
+        event_time_ms: fields[3] === "" ? null : Number(fields[3]),
+        event_position: fields[4] === "" ? null : JSON.parse(fields[4]),
+        event: fields[5] === "" ? null : JSON.parse(fields[5])
+      };
+    };
   } else if (sql.includes("FROM simulation_streams")) {
     deserialize = (fields) => ({
       stream_id: fields[0],
@@ -121,12 +137,12 @@ integrationDescribe(
         SELECT
           to_regclass('public.simulation_streams') IS NOT NULL AS streams_present,
           to_regclass('public.simulation_events') IS NOT NULL AS events_present,
-          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_update' AND NOT tgisinternal) AS streams_no_update_trigger_present,
-          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_delete' AND NOT tgisinternal) AS streams_no_delete_trigger_present,
-          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_truncate' AND NOT tgisinternal) AS streams_no_truncate_trigger_present,
-          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_update' AND NOT tgisinternal) AS events_no_update_trigger_present,
-          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_delete' AND NOT tgisinternal) AS events_no_delete_trigger_present,
-          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_truncate' AND NOT tgisinternal) AS events_no_truncate_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_update' AND NOT tgisinternal AND tgenabled = 'O') AS streams_no_update_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_delete' AND NOT tgisinternal AND tgenabled = 'O') AS streams_no_delete_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_streams_no_truncate' AND NOT tgisinternal AND tgenabled = 'O') AS streams_no_truncate_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_update' AND NOT tgisinternal AND tgenabled = 'O') AS events_no_update_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_delete' AND NOT tgisinternal AND tgenabled = 'O') AS events_no_delete_trigger_present,
+          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'simulation_events_no_truncate' AND NOT tgisinternal AND tgenabled = 'O') AS events_no_truncate_trigger_present,
           EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'simulation_events_stream_sequence_unique') AS stream_sequence_unique_present
       `)).resolves.toEqual({
         rows: [{
@@ -180,6 +196,36 @@ integrationDescribe(
         eventTime: simTimeMs(31),
         eventPosition: { x: 0, y: 0, z: 0 }
       }, 0)).resolves.toEqual({ kind: "conflict", expectedStreamSequence: 0, actualStreamSequence: 2 });
+
+      const raceStreamId = `contract-race-${randomUUID()}`;
+      await adapter.createStream({ id: raceStreamId, seed: 1, initialTime: simTimeMs(0) });
+      const raced = await Promise.all([
+        adapter.append(raceStreamId, {
+          event: { type: "clockAdvanced", elapsedMs: 1 },
+          eventTime: simTimeMs(1),
+          eventPosition: { x: 0, y: 0, z: 0 }
+        }, 0),
+        adapter.append(raceStreamId, {
+          event: { type: "clockAdvanced", elapsedMs: 2 },
+          eventTime: simTimeMs(2),
+          eventPosition: { x: 0, y: 0, z: 0 }
+        }, 0)
+      ]);
+      expect(raced.map((result) => result.kind).sort()).toEqual(["appended", "conflict"]);
+      expect(raced.find((result) => result.kind === "conflict")).toEqual({
+        kind: "conflict", expectedStreamSequence: 0, actualStreamSequence: 1
+      });
+
+      await expect(adapter.append(`missing-${randomUUID()}`, {
+        event: { type: "clockAdvanced", elapsedMs: 1 },
+        eventTime: simTimeMs(1),
+        eventPosition: { x: 0, y: 0, z: 0 }
+      })).rejects.toThrow("Unknown simulation stream");
+      await expect(adapter.append(`missing-${randomUUID()}`, {
+        event: { type: "clockAdvanced", elapsedMs: 1 },
+        eventTime: simTimeMs(1),
+        eventPosition: { x: 0, y: 0, z: 0 }
+      }, 0)).rejects.toThrow("Unknown simulation stream");
 
       const persisted = await adapter.readStream(streamId);
       expect(persisted).toMatchObject({
