@@ -1,7 +1,7 @@
 import { SimClock, simTimeMs, type SimTimeMs } from "./clock.js";
 import { burnDurationMs, type QuantizedBurnParameters } from "./mass-cargo.js";
 import { SeededRng } from "./rng.js";
-import type { PositionMeters } from "./causality.js";
+import { assertInboundCausalityInvariant, type PositionMeters } from "./causality.js";
 
 /** A view of executed history and elapsed virtual time, never stored by an event. */
 export type ShipPhase = "docked" | "accel" | "coast" | "flip" | "decel" | "arrived";
@@ -208,6 +208,7 @@ export class SimEventReducer {
         if (event.commandId.length === 0 || event.issuedAtMs !== this.#clock.now || event.arrivalAtMs < event.issuedAtMs) {
           throw new RangeError("Issued commands require a non-empty identity and a non-past arrival time.");
         }
+        assertInboundCausalityInvariant(event.issuedAtMs, event.arrivalAtMs, event.hqPosition, event.arrivalPosition);
         return;
       case "planRevisionRefused":
         assertPlanRevisionRefusalReason(event.reason);
