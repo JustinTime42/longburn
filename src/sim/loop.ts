@@ -7,7 +7,14 @@ import {
   type StreamSequenceConflict,
   type StoredSimEvent
 } from "./event-store.js";
-import { type SimEvent, type SimState } from "./event-log.js";
+import {
+  type CommittedShipOrder,
+  type ScheduledShipDecision,
+  type ShipPhase,
+  type ShipState,
+  type SimEvent,
+  type SimState
+} from "./event-log.js";
 import { SeededRng } from "./rng.js";
 
 export interface AuthoritativeSimLoopOptions {
@@ -41,6 +48,7 @@ export class AuthoritativeSimLoop {
   readonly #store: SimulationEventStore;
   readonly #streamId: string;
   readonly #randomValues: number[] = [];
+  #ship: ShipState | undefined;
   #streamSequence = 0;
 
   private constructor({ stream, store }: AuthoritativeSimLoopOptions) {
@@ -67,16 +75,48 @@ export class AuthoritativeSimLoop {
   }
 
   get state(): SimState {
-    return { time: this.#clock.now, randomValues: [...this.#randomValues] };
+    return this.#ship === undefined
+      ? { time: this.#clock.now, randomValues: [...this.#randomValues] }
+      : { time: this.#clock.now, randomValues: [...this.#randomValues], ship: this.#ship };
   }
 
   /** One host tick. The stored event is durable before it mutates local state. */
   async advance(elapsedMs: number, eventPosition: PositionMeters): Promise<SimTimeMs> {
-    const event: SimEvent = { type: "clockAdvanced", elapsedMs };
-    const eventTime = simTimeMs(this.#clock.now + elapsedMs);
-    await this.#append({ event, eventTime, eventPosition });
-    this.#apply(event);
+    if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0) {
+      throw new RangeError("Simulation advance must be a non-negative safe integer in milliseconds.");
+    }
+    const targetTime = this.#clock.now + elapsedMs;
+    while (this.#clock.now < targetTime) {
+      await this.#advanceDueShipPhases(eventPosition);
+      const remainingToTarget = targetTime - this.#clock.now;
+      const remainingToPhase = this.#remainingToNextShipPhase();
+      const step = remainingToPhase === undefined ? remainingToTarget : Math.min(remainingToTarget, remainingToPhase);
+      const event: SimEvent = { type: "clockAdvanced", elapsedMs: step };
+      await this.#append({ event, eventTime: simTimeMs(this.#clock.now + step), eventPosition });
+      this.#apply(event);
+      await this.#advanceDueShipPhases(eventPosition);
+    }
+    await this.#advanceDueShipPhases(eventPosition);
     return this.#clock.now;
+  }
+
+  /**
+   * The only commitment entry point. It persists quantized input before any
+   * local state changes and deliberately accepts no planner callback.
+   */
+  async commitShipOrder(
+    order: CommittedShipOrder,
+    decisions: readonly ScheduledShipDecision[],
+    eventPosition: PositionMeters
+  ): Promise<void> {
+    if (this.#ship !== undefined) throw new Error("A ship order is already committed.");
+    await this.#append({ event: { type: "shipOrderCommitted", order }, eventTime: this.#clock.now, eventPosition });
+    this.#apply({ type: "shipOrderCommitted", order });
+    for (const decision of decisions) {
+      await this.#append({ event: { type: "shipDecisionWindowScheduled", decision }, eventTime: this.#clock.now, eventPosition });
+      this.#apply({ type: "shipDecisionWindowScheduled", decision });
+    }
+    await this.#advanceDueShipPhases(eventPosition);
   }
 
   /** Records each simulation RNG decision so replay never relies on host order. */
@@ -119,6 +159,53 @@ export class AuthoritativeSimLoop {
         return;
       case "randomValueRequested":
         this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
+        return;
+      case "shipOrderCommitted":
+        if (this.#ship !== undefined) throw new Error("A ship order is already committed.");
+        this.#ship = { order: event.order, phase: "accelBurn", phaseStartedAtMs: this.#clock.now, scheduledDecisions: [] };
+        return;
+      case "shipDecisionWindowScheduled":
+        if (this.#ship === undefined) throw new Error("Cannot schedule a decision without a committed ship order.");
+        this.#ship = { ...this.#ship, scheduledDecisions: [...this.#ship.scheduledDecisions, event.decision] };
+        return;
+      case "shipPhaseChanged":
+        if (this.#ship === undefined) throw new Error("Cannot change phase without a committed ship order.");
+        this.#ship = { ...this.#ship, phase: event.phase, phaseStartedAtMs: this.#clock.now };
+        return;
+    }
+  }
+
+  #remainingToNextShipPhase(): number | undefined {
+    if (this.#ship === undefined || this.#ship.phase === "arrived") return undefined;
+    const duration = this.#phaseDuration(this.#ship.phase);
+    return Math.max(0, duration - (this.#clock.now - this.#ship.phaseStartedAtMs));
+  }
+
+  #phaseDuration(phase: ShipPhase): number {
+    if (this.#ship === undefined) throw new Error("No committed ship order.");
+    switch (phase) {
+      case "accelBurn": return this.#ship.order.accelerationBurn.burnDurationMs;
+      case "coast": return this.#ship.order.coastDurationMs;
+      case "flip": return 0;
+      case "decelBurn": return this.#ship.order.decelerationBurn.burnDurationMs;
+      case "docked":
+      case "arrived":
+        return 0;
+    }
+  }
+
+  async #advanceDueShipPhases(eventPosition: PositionMeters): Promise<void> {
+    while (this.#ship !== undefined && this.#ship.phase !== "arrived" && this.#remainingToNextShipPhase() === 0) {
+      const phase: Exclude<ShipPhase, "docked"> = this.#ship.phase === "accelBurn"
+        ? "coast"
+        : this.#ship.phase === "coast"
+          ? "flip"
+          : this.#ship.phase === "flip"
+            ? "decelBurn"
+            : "arrived";
+      const event: SimEvent = { type: "shipPhaseChanged", phase };
+      await this.#append({ event, eventTime: this.#clock.now, eventPosition });
+      this.#apply(event);
     }
   }
 }
