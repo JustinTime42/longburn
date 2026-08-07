@@ -32,7 +32,7 @@ describe("PlanRevision command transport", () => {
 
     expect(loop.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["arrival-burn"]);
     expect((await loop.persistedStream()).events.map(({ event, eventTime }) => [event.type, eventTime])).toEqual([
-      ["clockAdvanced", 999], ["clockAdvanced", 1_000], ["planRevisionApplied", 1_000]
+      ["commandIssued", 0], ["clockAdvanced", 999], ["clockAdvanced", 1_000], ["planRevisionApplied", 1_000]
     ]);
   });
 
@@ -78,7 +78,7 @@ describe("PlanRevision command transport", () => {
 
     const events = await loop.persistedStream();
     expect(events.events.map(({ event }) => event.type)).toEqual([
-      "planRevisionApplied", "clockAdvanced", "burnStarted", "planRevisionRefused"
+      "planRevisionApplied", "commandIssued", "clockAdvanced", "burnStarted", "planRevisionRefused"
     ]);
     expect(events.events.at(-1)?.event).toEqual(expect.objectContaining({
       type: "planRevisionRefused", reason: "executed-burn-conflict"
@@ -96,5 +96,25 @@ describe("PlanRevision command transport", () => {
       type: "planRevisionRefused", reason: "invalid-plan"
     }));
     expect(events.events.some(({ event }) => event.type === "planRevisionApplied")).toBe(false);
+  });
+
+  it("rebuilds an in-flight command from commandIssued after a restart", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({
+      store, stream: { id: "resume-inbound", seed: 1, initialTime: simTimeMs(0) }
+    });
+    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+    await transport.issue({ nodes: [node("after-restart", 2_000)] });
+
+    const resumed = await AuthoritativeSimLoop.resume(store, "resume-inbound");
+    await resumed.advance(1_000, position);
+
+    const events = await resumed.persistedStream();
+    expect(events.events.map(({ event }) => event.type)).toEqual(["commandIssued", "clockAdvanced", "planRevisionApplied"]);
+    expect(events.events[0]).toMatchObject({
+      eventTime: 0, eventPosition: { x: 0, y: 0, z: 0 },
+      event: { type: "commandIssued", issuedAtMs: 0, arrivalAtMs: 1_000, replacedNodeIds: [] }
+    });
+    expect(resumed.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["after-restart"]);
   });
 });

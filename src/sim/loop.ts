@@ -24,9 +24,10 @@ export class AuthoritativeSimLoop {
   #streamSequence = 0;
   #writer: Promise<void> = Promise.resolve();
   #inboundPlanRevisions: {
+    readonly commandId: string;
     readonly flightPlan: FlightPlan;
     readonly arrivalAtMs: SimTimeMs;
-    readonly eventPosition: () => PositionMeters;
+    readonly arrivalPosition: PositionMeters;
     /** Pending nodes this wholesale replacement was issued to replace. */
     readonly replacedNodeIds: ReadonlySet<string>;
   }[] = [];
@@ -49,6 +50,20 @@ export class AuthoritativeSimLoop {
       loop.#assertRecordTime(record);
       loop.#reducer.apply(record.event);
     }
+    const pending = new Map<string, Extract<SimEvent, { readonly type: "commandIssued" }>>();
+    for (const { event } of persisted.events) {
+      if (event.type === "commandIssued") pending.set(event.commandId, event);
+      if ((event.type === "planRevisionApplied" || event.type === "planRevisionRefused") && event.commandId !== undefined) {
+        pending.delete(event.commandId);
+      }
+    }
+    loop.#inboundPlanRevisions = [...pending.values()].map((command) => ({
+      commandId: command.commandId,
+      flightPlan: command.flightPlan,
+      arrivalAtMs: command.arrivalAtMs,
+      arrivalPosition: command.arrivalPosition,
+      replacedNodeIds: new Set(command.replacedNodeIds)
+    })).sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
     loop.#streamSequence = persisted.events.length;
     return loop;
   }
@@ -77,20 +92,27 @@ export class AuthoritativeSimLoop {
   async scheduleInboundPlanRevision(
     flightPlan: FlightPlan,
     arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
-    eventPosition: () => PositionMeters
+    hqPosition: PositionMeters,
+    arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
   ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }> {
     return this.#serialize(async () => {
       const issuedAtMs = this.#reducer.time;
       const arrivalAtMs = simTimeMs(arrivalTimeForIssue(issuedAtMs));
       if (arrivalAtMs < issuedAtMs) throw new RangeError("Inbound plan-revision arrival cannot precede its issue time.");
+      const commandId = `command-${this.#streamSequence + 1}`;
+      const replacedNodeIds = this.#reducer.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId) ?? [];
+      const arrivalPosition = arrivalPositionAt(arrivalAtMs);
+      const command: SimEvent = {
+        type: "commandIssued", commandId, issuedAtMs, arrivalAtMs,
+        hqPosition, arrivalPosition, replacedNodeIds, flightPlan
+      };
+      await this.#append({ event: command, eventTime: issuedAtMs, eventPosition: hqPosition });
+      this.#reducer.apply(command);
       this.#inboundPlanRevisions.push({
-        flightPlan,
-        arrivalAtMs,
-        eventPosition,
-        replacedNodeIds: new Set(this.#reducer.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId) ?? [])
+        commandId, flightPlan, arrivalAtMs, arrivalPosition, replacedNodeIds: new Set(replacedNodeIds)
       });
       this.#inboundPlanRevisions.sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
-      await this.#advanceDueWork(eventPosition);
+      await this.#advanceDueWork(() => arrivalPosition);
       return { issuedAtMs, arrivalAtMs };
     });
   }
@@ -166,20 +188,17 @@ export class AuthoritativeSimLoop {
     while (this.#inboundPlanRevisions[0]?.arrivalAtMs === this.#reducer.time) {
       const revision = this.#inboundPlanRevisions.shift()!;
       try {
-        if ((this.#reducer.state.ship?.executedBurns ?? []).some(({ node }) => revision.replacedNodeIds.has(node.nodeId))) {
-          throw new PlanRevisionValidationError("executed-burn-conflict", "A plan revision arrived after a burn it would replace started.");
-        }
         const validatedPlan = validateFlightPlanRevision(
-          revision.flightPlan, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? []
+          revision.flightPlan, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? [], [...revision.replacedNodeIds]
         );
-        const event: SimEvent = { type: "planRevisionApplied", flightPlan: validatedPlan };
-        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: revision.eventPosition() });
+        const event: SimEvent = { type: "planRevisionApplied", commandId: revision.commandId, replacedNodeIds: [...revision.replacedNodeIds], flightPlan: validatedPlan };
+        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: revision.arrivalPosition });
         this.#reducer.apply(event);
       } catch (error: unknown) {
         if (!(error instanceof PlanRevisionValidationError)) throw error;
         // Arrival-time validation is authoritative. Refusals preserve opaque command payloads for disputes.
-        const event: SimEvent = { type: "planRevisionRefused", flightPlan: revision.flightPlan, reason: error.reason };
-        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: revision.eventPosition() });
+        const event: SimEvent = { type: "planRevisionRefused", commandId: revision.commandId, flightPlan: revision.flightPlan, reason: error.reason };
+        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: revision.arrivalPosition });
         this.#reducer.apply(event);
       }
       await this.#advanceDueBurns(eventPosition);

@@ -8,7 +8,8 @@ export interface InboundPlanRevisionLoop {
   scheduleInboundPlanRevision(
     flightPlan: FlightPlan,
     arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
-    eventPosition: () => PositionMeters
+    hqPosition: PositionMeters,
+    arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
   ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }>;
 }
 
@@ -40,7 +41,8 @@ export class PlanRevisionTransport {
         eventPosition: T0_EARTH_HQ_POSITION_METERS,
         observerPositionAt: this.#shipPositionAt
       })),
-      () => this.#shipPositionAt(this.#loop.state.time)
+      T0_EARTH_HQ_POSITION_METERS,
+      (arrivalAtMs) => this.#shipPositionAt(arrivalAtMs)
     );
   }
 }
