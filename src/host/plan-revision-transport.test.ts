@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { SPEED_OF_LIGHT_METERS_PER_SECOND } from "../sim/causality.js";
@@ -116,5 +117,96 @@ describe("PlanRevision command transport", () => {
       event: { type: "commandIssued", issuedAtMs: 0, arrivalAtMs: 1_000, replacedNodeIds: [] }
     });
     expect(resumed.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["after-restart"]);
+  });
+
+  it("preserves a non-empty replacement set across restart and stops at the rebuilt command boundary", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({
+      store, stream: { id: "resume-replacement", seed: 1, initialTime: simTimeMs(0) }
+    });
+    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+    await loop.applyPlanRevision({ nodes: [node("old", 3_000)] }, position);
+    await transport.issue({ nodes: [node("replacement", 4_000)] });
+
+    const resumed = await AuthoritativeSimLoop.resume(store, "resume-replacement");
+    await resumed.advance(999, position);
+    expect(resumed.state.time).toBe(simTimeMs(999));
+    expect(resumed.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["old"]);
+    await resumed.advance(1, position);
+    expect(resumed.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["replacement"]);
+    expect((await resumed.persistedStream()).events.find(({ event }) => event.type === "commandIssued")?.event)
+      .toMatchObject({ replacedNodeIds: ["old"] });
+  });
+
+  it("records an arrival-time refusal after restart when the replaced burn fired in transit", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({
+      store, stream: { id: "resume-refusal", seed: 1, initialTime: simTimeMs(0) }
+    });
+    const transport = new PlanRevisionTransport({
+      loop, shipPositionAt: () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND * 2, y: 0, z: 0 })
+    });
+    await loop.applyPlanRevision({ nodes: [node("old", 1_000)] }, position);
+    await transport.issue({ nodes: [node("replacement", 3_000)] });
+
+    const resumed = await AuthoritativeSimLoop.resume(store, "resume-refusal");
+    await resumed.advance(2_000, position);
+    expect(resumed.state.ship?.executedBurns.map(({ node: burn }) => burn.nodeId)).toEqual(["old"]);
+    expect((await resumed.persistedStream()).events.at(-1)?.event).toMatchObject({
+      type: "planRevisionRefused", reason: "executed-burn-conflict"
+    });
+  });
+
+  it("queues issue behind an in-flight advance and timestamps it with post-tick sim time", async () => {
+    const backingStore = new InMemorySimulationEventStore();
+    let appendStarted: (() => void) | undefined;
+    const appendBlocked = new Promise<void>((resolve) => { appendStarted = resolve; });
+    let releaseAppend: (() => void) | undefined;
+    const appendReleased = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    let blockNextAppend = true;
+    const store: SimulationEventStore = {
+      createStream: (stream) => backingStore.createStream(stream),
+      append: async (...args) => {
+        if (blockNextAppend) {
+          blockNextAppend = false;
+          appendStarted?.();
+          await appendReleased;
+        }
+        return backingStore.append(...args);
+      },
+      readStream: (streamId) => backingStore.readStream(streamId)
+    };
+    const loop = await AuthoritativeSimLoop.create({
+      store, stream: { id: "issue-during-advance", seed: 1, initialTime: simTimeMs(0) }
+    });
+    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+    const tick = loop.advance(1_000, position);
+    await appendBlocked;
+    const issued = transport.issue({ nodes: [node("post-tick", 3_000)] });
+    releaseAppend?.();
+    await tick;
+
+    await expect(issued).resolves.toEqual({ issuedAtMs: simTimeMs(1_000), arrivalAtMs: simTimeMs(2_000) });
+  });
+
+  it("never mutates an executed burn across reachable inbound revision sequences", async () => {
+    await fc.assert(fc.asyncProperty(
+      fc.array(fc.integer({ min: 1, max: 100 }), { minLength: 1, maxLength: 12 }),
+      async (durations) => {
+        const store = new InMemorySimulationEventStore();
+        const loop = await AuthoritativeSimLoop.create({
+          store, stream: { id: `immutability-${durations.join("-")}`, seed: 1, initialTime: simTimeMs(0) }
+        });
+        const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+        await loop.applyPlanRevision({ nodes: [node("executed", 1, 0)] }, position);
+        await loop.advance(1, position);
+        const history = loop.state.ship?.executedBurns;
+        for (const [index, duration] of durations.entries()) {
+          await transport.issue({ nodes: [node(`pending-${index}`, 10_000 + index, duration)] });
+          await loop.advance(1_000, position);
+          expect(loop.state.ship?.executedBurns).toEqual(history);
+        }
+      }
+    ), { seed: 0x1aa117, numRuns: 100 });
   });
 });

@@ -198,6 +198,24 @@ export const assertCausalityInvariant = (provenance: CausalityProvenance): void 
   }
 };
 
+/**
+ * The inbound mirror of the outbound emission check. A command is an event at
+ * HQ at issue time, and its application is the arrival at the ship.
+ */
+export const assertInboundCausalityInvariant = (
+  issuedAtMs: SimTimeMs,
+  arrivalAtMs: SimTimeMs,
+  hqPosition: PositionMeters,
+  arrivalPosition: PositionMeters
+): void => {
+  assertCausalityInvariant({
+    eventTime: issuedAtMs,
+    emissionTime: arrivalAtMs,
+    eventPosition: hqPosition,
+    observerPositionAt: () => arrivalPosition
+  });
+};
+
 export interface CausalEmissionGateOptions<T> {
   /** The sole raw outbound transport callback. No message reaches it unchecked. */
   readonly send: (message: EmittedMessage<T>) => void;
