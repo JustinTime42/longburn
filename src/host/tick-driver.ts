@@ -1,4 +1,5 @@
 import type { PositionMeters } from "../sim/causality.js";
+import { AuthoritativeSimLoopConflictError } from "../sim/loop.js";
 
 /** The narrow simulation boundary needed by the wall-clock host. */
 export interface AdvancingSimulation {
@@ -23,7 +24,12 @@ export interface HostTickDriverOptions {
   readonly onError?: (error: unknown) => void;
 }
 
+// This boundary intentionally uses Date.now(): world time is anchored 1:1 to wall time.
 const systemWallClock: WallClock = () => Date.now();
+
+const reportUnhandledTickError = (error: unknown): void => {
+  console.error("Host tick driver failed.", error);
+};
 
 const systemScheduler: TickScheduler = {
   setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
@@ -46,7 +52,7 @@ export class HostTickDriver {
   #timer: unknown;
   #advancing = false;
 
-  constructor({ simulation, eventPosition, intervalMs, wallClock = systemWallClock, scheduler = systemScheduler, onError = () => {} }: HostTickDriverOptions) {
+  constructor({ simulation, eventPosition, intervalMs, wallClock = systemWallClock, scheduler = systemScheduler, onError = reportUnhandledTickError }: HostTickDriverOptions) {
     if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
       throw new RangeError("Tick interval must be a positive safe integer in milliseconds.");
     }
@@ -94,10 +100,17 @@ export class HostTickDriver {
     }
 
     const elapsedMs = wallClockMs - previousWallClockMs;
+    if (elapsedMs === 0) return;
+
     this.#advancing = true;
     try {
       await this.#simulation.advance(elapsedMs, this.#eventPosition());
       this.#lastWallClockMs = wallClockMs;
+    } catch (error) {
+      if (error instanceof AuthoritativeSimLoopConflictError) {
+        this.stop();
+      }
+      throw error;
     } finally {
       this.#advancing = false;
     }
