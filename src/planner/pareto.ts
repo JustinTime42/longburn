@@ -22,7 +22,8 @@ import {
   type PorkchopCell,
   type ValidPorkchopCell
 } from "../sim/window-search.js";
-import type { HeliocentricState, UtDaysSinceJ2000 } from "../sim/ephemerides.js";
+import { simTimeToUtDays, type HeliocentricState, type UtDaysSinceJ2000 } from "../sim/ephemerides.js";
+import type { SimTimeMs } from "../sim/clock.js";
 
 const SECONDS_PER_DAY = 86_400;
 const KILOMETERS_TO_METERS = 1_000;
@@ -52,6 +53,11 @@ export interface ParetoPlannerRequest {
   readonly ship: ShipMassConfig;
   /** Defaults to the documented 400 km circular Mars capture target. */
   readonly arrivalCaptureTarget?: ArrivalCaptureTarget;
+  /**
+   * Optional caller-projected departure state for the continuum leg. This is
+   * advisory planner input, never authoritative simulation state.
+   */
+  readonly departureStateOverride?: HeliocentricState;
 }
 
 export interface ParetoPoint {
@@ -145,6 +151,49 @@ export interface TrajectoryPlanner {
   assemble(request: ParetoPlannerRequest): ParetoLandscape;
 }
 
+/**
+ * An advisory heliocentric ship state at the instant selected for replanning.
+ *
+ * This intentionally is not simulation state. The event log stores only
+ * quantized burn nodes, whose duration alone cannot reproduce a directional
+ * heliocentric velocity. A projection owner supplies this calculated state to
+ * the planner; a committed revision still contains only BurnNodes.
+ */
+export interface ProjectedShipState extends HeliocentricState {
+  /** Virtual-clock instant at which this position and velocity hold. */
+  readonly atMs: SimTimeMs;
+}
+
+/** Builds origin-specific candidate cells from the chosen projected state. */
+export interface ProjectedStateCellSource {
+  cellsFrom(origin: ProjectedShipState): readonly PorkchopCell[];
+}
+
+/**
+ * Planning request for a current state or any future state on a paper flight
+ * plan. `worldEpochUtDaysSinceJ2000` maps the virtual origin time into the
+ * planner's UT coordinate so candidate departures cannot precede that state.
+ * This synchronous, local interface has no causal-transport input: planning is
+ * never light-lagged; only a later PlanRevision is transported. A 64k-cell
+ * sweep remains a seconds-scale advisory operation per Amendment C, not a
+ * keystroke-time query.
+ */
+export interface ProjectedStatePlannerRequest extends Omit<ParetoPlannerRequest, "cells" | "departureStateOverride"> {
+  readonly origin: ProjectedShipState;
+  readonly worldEpochUtDaysSinceJ2000: UtDaysSinceJ2000;
+  readonly cellSource: ProjectedStateCellSource;
+}
+
+/** Preserves the exact advisory origin alongside the resulting Pareto curve. */
+export interface ProjectedStateParetoLandscape {
+  readonly origin: ProjectedShipState;
+  readonly landscape: ParetoLandscape;
+}
+
+export interface ProjectedStateTrajectoryPlanner extends TrajectoryPlanner {
+  planFromProjectedState(request: ProjectedStatePlannerRequest): ProjectedStateParetoLandscape;
+}
+
 const magnitude = (vector: { readonly x: number; readonly y: number; readonly z: number }): number =>
   Math.hypot(vector.x, vector.y, vector.z);
 
@@ -192,7 +241,7 @@ const assembleCell = (cell: ValidPorkchopCell, request: ParetoPlannerRequest, ca
   const arrivalTime = (cell.departureUtDays + cell.timeOfFlightDays) as UtDaysSinceJ2000;
   // The porkchop's arrival coordinate is the authoritative convention too.
   if (arrivalTime !== cell.arrivalUtDays) throw new RangeError("Porkchop cell arrival epoch must equal departure plus time of flight.");
-  const departure = request.ephemerides.statesAt(cell.departureUtDays).earth;
+  const departure = request.departureStateOverride ?? request.ephemerides.statesAt(cell.departureUtDays).earth;
   const arrival = request.ephemerides.statesAt(arrivalTime).mars;
   const heliocentricLambertDeltaVMetersPerSecond =
     (Math.sqrt(cell.c3Km2PerSecond2) + cell.arrivalVInfinityKmPerSecond) * KILOMETERS_TO_METERS;
@@ -244,4 +293,31 @@ export const assembleParetoLandscape = (request: ParetoPlannerRequest): ParetoLa
   };
 };
 
-export const tier0TrajectoryPlanner: TrajectoryPlanner = Object.freeze({ assemble: assembleParetoLandscape });
+/**
+ * Assembles advice from a caller-owned projected state. `cellSource` is the
+ * fidelity boundary: it may run a patched-conic search from the supplied state
+ * without allowing floating-point results into authoritative simulation state.
+ */
+export const planParetoFromProjectedState = (request: ProjectedStatePlannerRequest): ProjectedStateParetoLandscape => {
+  const originUtDays = simTimeToUtDays(request.worldEpochUtDaysSinceJ2000, request.origin.atMs);
+  const cells = request.cellSource.cellsFrom(request.origin);
+  if (cells.some((cell) => cell.departureUtDays < originUtDays)) {
+    throw new RangeError("Projected-state planner cells must depart at or after the selected origin.");
+  }
+
+  return {
+    origin: request.origin,
+    landscape: assembleParetoLandscape({
+      cells,
+      ephemerides: request.ephemerides,
+      ship: request.ship,
+      arrivalCaptureTarget: request.arrivalCaptureTarget,
+      departureStateOverride: request.origin
+    })
+  };
+};
+
+export const tier0TrajectoryPlanner: ProjectedStateTrajectoryPlanner = Object.freeze({
+  assemble: assembleParetoLandscape,
+  planFromProjectedState: planParetoFromProjectedState
+});
