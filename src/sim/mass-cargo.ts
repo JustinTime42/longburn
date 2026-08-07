@@ -27,6 +27,8 @@ export interface ShipMassConfig {
   readonly accelerationKmPerSecond2: number;
   /** Hull, tanks, engine, and radiators as a fraction of departure wet mass. */
   readonly structuralMassFraction: number;
+  /** Authoritative departure wet mass used for propellant accounting. */
+  readonly wetMassGrams: number;
 }
 
 /**
@@ -37,7 +39,8 @@ export interface ShipMassConfig {
 export const TIER0_SHIP: Readonly<ShipMassConfig> = Object.freeze({
   exhaustVelocityKmPerSecond: 1_000,
   accelerationKmPerSecond2: 0.009_806_65,
-  structuralMassFraction: 0.15
+  structuralMassFraction: 0.15,
+  wetMassGrams: 1_000_000_000
 });
 
 export interface BurnParameters {
@@ -76,6 +79,26 @@ export interface NonviableCargo {
  */
 export type CargoAssessment = ViableCargo | NonviableCargo;
 
+export interface ProjectedBurnFuelState {
+  readonly burnDurationMs: BurnDurationMs;
+  /** Wet mass immediately after this node's burn, in grams. */
+  readonly wetMassGrams: number;
+  /** Propellant available after this node's burn, in grams. */
+  readonly remainingPropellantGrams: number;
+}
+
+export interface PropellantSufficient {
+  readonly kind: "sufficient";
+  readonly nodes: readonly ProjectedBurnFuelState[];
+}
+
+export interface PropellantExhausted {
+  readonly kind: "exhausted";
+  readonly nodes: readonly ProjectedBurnFuelState[];
+}
+
+export type PropellantProjection = PropellantSufficient | PropellantExhausted;
+
 const positiveFinite = (name: string, value: number): void => {
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`${name} must be a positive finite number.`);
@@ -94,6 +117,7 @@ const validateShip = (ship: ShipMassConfig): void => {
   if (!Number.isFinite(ship.structuralMassFraction) || ship.structuralMassFraction <= 0 || ship.structuralMassFraction >= 1) {
     throw new RangeError("Structural mass fraction must be finite and in (0, 1).");
   }
+  positiveFinite("Wet mass", ship.wetMassGrams);
 };
 
 const quantizedInteger = (name: string, value: number): number => {
@@ -169,3 +193,41 @@ export const dequantizeBurnParameters = (
     deltaVKmPerSecond: deltaVForBurn(ship.accelerationKmPerSecond2, burnDurationSeconds)
   };
 };
+
+/**
+ * Projects every committed node through the rocket equation in execution
+ * order. The ship configuration, not a command payload, owns its propellant
+ * mass. Equality with the structural floor is valid: it spends the final gram
+ * of propellant but never asks the engine to consume structure.
+ */
+export const projectPropellantForBurns = (
+  burns: readonly QuantizedBurnParameters[],
+  ship: ShipMassConfig = TIER0_SHIP
+): PropellantProjection => {
+  validateShip(ship);
+  const structuralMassGrams = ship.wetMassGrams * ship.structuralMassFraction;
+  let wetMassGrams = ship.wetMassGrams;
+  const nodes: ProjectedBurnFuelState[] = [];
+
+  for (const burn of burns) {
+    const { deltaVKmPerSecond } = dequantizeBurnParameters(assertBurnParameters(burn), ship);
+    wetMassGrams /= massRatioForDeltaV(deltaVKmPerSecond, ship.exhaustVelocityKmPerSecond);
+    nodes.push({
+      burnDurationMs: burn.burnDurationMs,
+      wetMassGrams,
+      remainingPropellantGrams: wetMassGrams - structuralMassGrams
+    });
+  }
+
+  // Floating-point error is bounded relative to the configured wet mass. This
+  // only admits a rounding-equivalent boundary, never a physical gram over it.
+  const toleranceGrams = Number.EPSILON * ship.wetMassGrams * 8;
+  const finalState = nodes.at(-1);
+  return finalState === undefined || finalState.remainingPropellantGrams >= -toleranceGrams
+    ? { kind: "sufficient", nodes }
+    : { kind: "exhausted", nodes };
+};
+
+const assertBurnParameters = (burn: QuantizedBurnParameters): QuantizedBurnParameters => ({
+  burnDurationMs: burnDurationMs(burn.burnDurationMs)
+});

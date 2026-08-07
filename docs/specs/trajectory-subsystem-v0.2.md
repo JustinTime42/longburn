@@ -113,6 +113,9 @@ solver can compute.
 - `cargo_fraction = exp(−Dv/v_e) − f_struct`, with `f_struct` the structural fraction of wet mass.
   Cargo ≤ 0 is a typed "nonviable" result distinct from infeasible-trajectory. The viability wall
   `Dv_max = v_e·ln(1/f_struct)` is a design constant, not an emergent accident.
+- The Tier 0 ship configuration fixes its departure wet mass at 1,000 t for authoritative
+  propellant accounting. A plan revision projects each quantized node sequentially from that
+  remaining mass and refuses at arrival if it would consume structure; callers never name fuel costs.
 - For a fixed ship the Pareto front is the 2-D curve `(T, Dv*(T))`; cargo is a derived readout.
   The surface is 3-D only across ships (v_e as decision variable). The planner API returns the
   per-window curve with feasibility walls; it does not fabricate a third independent axis.

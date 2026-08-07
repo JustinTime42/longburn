@@ -91,7 +91,9 @@ describe("inbound causality invariant", () => {
   });
 
   it("round-trips each node's quantized commitment without changing its stored duration", () => {
-    fc.assert(fc.property(fc.double({ min: 0, max: 1_000_000, noNaN: true }), (seconds) => {
+    // This property enters the authoritative reducer, so its generated node
+    // must stay below the fixed ship's propellant wall.
+    fc.assert(fc.property(fc.double({ min: 0, max: 100_000, noNaN: true }), (seconds) => {
       const burn = quantizeBurnParameters({ burnDurationSeconds: seconds });
       const restored = quantizeBurnParameters(dequantizeBurnParameters(burn));
       const event: SimEvent = { type: "planRevisionApplied", flightPlan: { nodes: [node("quantized", 1, burn.burnDurationMs)] } };

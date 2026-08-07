@@ -117,6 +117,29 @@ describe("PlanRevision command transport", () => {
     expect(events.events.some(({ event }) => event.type === "planRevisionApplied")).toBe(false);
   });
 
+  it("refuses an over-budget revision at arrival without trusting any caller-named cost", async () => {
+    const { loop, transport } = await setup("insufficient-propellant");
+    await transport.issue({ nodes: [{ ...node("impossible", 2_000), burn: { burnDurationMs: burnDurationMs(300_000_000) } }] });
+    await loop.advance(1_000, position);
+
+    const event = (await loop.persistedStream()).events.at(-1)?.event;
+    expect(event).toMatchObject({ type: "planRevisionRefused", reason: "insufficient-propellant" });
+    expect(loop.state.ship).toBeUndefined();
+  });
+
+  it("checks a revision against propellant already committed by earlier projected nodes", async () => {
+    const { loop, transport } = await setup("sequential-propellant");
+    await loop.applyPlanRevision({ nodes: [{ ...node("outbound", 1), burn: { burnDurationMs: burnDurationMs(150_000_000) } }] }, position);
+    await loop.advance(1, position);
+    await transport.issue({ nodes: [{ ...node("capture", 200_000_000), burn: { burnDurationMs: burnDurationMs(100_000_000) } }] });
+    await loop.advance(1_000, position);
+
+    expect((await loop.persistedStream()).events.at(-1)?.event).toMatchObject({
+      type: "planRevisionRefused", reason: "insufficient-propellant"
+    });
+    expect(loop.state.ship?.flightPlan.nodes).toEqual([]);
+  });
+
   it("rebuilds an in-flight command from commandIssued after a restart", async () => {
     const store = new InMemorySimulationEventStore();
     const loop = await AuthoritativeSimLoop.create({
