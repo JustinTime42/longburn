@@ -11,6 +11,7 @@ import {
   type ScheduledShipDecision,
   type SimState
 } from "../sim/event-log.js";
+import { AuthoritativeSimLoopPastDepartureError } from "../sim/loop.js";
 import {
   quantizeBurnParameters,
   type BurnParameters,
@@ -45,16 +46,16 @@ export interface ShipOrderCommandLoop {
   readonly state: SimState;
   commitShipOrder(
     order: CommittedShipOrder,
-    decisions: readonly ScheduledShipDecision[],
-    eventPosition: PositionMeters
-  ): Promise<void>;
+    arrivalProfileFuelCost: QuantizedBurnParameters,
+    eventPosition: () => PositionMeters
+  ): Promise<readonly ScheduledShipDecision[]>;
 }
 
 export interface CommitShipOrderRestRequest<TPlanInput> {
   readonly method: "POST";
   readonly path: "/ship-orders";
   readonly body: CommitShipOrderRequest<TPlanInput>;
-  readonly eventPosition: PositionMeters;
+  readonly eventPosition: () => PositionMeters;
 }
 
 export interface CommitShipOrderRestResponse {
@@ -85,32 +86,6 @@ export class ShipOrderCommandRefusal extends Error {
 const quantizeDuration = (durationSeconds: number): number =>
   quantizeBurnParameters({ burnDurationSeconds: durationSeconds }).burnDurationMs;
 
-const arrivalTime = (order: CommittedShipOrder): SimTimeMs => {
-  const duration = order.accelerationBurn.burnDurationMs + order.coastDurationMs + order.decelerationBurn.burnDurationMs;
-  if (!Number.isSafeInteger(duration) || order.departureAtMs + duration > Number.MAX_SAFE_INTEGER) {
-    throw new RangeError("Committed ship order arrival exceeds the simulation time range.");
-  }
-  return (order.departureAtMs + duration) as SimTimeMs;
-};
-
-const scheduledDecisions = (
-  order: CommittedShipOrder,
-  arrivalProfileFuelCost: QuantizedBurnParameters
-): readonly ScheduledShipDecision[] => {
-  const arrival = arrivalTime(order);
-  const retargetClosesAt = Math.min(arrival, order.departureAtMs + RETARGET_WINDOW_MILLISECONDS) as SimTimeMs;
-  const arrivalProfileOpensAt = (order.departureAtMs + order.accelerationBurn.burnDurationMs + order.coastDurationMs) as SimTimeMs;
-  return [
-    { kind: "retarget", opensAtMs: order.departureAtMs, closesAtMs: retargetClosesAt },
-    {
-      kind: "arrivalProfile",
-      opensAtMs: arrivalProfileOpensAt,
-      closesAtMs: arrival,
-      fuelCostBurn: arrivalProfileFuelCost
-    }
-  ];
-};
-
 /**
  * A minimal REST-shaped controller. A future HTTP adapter dispatches only its
  * POST route; the command surface intentionally contains no reversal route.
@@ -134,9 +109,6 @@ export class ShipOrderRestController<TPlanInput> {
     } catch {
       throw new ShipOrderCommandRefusal("invalid-departure-time");
     }
-    if (departureAtMs < this.#simulation.state.time) {
-      throw new ShipOrderCommandRefusal("departure-before-commit");
-    }
     if (this.#simulation.state.ship !== undefined) {
       throw new ShipOrderCommandRefusal("order-already-committed");
     }
@@ -152,11 +124,19 @@ export class ShipOrderRestController<TPlanInput> {
     if (order.accelerationBurn.burnDurationMs + order.coastDurationMs + order.decelerationBurn.burnDurationMs === 0) {
       throw new ShipOrderCommandRefusal("zero-total-duration");
     }
-    const decisions = scheduledDecisions(
-      order,
-      quantizeBurnParameters(body.arrivalProfileFuelCost)
-    );
-    await this.#simulation.commitShipOrder(order, decisions, request.eventPosition);
+    let decisions: readonly ScheduledShipDecision[];
+    try {
+      decisions = await this.#simulation.commitShipOrder(
+        order,
+        quantizeBurnParameters(body.arrivalProfileFuelCost),
+        request.eventPosition
+      );
+    } catch (error) {
+      if (error instanceof AuthoritativeSimLoopPastDepartureError) {
+        throw new ShipOrderCommandRefusal("departure-before-commit");
+      }
+      throw error;
+    }
     return { status: 201, order, scheduledDecisions: decisions };
   }
 }

@@ -15,6 +15,7 @@ import {
   type SimState,
   SimEventReducer
 } from "./event-log.js";
+import type { QuantizedBurnParameters } from "./mass-cargo.js";
 
 export interface AuthoritativeSimLoopOptions {
   readonly stream: SimulationStream;
@@ -34,6 +35,14 @@ export class AuthoritativeSimLoopConflictError extends Error {
     this.name = "AuthoritativeSimLoopConflictError";
     this.expectedStreamSequence = conflict.expectedStreamSequence;
     this.actualStreamSequence = conflict.actualStreamSequence;
+  }
+}
+
+/** A queued commitment's requested departure was already past when it reached the loop. */
+export class AuthoritativeSimLoopPastDepartureError extends Error {
+  constructor() {
+    super("Committed ship departure is before the authoritative simulation time.");
+    this.name = "AuthoritativeSimLoopPastDepartureError";
   }
 }
 
@@ -79,26 +88,26 @@ export class AuthoritativeSimLoop {
   }
 
   /** One host tick. The stored event is durable before it mutates local state. */
-  async advance(elapsedMs: number, eventPosition: PositionMeters): Promise<SimTimeMs> {
+  async advance(elapsedMs: number, eventPosition: () => PositionMeters): Promise<SimTimeMs> {
     return this.#serialize(() => this.#advance(elapsedMs, eventPosition));
   }
 
-  async #advance(elapsedMs: number, eventPosition: PositionMeters): Promise<SimTimeMs> {
+  async #advance(elapsedMs: number, eventPosition: () => PositionMeters): Promise<SimTimeMs> {
     if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0) {
       throw new RangeError("Simulation advance must be a non-negative safe integer in milliseconds.");
     }
     const targetTime = this.#reducer.time + elapsedMs;
     while (this.#reducer.time < targetTime) {
-      await this.#advanceDueShipPhases(eventPosition);
+      await this.#advanceDueShipPhases(eventPosition());
       const remainingToTarget = targetTime - this.#reducer.time;
       const remainingToPhase = this.#remainingToNextShipPhase();
       const step = remainingToPhase === undefined ? remainingToTarget : Math.min(remainingToTarget, remainingToPhase);
       const event: SimEvent = { type: "clockAdvanced", elapsedMs: step };
-      await this.#append({ event, eventTime: simTimeMs(this.#reducer.time + step), eventPosition });
+      await this.#append({ event, eventTime: simTimeMs(this.#reducer.time + step), eventPosition: eventPosition() });
       this.#apply(event);
-      await this.#advanceDueShipPhases(eventPosition);
+      await this.#advanceDueShipPhases(eventPosition());
     }
-    await this.#advanceDueShipPhases(eventPosition);
+    await this.#advanceDueShipPhases(eventPosition());
     return this.#reducer.time;
   }
 
@@ -108,32 +117,35 @@ export class AuthoritativeSimLoop {
    */
   async commitShipOrder(
     order: CommittedShipOrder,
-    decisions: readonly ScheduledShipDecision[],
-    eventPosition: PositionMeters
-  ): Promise<void> {
-    return this.#serialize(() => this.#commitShipOrder(order, decisions, eventPosition));
+    arrivalProfileFuelCost: QuantizedBurnParameters,
+    eventPosition: () => PositionMeters
+  ): Promise<readonly ScheduledShipDecision[]> {
+    return this.#serialize(() => this.#commitShipOrder(order, arrivalProfileFuelCost, eventPosition));
   }
 
   async #commitShipOrder(
     order: CommittedShipOrder,
-    decisions: readonly ScheduledShipDecision[],
-    eventPosition: PositionMeters
-  ): Promise<void> {
+    arrivalProfileFuelCost: QuantizedBurnParameters,
+    eventPosition: () => PositionMeters
+  ): Promise<readonly ScheduledShipDecision[]> {
     if (this.#reducer.state.ship !== undefined) throw new Error("A ship order is already committed.");
+    if (order.departureAtMs < this.#reducer.time) throw new AuthoritativeSimLoopPastDepartureError();
+    const decisions = this.#scheduledDecisions(order, arrivalProfileFuelCost);
     const event: SimEvent = { type: "shipOrderCommitted", order, decisions };
-    await this.#append({ event, eventTime: this.#reducer.time, eventPosition });
+    await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
     this.#apply(event);
-    await this.#advanceDueShipPhases(eventPosition);
+    await this.#advanceDueShipPhases(eventPosition());
+    return decisions;
   }
 
   /** Records each simulation RNG decision so replay never relies on host order. */
-  async requestRandom(upperExclusive: number, eventPosition: PositionMeters): Promise<number> {
+  async requestRandom(upperExclusive: number, eventPosition: () => PositionMeters): Promise<number> {
     return this.#serialize(() => this.#requestRandom(upperExclusive, eventPosition));
   }
 
-  async #requestRandom(upperExclusive: number, eventPosition: PositionMeters): Promise<number> {
+  async #requestRandom(upperExclusive: number, eventPosition: () => PositionMeters): Promise<number> {
     const event: SimEvent = { type: "randomValueRequested", upperExclusive };
-    await this.#append({ event, eventTime: this.#reducer.time, eventPosition });
+    await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
     this.#apply(event);
     const value = this.#reducer.state.randomValues.at(-1);
     if (value === undefined) {
@@ -147,7 +159,7 @@ export class AuthoritativeSimLoop {
   }
 
   #serialize<Result>(operation: () => Promise<Result>): Promise<Result> {
-    const result = this.#writer.then(operation, operation);
+    const result = this.#writer.then(operation);
     // Keep the queue usable after a failed local write. A genuine store
     // conflict remains the result of its caller, including the host tick.
     this.#writer = result.then(() => undefined, () => undefined);
@@ -195,6 +207,25 @@ export class AuthoritativeSimLoop {
       case "arrived":
         return 0;
     }
+  }
+
+  #scheduledDecisions(
+    order: CommittedShipOrder,
+    arrivalProfileFuelCost: QuantizedBurnParameters
+  ): readonly ScheduledShipDecision[] {
+    const arrival = order.departureAtMs
+      + order.accelerationBurn.burnDurationMs
+      + order.coastDurationMs
+      + order.decelerationBurn.burnDurationMs;
+    if (!Number.isSafeInteger(arrival) || arrival > Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("Committed ship order arrival exceeds the simulation time range.");
+    }
+    const retargetClosesAt = Math.min(arrival, order.departureAtMs + 6 * 60 * 60 * 1_000) as SimTimeMs;
+    const arrivalProfileOpensAt = (order.departureAtMs + order.accelerationBurn.burnDurationMs + order.coastDurationMs) as SimTimeMs;
+    return [
+      { kind: "retarget", opensAtMs: order.departureAtMs, closesAtMs: retargetClosesAt },
+      { kind: "arrivalProfile", opensAtMs: arrivalProfileOpensAt, closesAtMs: arrival as SimTimeMs, fuelCostBurn: arrivalProfileFuelCost }
+    ];
   }
 
   async #advanceDueShipPhases(eventPosition: PositionMeters): Promise<void> {

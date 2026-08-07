@@ -20,9 +20,9 @@ describe("authoritative simulation loop", () => {
       store, stream: { id: "golden", seed: 0x1234_5678, initialTime: simTimeMs(10) }
     });
 
-    await loop.advance(120, { x: 1, y: 2, z: 3 });
-    await loop.requestRandom(100, { x: 4, y: 5, z: 6 });
-    await loop.advance(380, { x: 7, y: 8, z: 9 });
+    await loop.advance(120, () => ({ x: 1, y: 2, z: 3 }));
+    await loop.requestRandom(100, () => ({ x: 4, y: 5, z: 6 }));
+    await loop.advance(380, () => ({ x: 7, y: 8, z: 9 }));
 
     const persisted = await loop.persistedStream();
     expect(persisted.events).toEqual([
@@ -47,9 +47,9 @@ describe("authoritative simulation loop", () => {
           });
           for (const action of actions) {
             if (action.kind === "advance") {
-              await loop.advance(action.elapsedMs, eventPosition);
+              await loop.advance(action.elapsedMs, () => eventPosition);
             } else {
-              await loop.requestRandom(action.upperExclusive, eventPosition);
+              await loop.requestRandom(action.upperExclusive, () => eventPosition);
             }
           }
           const persisted = await loop.persistedStream();
@@ -82,9 +82,9 @@ describe("authoritative simulation loop", () => {
     });
     const staleLoop = await AuthoritativeSimLoop.resume(store, "concurrent");
 
-    await firstLoop.advance(10, eventPosition);
+    await firstLoop.advance(10, () => eventPosition);
 
-    const conflict = await staleLoop.advance(20, eventPosition).then(
+    const conflict = await staleLoop.advance(20, () => eventPosition).then(
       () => { throw new Error("Expected stale loop append to conflict."); },
       error => error
     );
