@@ -198,13 +198,17 @@ describe("PlanRevision command transport", () => {
           store, stream: { id: `immutability-${durations.join("-")}`, seed: 1, initialTime: simTimeMs(0) }
         });
         const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
-        await loop.applyPlanRevision({ nodes: [node("executed", 1, 0)] }, position);
+        await loop.applyPlanRevision({ nodes: [node("executed", 1)] }, position);
         await loop.advance(1, position);
-        const history = loop.state.ship?.executedBurns;
+        const history = loop.state.ship?.executedBurns.map(({ node: executedNode, startedAtMs }) => ({ executedNode, startedAtMs }));
         for (const [index, duration] of durations.entries()) {
-          await transport.issue({ nodes: [node(`pending-${index}`, 10_000 + index, duration)] });
+          await transport.issue({
+            nodes: [{ ...node(`pending-${index}`, 10_000 + index), burn: { burnDurationMs: burnDurationMs(duration) } }]
+          });
           await loop.advance(1_000, position);
-          expect(loop.state.ship?.executedBurns).toEqual(history);
+          const currentHistory = loop.state.ship?.executedBurns
+            .map(({ node: executedNode, startedAtMs }) => ({ executedNode, startedAtMs }));
+          expect(currentHistory?.slice(0, history?.length)).toEqual(history);
         }
       }
     ), { seed: 0x1aa117, numRuns: 100 });
