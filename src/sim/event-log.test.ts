@@ -1,102 +1,133 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { replaySegment, type SimEvent } from "./event-log.js";
 import { simTimeMs } from "./clock.js";
+import { InMemorySimulationEventStore } from "./event-store.js";
+import { replayPersistedSegment, replaySegment, type FlightPlan, type PlanRevisionRefusalReason, type SimEvent } from "./event-log.js";
+import { AuthoritativeSimLoop } from "./loop.js";
 import { burnDurationMs } from "./mass-cargo.js";
 
+const node = (nodeId: string, executeAtMs: number, kind: "accel" | "correction" | "decel" = "accel", durationMs = 1) => ({
+  nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(durationMs) }
+});
+
+const plan = (...nodes: ReturnType<typeof node>[]): FlightPlan => ({ nodes });
+
 const eventArbitrary = fc.oneof(
-  fc.record({
-    type: fc.constant<"clockAdvanced">("clockAdvanced"),
-    elapsedMs: fc.integer({ min: 0, max: 10_000 })
-  }),
-  fc.record({
-    type: fc.constant<"randomValueRequested">("randomValueRequested"),
-    upperExclusive: fc.integer({ min: 1, max: 1_000_000 })
-  })
+  fc.record({ type: fc.constant<"clockAdvanced">("clockAdvanced"), elapsedMs: fc.integer({ min: 0, max: 10_000 }) }),
+  fc.record({ type: fc.constant<"randomValueRequested">("randomValueRequested"), upperExclusive: fc.integer({ min: 1, max: 1_000_000 }) })
 );
 
 describe("event log replay", () => {
-  it("replays the recorded golden segment to its literal state", () => {
-    const events: readonly SimEvent[] = [
-      { type: "clockAdvanced", elapsedMs: 120 },
-      { type: "randomValueRequested", upperExclusive: 100 },
-      { type: "clockAdvanced", elapsedMs: 380 },
-      { type: "randomValueRequested", upperExclusive: 1_000_000 },
-      { type: "clockAdvanced", elapsedMs: 5_000 },
-      { type: "randomValueRequested", upperExclusive: 17 }
-    ];
-
-    expect(replaySegment(0x1234_5678, events)).toEqual({
-      time: 5_500,
-      randomValues: [10, 941_276, 15]
-    });
+  it("replays recorded random segments identically", () => {
+    fc.assert(fc.property(fc.integer({ min: 0, max: 0xffff_ffff }), fc.array(eventArbitrary, { maxLength: 200 }), (seed, events) => {
+      expect(replaySegment(seed, events as SimEvent[])).toEqual(replaySegment(seed, events as SimEvent[]));
+    }), { numRuns: 500 });
   });
 
-  it("replays every generated sim segment identically from its seed and event log", () => {
-    fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 0xffff_ffff }),
-        fc.array(eventArbitrary, { maxLength: 200 }),
-        (seed, events) => {
-          const firstReplay = replaySegment(seed, events as SimEvent[]);
-          const secondReplay = replaySegment(seed, events as SimEvent[]);
-
-          expect(secondReplay).toEqual(firstReplay);
-        }
-      ),
-      { numRuns: 500 }
-    );
-  });
-
-  it("reduces an atomic ship commitment and every phase-change branch", () => {
+  it("derives phases from burn history and elapsed time, never phase events", () => {
     const events: readonly SimEvent[] = [
-      {
-        type: "shipOrderCommitted",
-        order: {
-          orderId: "order-1", destinationId: "mars",
-          departureAtMs: simTimeMs(2),
-          accelerationBurn: { burnDurationMs: burnDurationMs(1) }, coastDurationMs: 2, decelerationBurn: { burnDurationMs: burnDurationMs(3) }
-        },
-        decisions: [
-          { kind: "retarget", opensAtMs: simTimeMs(2), closesAtMs: simTimeMs(8) },
-          { kind: "arrivalProfile", opensAtMs: simTimeMs(5), closesAtMs: simTimeMs(8), fuelCostBurn: { burnDurationMs: burnDurationMs(1) } }
-        ]
-      },
-      { type: "clockAdvanced", elapsedMs: 2 }, { type: "shipPhaseChanged", phase: "accelBurn" },
-      { type: "clockAdvanced", elapsedMs: 1 }, { type: "shipPhaseChanged", phase: "coast" },
-      { type: "clockAdvanced", elapsedMs: 2 }, { type: "shipPhaseChanged", phase: "flip" },
-      { type: "shipPhaseChanged", phase: "decelBurn" },
-      { type: "clockAdvanced", elapsedMs: 3 }, { type: "shipPhaseChanged", phase: "arrived" }
+      { type: "planRevisionApplied", flightPlan: plan(node("outbound", 2, "accel"), node("capture", 6, "decel")) },
+      { type: "clockAdvanced", elapsedMs: 2 }, { type: "burnStarted", node: node("outbound", 2, "accel") },
+      { type: "clockAdvanced", elapsedMs: 1 }, { type: "burnEnded", nodeId: "outbound" },
+      { type: "clockAdvanced", elapsedMs: 3 }, { type: "burnStarted", node: node("capture", 6, "decel") },
+      { type: "clockAdvanced", elapsedMs: 1 }, { type: "burnEnded", nodeId: "capture" }
     ];
-
     expect(replaySegment(1, events)).toMatchObject({
-      time: 8,
-      ship: {
-        phase: "arrived",
-        scheduledDecisions: [
-          { kind: "retarget", opensAtMs: 2, closesAtMs: 8 },
-          { kind: "arrivalProfile", opensAtMs: 5, closesAtMs: 8, fuelCostBurn: { burnDurationMs: 1 } }
-        ]
-      }
+      time: 7,
+      ship: { phase: "arrived", flightPlan: { nodes: [] }, executedBurns: [
+        { node: { nodeId: "outbound" }, startedAtMs: 2, endedAtMs: 3 },
+        { node: { nodeId: "capture" }, startedAtMs: 6, endedAtMs: 7 }
+      ] }
     });
   });
 
-  it("rejects invalid committed orders and scheduled decisions in the shared reducer", () => {
-    const order = {
-      orderId: "order-1", destinationId: "mars",
-      departureAtMs: simTimeMs(0),
-      accelerationBurn: { burnDurationMs: burnDurationMs(1) }, coastDurationMs: 0, decelerationBurn: { burnDurationMs: burnDurationMs(0) }
-    };
-    expect(() => replaySegment(1, [{ type: "shipOrderCommitted", order: { ...order, orderId: "" }, decisions: [] }]))
-      .toThrow("Committed ship orders require non-empty order and destination IDs.");
-    expect(() => replaySegment(1, [{ type: "shipOrderCommitted", order: { ...order, coastDurationMs: -1 }, decisions: [] }]))
-      .toThrow("Committed ship durations must be non-negative safe integer milliseconds.");
-    expect(() => replaySegment(1, [{
-      type: "shipOrderCommitted", order,
-      decisions: [{ kind: "retarget", opensAtMs: simTimeMs(4), closesAtMs: simTimeMs(3) }]
-    }])).toThrow("Scheduled ship decision times must be ordered non-negative integer milliseconds.");
-    expect(() => replaySegment(1, [{ type: "shipPhaseChanged", phase: "coast" }]))
-      .toThrow("Cannot change phase without a committed ship order.");
+  it("rejects reintroducing executed burns on both direct and persisted replay paths", () => {
+    const events: readonly SimEvent[] = [
+      { type: "planRevisionApplied", flightPlan: plan(node("burn-1", 0)) },
+      { type: "burnStarted", node: node("burn-1", 0) },
+      { type: "clockAdvanced", elapsedMs: 1 }, { type: "burnEnded", nodeId: "burn-1" },
+      { type: "planRevisionApplied", flightPlan: plan(node("burn-1", 2, "decel")) }
+    ];
+    const replay = () => replaySegment(1, events);
+    const persistedReplay = () => replayPersistedSegment({ seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) });
+    expect(replay).toThrow("cannot reintroduce an executed burn");
+    expect(persistedReplay).toThrow("cannot reintroduce an executed burn");
+  });
+
+  it("keeps a refused revision as history without changing the pending plan", () => {
+    const events: readonly SimEvent[] = [
+      { type: "planRevisionApplied", flightPlan: plan(node("first", 4)) },
+      { type: "planRevisionRefused", flightPlan: plan(node("replacement", 4), node("replacement", 5)), reason: "invalid-plan" }
+    ];
+    expect(replaySegment(1, events).ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["first"]);
+  });
+
+  it("replays persisted plans with executed and revised pending nodes equivalently", async () => {
+    await fc.assert(fc.asyncProperty(fc.integer({ min: 1, max: 100 }), async (offset) => {
+      const store = new InMemorySimulationEventStore();
+      const loop = await AuthoritativeSimLoop.create({
+        store, stream: { id: `flight-plan-${offset}`, seed: offset, initialTime: simTimeMs(0) }
+      });
+      await loop.applyPlanRevision(plan(node("executed", 1, "accel"), node("superseded", 4 + offset, "decel")), () => ({ x: 0, y: 0, z: 0 }));
+      await loop.advance(2, () => ({ x: 0, y: 0, z: 0 }));
+      await loop.applyPlanRevision(plan(node("replacement", 5 + offset, "decel")), () => ({ x: 0, y: 0, z: 0 }));
+      await loop.advance(4 + offset, () => ({ x: 0, y: 0, z: 0 }));
+      const resumed = await AuthoritativeSimLoop.resume(store, `flight-plan-${offset}`);
+      expect(resumed.state).toEqual(loop.state);
+      expect(resumed.state.ship?.executedBurns.map(({ node: burn }) => burn.nodeId)).toEqual(["executed", "replacement"]);
+    }), { numRuns: 100 });
+  });
+
+  it("rejects malformed plans and impossible burn history in the shared reducer", () => {
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("late", 2), node("early", 1)) }]))
+      .toThrow("strictly increasing");
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("first", 0, "accel", 10), node("overlap", 5, "decel")) }]))
+      .toThrow("cannot overlap");
+    expect(() => replaySegment(1, [{ type: "burnStarted", node: node("orphan", 0) }])).toThrow("without a flight plan");
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("one", 1)) }, { type: "burnStarted", node: node("one", 1) }]))
+      .toThrow("scheduled simulation time");
+  });
+
+  it("validates an applied revision before it can enter the durable log", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "preappend-validation", seed: 1, initialTime: simTimeMs(2) } });
+    await expect(loop.applyPlanRevision(plan(node("past", 1)), () => ({ x: 0, y: 0, z: 0 }))).rejects.toThrow("cannot schedule a burn in the past");
+    expect((await loop.persistedStream()).events).toEqual([]);
+  });
+
+  it("rejects overlapping burns before they can enter the durable log", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "overlapping-burns", seed: 1, initialTime: simTimeMs(0) } });
+    await expect(loop.applyPlanRevision(plan(node("a", 0, "accel", 10), node("b", 5, "decel")), () => ({ x: 0, y: 0, z: 0 }))).rejects.toThrow("cannot overlap");
+    expect((await loop.persistedStream()).events).toEqual([]);
+  });
+
+  it("rejects a revision scheduled inside a burn that is firing before append", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "in-flight-overlap", seed: 1, initialTime: simTimeMs(0) } });
+    await loop.applyPlanRevision(plan(node("a", 0, "accel", 10)), () => ({ x: 0, y: 0, z: 0 }));
+    await expect(loop.applyPlanRevision(plan(node("b", 5, "decel")), () => ({ x: 0, y: 0, z: 0 }))).rejects.toThrow("cannot overlap a burn that is firing");
+    expect((await loop.persistedStream()).events).toHaveLength(2);
+  });
+
+  it("records a malformed refused revision as opaque history", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "opaque-refusal", seed: 1, initialTime: simTimeMs(0) } });
+    await loop.applyPlanRevision(plan(node("first", 4)), () => ({ x: 0, y: 0, z: 0 }));
+    await loop.refusePlanRevision(plan(node("replacement", 4), node("replacement", 5)), "invalid-plan", () => ({ x: 0, y: 0, z: 0 }));
+    const persisted = await loop.persistedStream();
+    expect(persisted.events).toHaveLength(2);
+    expect(replayPersistedSegment(persisted).ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["first"]);
+  });
+
+  it("validates a refusal reason before it can enter the durable log", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "refusal-reason-validation", seed: 1, initialTime: simTimeMs(0) } });
+    await expect(loop.refusePlanRevision(plan(node("replacement", 4)), "unknown" as PlanRevisionRefusalReason, () => ({ x: 0, y: 0, z: 0 })))
+      .rejects.toThrow("require a known reason");
+    expect((await loop.persistedStream()).events).toEqual([]);
+    expect(() => replaySegment(1, [{ type: "planRevisionRefused", flightPlan: plan(node("replacement", 4)), reason: "unknown" as PlanRevisionRefusalReason }]))
+      .toThrow("require a known reason");
   });
 });
