@@ -2,7 +2,7 @@
 
 Status: APPROVED by the Overseer, 2026-08-05 (all four §8 decisions resolved as recommended; see §8).
 Amended: Amendment A, 2026-08-05 (Overseer-approved rulings on longburn-5cz and longburn-dr7; see §9).
-Amendment B, 2026-08-06 (longburn-1at; see §10).
+Amendment B, 2026-08-06 (longburn-1at; see §10). Amendment C, 2026-08-07 (longburn-ddv; see §11).
 Author: Vardis Slowfathom (Mayor). Supersedes the implicit design of bead longburn-din.3 rounds 1–2.
 Foundations: `docs/research/lambert-solvers.md`, `docs/research/mars-windows-porkchop.md`,
 `docs/research/torch-continuum-models.md` (each with validated reference scripts under
@@ -189,8 +189,15 @@ Each module is a bead with its own verifiers; dependencies as listed. All pure f
   boundary and does not discharge this verifier). Depends on B, C.
 - **E. window-search** — porkchop grid over the real ephemerides, ranking, well-term adders.
   Verifies: tier-3 (the NASA handbook fixtures). Depends on B (D optional overlay: torch feasibility
-  wall per cell). Performance budget: 64k cells in tens of ms; torchTime-class work hoisted out of
-  inner loops (Warden r2 finding 9).
+  wall per cell). **[Amendment C]** Performance budget, measured (longburn-e0y, corrected figures
+  of record): generation ~2.9–3.7 µs/cell (186–235 ms at 64k), universal-kappa assembly
+  58.945 µs/cell (3772.5 ms at 64k, all-feasible grid — not an upper bound; walled cells cost more
+  via `refineGeneral`). A full planning sweep of ~3.3–3.8 s is ACCEPTED for Tier 0 (Overseer,
+  2026-08-07, longburn-ddv): async play, low query rate. The original "64k cells in tens of ms"
+  estimate predates Amendment A and described only the Lambert generation leg. torchTime-class
+  work stays hoisted out of inner loops (Warden r2 finding 9); optimization work is filed
+  (longburn-5x0, longburn-s3t), not scheduled, and is revisited only on observed T0 latency
+  complaints.
 - **F. mass-cargo** — rocket equation, viability wall, quantization helpers for commitment.
   Verifies: MR/cargo tables from research §6; quantization round-trip. No dependencies.
 - **G. planner-api** — the Pareto curve assembly consumed by din.4 (commit-and-burn) and H2 (picker
@@ -248,3 +255,14 @@ every term varies with transit time. Matches the merged planner (`src/planner/pa
 ~5.6 km/s for the Hohmann freighter case) and §1.3 (gravity counted exactly once).
 
 Amended text carries the `[Amendment B]` marker in §2.
+
+## 11. Amendment C (approved by the Overseer, 2026-08-07)
+
+Raised by the longburn-e0y measurement (Warden-reviewed r1/r2; corrected figures on the bead)
+and ruled on longburn-ddv. §7.E's "64k cells in tens of ms" was a pre-Amendment-A estimate of
+the Lambert generation leg alone; measured reality is 186–235 ms generation plus ~3.77 s
+universal-kappa assembly at 64k cells. The Overseer accepts seconds-scale planning sweeps for
+Tier 0 and re-bases §7.E's budget on the measured numbers. din.4/H2 size against these figures.
+Optimization beads (5x0, s3t) remain filed, unscheduled.
+
+Amended text carries the `[Amendment C]` marker in §7.E.
