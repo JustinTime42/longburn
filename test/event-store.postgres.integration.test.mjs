@@ -263,9 +263,9 @@ integrationDescribe(
             });
             for (const action of actions) {
               if (action.kind === "advance") {
-                await loop.advance(action.elapsedMs, { x: 0, y: 0, z: 0 });
+                await loop.advance(action.elapsedMs, () => ({ x: 0, y: 0, z: 0 }));
               } else {
-                await loop.requestRandom(action.upperExclusive, { x: 0, y: 0, z: 0 });
+                await loop.requestRandom(action.upperExclusive, () => ({ x: 0, y: 0, z: 0 }));
               }
             }
             const persisted = await loop.persistedStream();

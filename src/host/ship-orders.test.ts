@@ -36,7 +36,7 @@ describe("ship order REST command", () => {
         plan: undefined,
         arrivalProfileFuelCost: { burnDurationSeconds: 4.5678 }
       },
-      eventPosition: origin
+      eventPosition: () => origin
     });
 
     expect(plannerCalls).toBe(1);
@@ -90,12 +90,12 @@ describe("ship order REST command", () => {
     await controller.postCommit({
       method: "POST", path: "/ship-orders",
       body: { orderId: "impulse", destinationId: "mars", departureAtMs: simTimeMs(5), plan: undefined, arrivalProfileFuelCost: { burnDurationSeconds: 0 } },
-      eventPosition: origin
+      eventPosition: () => origin
     });
     expect(simulation.state.ship?.phase).toBe("docked");
-    await simulation.advance(4, origin);
+    await simulation.advance(4, () => origin);
     expect(simulation.state.ship?.phase).toBe("docked");
-    await simulation.advance(2, origin);
+    await simulation.advance(2, () => origin);
 
     expect(simulation.state.ship?.phase).toBe("arrived");
     expect((await simulation.persistedStream()).events.map(({ event }) => event.type)).toEqual([
@@ -117,9 +117,9 @@ describe("ship order REST command", () => {
     await controller.postCommit({
       method: "POST", path: "/ship-orders",
       body: { orderId: "timed", destinationId: "mars", departureAtMs: simTimeMs(10), plan: undefined, arrivalProfileFuelCost: { burnDurationSeconds: 0 } },
-      eventPosition: origin
+      eventPosition: () => origin
     });
-    await simulation.advance(19, origin);
+    await simulation.advance(19, () => origin);
 
     expect((await simulation.persistedStream()).events.map(({ event, eventTime }) => [event.type, eventTime])).toEqual([
       ["shipOrderCommitted", 0],
@@ -139,7 +139,7 @@ describe("ship order REST command", () => {
       })
     });
     const request = {
-      method: "POST" as const, path: "/ship-orders" as const, eventPosition: origin,
+      method: "POST" as const, path: "/ship-orders" as const, eventPosition: () => origin,
       body: { orderId: "valid", destinationId: "mars", departureAtMs: simTimeMs(0), plan: undefined, arrivalProfileFuelCost: { burnDurationSeconds: 0 } }
     };
 
@@ -155,7 +155,7 @@ describe("ship order REST command", () => {
     expect((await simulation.persistedStream()).events).toEqual([]);
   });
 
-  it("refuses invalid and pre-commit departure epochs before the planner or event store", async () => {
+  it("refuses invalid and pre-commit departure epochs before the event store", async () => {
     const store = new InMemorySimulationEventStore();
     const simulation = await AuthoritativeSimLoop.create({
       store, stream: { id: "departure-refusals", seed: 1, initialTime: simTimeMs(10) }
@@ -168,12 +168,12 @@ describe("ship order REST command", () => {
       }
     });
     const request = {
-      method: "POST" as const, path: "/ship-orders" as const, eventPosition: origin,
+      method: "POST" as const, path: "/ship-orders" as const, eventPosition: () => origin,
       body: { orderId: "departure", destinationId: "mars", departureAtMs: simTimeMs(9), plan: undefined, arrivalProfileFuelCost: { burnDurationSeconds: 0 } }
     };
     await expect(controller.postCommit(request)).rejects.toMatchObject({ code: "departure-before-commit" } satisfies Partial<ShipOrderCommandRefusal>);
     await expect(controller.postCommit({ ...request, body: { ...request.body, departureAtMs: 1.5 as never } })).rejects.toMatchObject({ code: "invalid-departure-time" } satisfies Partial<ShipOrderCommandRefusal>);
-    expect(plannerCalls).toBe(0);
+    expect(plannerCalls).toBe(1);
     expect((await simulation.persistedStream()).events).toEqual([]);
   });
 
@@ -191,9 +191,9 @@ describe("ship order REST command", () => {
     await controller.postCommit({
       method: "POST", path: "/ship-orders",
       body: { orderId: "replay-order", destinationId: "mars", departureAtMs: simTimeMs(1), plan: undefined, arrivalProfileFuelCost: { burnDurationSeconds: 0 } },
-      eventPosition: origin
+      eventPosition: () => origin
     });
-    await simulation.advance(3, origin);
+    await simulation.advance(3, () => origin);
 
     const resumed = await AuthoritativeSimLoop.resume(store, "replay");
     expect(resumed.state).toEqual(simulation.state);

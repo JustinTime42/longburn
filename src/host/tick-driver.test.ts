@@ -178,6 +178,7 @@ describe("host tick driver", () => {
     wallClockMs = 10;
     const tick = driver.tick();
     await appendStarted;
+    let commandPosition = { x: 4, y: 5, z: 6 };
     const commitment = simulation.commitShipOrder({
       orderId: "interleaved-order",
       destinationId: "mars",
@@ -185,9 +186,10 @@ describe("host tick driver", () => {
       accelerationBurn: { burnDurationMs: burnDurationMs(1) },
       coastDurationMs: 10,
       decelerationBurn: { burnDurationMs: burnDurationMs(1) }
-    }, [], { x: 4, y: 5, z: 6 });
+    }, { burnDurationMs: burnDurationMs(0) }, () => commandPosition);
+    commandPosition = { x: 10, y: 11, z: 12 };
     releaseFirstAppend?.();
-    await Promise.all([tick, commitment]);
+    const [, decisions] = await Promise.all([tick, commitment]);
 
     expect(driver.running).toBe(true);
     expect(simulation.state).toMatchObject({
@@ -197,6 +199,14 @@ describe("host tick driver", () => {
     expect((await simulation.persistedStream()).events.map(({ event }) => event.type)).toEqual([
       "clockAdvanced", "shipOrderCommitted", "shipPhaseChanged"
     ]);
+    expect(decisions).toEqual([
+      { kind: "retarget", opensAtMs: 10, closesAtMs: 22 },
+      { kind: "arrivalProfile", opensAtMs: 21, closesAtMs: 22, fuelCostBurn: { burnDurationMs: 0 } }
+    ]);
+    expect((await simulation.persistedStream()).events[1]).toEqual(expect.objectContaining({
+      eventTime: 10,
+      eventPosition: commandPosition
+    }));
   });
 
   it("stops when another process wins the store-level stream sequence race", async () => {
@@ -216,7 +226,7 @@ describe("host tick driver", () => {
     });
 
     driver.start();
-    await externalLoop.advance(1, { x: 0, y: 0, z: 0 });
+    await externalLoop.advance(1, () => ({ x: 0, y: 0, z: 0 }));
     wallClockMs = 10;
 
     await expect(driver.tick()).rejects.toMatchObject({

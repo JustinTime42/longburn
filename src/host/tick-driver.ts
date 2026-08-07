@@ -3,7 +3,7 @@ import { AuthoritativeSimLoopConflictError } from "../sim/loop.js";
 
 /** The narrow simulation boundary needed by the wall-clock host. */
 export interface AdvancingSimulation {
-  advance(elapsedMs: number, eventPosition: PositionMeters): Promise<unknown>;
+  advance(elapsedMs: number, eventPosition: () => PositionMeters): Promise<unknown>;
 }
 
 /** Wall time is deliberately injected so host scheduling is testable. */
@@ -104,7 +104,7 @@ export class HostTickDriver {
 
     this.#advancing = true;
     try {
-      await this.#simulation.advance(elapsedMs, this.#eventPosition());
+      await this.#simulation.advance(elapsedMs, this.#eventPosition);
       this.#lastWallClockMs = wallClockMs;
     } catch (error) {
       if (error instanceof AuthoritativeSimLoopConflictError) {
