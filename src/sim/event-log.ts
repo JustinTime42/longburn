@@ -37,6 +37,17 @@ export interface ShipState {
 
 export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan";
 
+/** Validation failure whose reason is safe to persist in the dispute record. */
+export class PlanRevisionValidationError extends Error {
+  readonly reason: PlanRevisionRefusalReason;
+
+  constructor(reason: PlanRevisionRefusalReason, message: string) {
+    super(message);
+    this.name = "PlanRevisionValidationError";
+    this.reason = reason;
+  }
+}
+
 export const assertPlanRevisionRefusalReason = (reason: PlanRevisionRefusalReason): PlanRevisionRefusalReason => {
   if (reason !== "executed-burn-conflict" && reason !== "invalid-plan") {
     throw new RangeError("Plan revision refusals require a known reason.");
@@ -100,19 +111,24 @@ export const validateFlightPlanRevision = (
   now: SimTimeMs,
   executedBurns: readonly ExecutedBurn[]
 ): FlightPlan => {
-  const flightPlan = assertPlan(plan);
+  let flightPlan: FlightPlan;
+  try {
+    flightPlan = assertPlan(plan);
+  } catch (error: unknown) {
+    throw new PlanRevisionValidationError("invalid-plan", error instanceof Error ? error.message : "Invalid flight-plan revision.");
+  }
   const executedNodeIds = new Set(executedBurns.map(({ node }) => node.nodeId));
   if (flightPlan.nodes.some(({ nodeId }) => executedNodeIds.has(nodeId))) {
-    throw new Error("A flight-plan revision cannot reintroduce an executed burn.");
+    throw new PlanRevisionValidationError("executed-burn-conflict", "A flight-plan revision cannot reintroduce an executed burn.");
   }
   if (flightPlan.nodes.some(({ executeAtMs }) => executeAtMs < now)) {
-    throw new Error("A flight-plan revision cannot schedule a burn in the past.");
+    throw new PlanRevisionValidationError("invalid-plan", "A flight-plan revision cannot schedule a burn in the past.");
   }
   const activeBurn = executedBurns.at(-1);
   if (activeBurn !== undefined && activeBurn.endedAtMs === undefined) {
     const activeBurnEndsAtMs = simTimeMs(activeBurn.startedAtMs + activeBurn.node.burn.burnDurationMs);
     if (flightPlan.nodes.some(({ executeAtMs }) => executeAtMs < activeBurnEndsAtMs)) {
-      throw new Error("A flight-plan revision cannot overlap a burn that is firing.");
+      throw new PlanRevisionValidationError("executed-burn-conflict", "A flight-plan revision cannot overlap a burn that is firing.");
     }
   }
   return flightPlan;

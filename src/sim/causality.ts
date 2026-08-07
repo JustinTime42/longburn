@@ -154,6 +154,8 @@ export const requiredArrivalTimeMs = (provenance: CausalityProvenance): number =
       (distanceMeters(validatedPosition(provenance.observerPositionAt(provenance.eventTime)), eventPosition) /
         SPEED_OF_LIGHT_METERS_PER_SECOND) *
         1_000;
+    let precedingStepMs = Number.POSITIVE_INFINITY;
+    let lastNonzeroStepMs = 0;
     for (let iteration = 0; iteration < MAX_LIGHT_CONE_ITERATIONS; iteration += 1) {
       const nextArrivalTimeMs = provenance.eventTime +
         (distanceMeters(validatedPosition(provenance.observerPositionAt(arrivalTimeMs)), eventPosition) /
@@ -162,11 +164,17 @@ export const requiredArrivalTimeMs = (provenance: CausalityProvenance): number =
       if (!Number.isFinite(nextArrivalTimeMs)) {
         throw new RangeError("Light-cone solve produced a non-finite arrival time.");
       }
-      const precedingStepMs = Math.abs(nextArrivalTimeMs - arrivalTimeMs);
-      if (precedingStepMs < CONVERGENCE_MS) {
-        return conservativeArrivalTimeMs(nextArrivalTimeMs, precedingStepMs);
-      }
+      precedingStepMs = Math.abs(nextArrivalTimeMs - arrivalTimeMs);
+      if (precedingStepMs > 0) lastNonzeroStepMs = precedingStepMs;
       arrivalTimeMs = nextArrivalTimeMs;
+    }
+    if (precedingStepMs < CONVERGENCE_MS) {
+      // A fixed-point update can round to zero one iteration after its final
+      // nonzero step. Preserve that step so rounding never pulls us inside c.
+      const roundingMarginMs = lastNonzeroStepMs === 0
+        ? 0
+        : Math.max(lastNonzeroStepMs, Number.EPSILON * Math.max(1, Math.abs(arrivalTimeMs)) * 2);
+      return conservativeArrivalTimeMs(arrivalTimeMs, roundingMarginMs);
     }
   } catch (error: unknown) {
     if (error instanceof CausalityInvariantViolation) {

@@ -1,7 +1,7 @@
 import { simTimeMs, type SimTimeMs } from "./clock.js";
 import type { PositionMeters } from "./causality.js";
 import type { PersistedSimulationStream, SimulationEventStore, SimulationStream, StreamSequenceConflict, StoredSimEvent } from "./event-store.js";
-import { assertPlanRevisionRefusalReason, type FlightPlan, type PlanRevisionRefusalReason, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
+import { assertPlanRevisionRefusalReason, type FlightPlan, type PlanRevisionRefusalReason, PlanRevisionValidationError, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
 
 export interface AuthoritativeSimLoopOptions { readonly stream: SimulationStream; readonly store: SimulationEventStore; }
 
@@ -23,6 +23,13 @@ export class AuthoritativeSimLoop {
   readonly #streamId: string;
   #streamSequence = 0;
   #writer: Promise<void> = Promise.resolve();
+  #inboundPlanRevisions: {
+    readonly flightPlan: FlightPlan;
+    readonly arrivalAtMs: SimTimeMs;
+    readonly eventPosition: () => PositionMeters;
+    /** Pending nodes this wholesale replacement was issued to replace. */
+    readonly replacedNodeIds: ReadonlySet<string>;
+  }[] = [];
 
   private constructor({ stream, store }: AuthoritativeSimLoopOptions) {
     this.#reducer = new SimEventReducer(stream.seed, stream.initialTime);
@@ -62,6 +69,32 @@ export class AuthoritativeSimLoop {
     });
   }
 
+  /**
+   * Queues a signal for its exact causal arrival time. The issue timestamp and
+   * arrival solve happen inside writer serialization; this is the authority
+   * when a host tick and an inbound command are interleaved.
+   */
+  async scheduleInboundPlanRevision(
+    flightPlan: FlightPlan,
+    arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
+    eventPosition: () => PositionMeters
+  ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }> {
+    return this.#serialize(async () => {
+      const issuedAtMs = this.#reducer.time;
+      const arrivalAtMs = simTimeMs(arrivalTimeForIssue(issuedAtMs));
+      if (arrivalAtMs < issuedAtMs) throw new RangeError("Inbound plan-revision arrival cannot precede its issue time.");
+      this.#inboundPlanRevisions.push({
+        flightPlan,
+        arrivalAtMs,
+        eventPosition,
+        replacedNodeIds: new Set(this.#reducer.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId) ?? [])
+      });
+      this.#inboundPlanRevisions.sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
+      await this.#advanceDueWork(eventPosition);
+      return { issuedAtMs, arrivalAtMs };
+    });
+  }
+
   /** Records an arrival-time refusal without changing the paper plan. */
   async refusePlanRevision(flightPlan: FlightPlan, reason: PlanRevisionRefusalReason, eventPosition: () => PositionMeters): Promise<void> {
     return this.#serialize(async () => {
@@ -88,14 +121,14 @@ export class AuthoritativeSimLoop {
     if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0) throw new RangeError("Simulation advance must be a non-negative safe integer in milliseconds.");
     const targetTime = simTimeMs(this.#reducer.time + elapsedMs);
     while (this.#reducer.time < targetTime) {
-      await this.#advanceDueBurns(eventPosition);
-      const remaining = this.#remainingToNextBurnBoundary();
+      await this.#advanceDueWork(eventPosition);
+      const remaining = this.#remainingToNextBoundary();
       const step = remaining === undefined ? targetTime - this.#reducer.time : Math.min(targetTime - this.#reducer.time, remaining);
       const event: SimEvent = { type: "clockAdvanced", elapsedMs: step };
       await this.#append({ event, eventTime: simTimeMs(this.#reducer.time + step), eventPosition: eventPosition() });
       this.#reducer.apply(event);
     }
-    await this.#advanceDueBurns(eventPosition);
+    await this.#advanceDueWork(eventPosition);
     return this.#reducer.time;
   }
 
@@ -113,6 +146,44 @@ export class AuthoritativeSimLoop {
     const remaining = next.executeAtMs - this.#reducer.time;
     if (remaining < 0) throw new Error("Pending burn boundary is behind the authoritative simulation time.");
     return remaining;
+  }
+
+  #remainingToNextBoundary(): number | undefined {
+    const burnBoundary = this.#remainingToNextBurnBoundary();
+    const revision = this.#inboundPlanRevisions[0];
+    const revisionBoundary = revision === undefined ? undefined : revision.arrivalAtMs - this.#reducer.time;
+    if (revisionBoundary !== undefined && revisionBoundary < 0) {
+      throw new Error("Inbound plan-revision boundary is behind the authoritative simulation time.");
+    }
+    if (burnBoundary === undefined) return revisionBoundary;
+    if (revisionBoundary === undefined) return burnBoundary;
+    return Math.min(burnBoundary, revisionBoundary);
+  }
+
+  /** Burns win equal timestamps: only a revision that arrived before a burn can supersede it. */
+  async #advanceDueWork(eventPosition: () => PositionMeters): Promise<void> {
+    await this.#advanceDueBurns(eventPosition);
+    while (this.#inboundPlanRevisions[0]?.arrivalAtMs === this.#reducer.time) {
+      const revision = this.#inboundPlanRevisions.shift()!;
+      try {
+        if ((this.#reducer.state.ship?.executedBurns ?? []).some(({ node }) => revision.replacedNodeIds.has(node.nodeId))) {
+          throw new PlanRevisionValidationError("executed-burn-conflict", "A plan revision arrived after a burn it would replace started.");
+        }
+        const validatedPlan = validateFlightPlanRevision(
+          revision.flightPlan, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? []
+        );
+        const event: SimEvent = { type: "planRevisionApplied", flightPlan: validatedPlan };
+        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: revision.eventPosition() });
+        this.#reducer.apply(event);
+      } catch (error: unknown) {
+        if (!(error instanceof PlanRevisionValidationError)) throw error;
+        // Arrival-time validation is authoritative. Refusals preserve opaque command payloads for disputes.
+        const event: SimEvent = { type: "planRevisionRefused", flightPlan: revision.flightPlan, reason: error.reason };
+        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: revision.eventPosition() });
+        this.#reducer.apply(event);
+      }
+      await this.#advanceDueBurns(eventPosition);
+    }
   }
 
   async #advanceDueBurns(eventPosition: () => PositionMeters): Promise<void> {
