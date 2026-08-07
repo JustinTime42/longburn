@@ -1,6 +1,7 @@
 # Longburn operational facts (inject every session)
 
 - **Working name: LONGBURN** (established 2026-08-03; repo `longburn`; GitHub org free at naming time; .io/.game/.space showed available via whois — registrar checkout still pending, human bead). Name may change; the fort is FARLANTERN, named at the Founding Moot 2026-08-03.
+- **Remote exists since 2026-08-07**: `origin = git@github.com:JustinTime42/longburn.git` (public, personal account, not an org — 8zw's org/registrar/handles portions remain deferred). Push remains PROSE-GATED: ask Justin every time, name exactly what will be pushed. First push (main @ e23448c) done with his authorization same day.
 - **Founding spec**: `docs/specs/longburn-gdd-v0.1.md` (GDD v0.1) + `docs/specs/gdd-review-notes.md` (five review findings, incl. the virtual-clock rule and the Tier-0 fail-reading precommitment — both now standing orders 10 and 14).
 - **Current tier: Tier 0** (GDD §7): one player, one ship, Earth/Moon/Mars real ephemerides, 1:1 time, commit-and-burn, light-lag on all displayed info, one fake market, notifications, 2D vector plot. Everything else is out of scope and gets filed, not built.
 - **Stack (per GDD §6)**: Node/TypeScript authoritative server, single continuous sim loop, Postgres, event-sourced, seeded RNG; thin web client (Capacitor wrap later — out of T0 scope); WebSocket subscriptions + REST commands.
