@@ -46,6 +46,11 @@ export class AuthoritativeSimLoop {
   readonly #store: SimulationEventStore;
   readonly #streamId: string;
   #streamSequence = 0;
+  /**
+   * Serializes every local writer for this loop instance. The event store still
+   * detects writers in other processes through its optimistic sequence check.
+   */
+  #writer: Promise<void> = Promise.resolve();
 
   private constructor({ stream, store }: AuthoritativeSimLoopOptions) {
     this.#reducer = new SimEventReducer(stream.seed, stream.initialTime);
@@ -75,6 +80,10 @@ export class AuthoritativeSimLoop {
 
   /** One host tick. The stored event is durable before it mutates local state. */
   async advance(elapsedMs: number, eventPosition: PositionMeters): Promise<SimTimeMs> {
+    return this.#serialize(() => this.#advance(elapsedMs, eventPosition));
+  }
+
+  async #advance(elapsedMs: number, eventPosition: PositionMeters): Promise<SimTimeMs> {
     if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0) {
       throw new RangeError("Simulation advance must be a non-negative safe integer in milliseconds.");
     }
@@ -102,6 +111,14 @@ export class AuthoritativeSimLoop {
     decisions: readonly ScheduledShipDecision[],
     eventPosition: PositionMeters
   ): Promise<void> {
+    return this.#serialize(() => this.#commitShipOrder(order, decisions, eventPosition));
+  }
+
+  async #commitShipOrder(
+    order: CommittedShipOrder,
+    decisions: readonly ScheduledShipDecision[],
+    eventPosition: PositionMeters
+  ): Promise<void> {
     if (this.#reducer.state.ship !== undefined) throw new Error("A ship order is already committed.");
     const event: SimEvent = { type: "shipOrderCommitted", order, decisions };
     await this.#append({ event, eventTime: this.#reducer.time, eventPosition });
@@ -111,6 +128,10 @@ export class AuthoritativeSimLoop {
 
   /** Records each simulation RNG decision so replay never relies on host order. */
   async requestRandom(upperExclusive: number, eventPosition: PositionMeters): Promise<number> {
+    return this.#serialize(() => this.#requestRandom(upperExclusive, eventPosition));
+  }
+
+  async #requestRandom(upperExclusive: number, eventPosition: PositionMeters): Promise<number> {
     const event: SimEvent = { type: "randomValueRequested", upperExclusive };
     await this.#append({ event, eventTime: this.#reducer.time, eventPosition });
     this.#apply(event);
@@ -123,6 +144,14 @@ export class AuthoritativeSimLoop {
 
   async persistedStream(): Promise<PersistedSimulationStream> {
     return this.#store.readStream(this.#streamId);
+  }
+
+  #serialize<Result>(operation: () => Promise<Result>): Promise<Result> {
+    const result = this.#writer.then(operation, operation);
+    // Keep the queue usable after a failed local write. A genuine store
+    // conflict remains the result of its caller, including the host tick.
+    this.#writer = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   async #append(event: Omit<StoredSimEvent, "streamSequence" | "globalPosition">): Promise<void> {
