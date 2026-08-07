@@ -201,8 +201,8 @@ The full design specifies four hard systems — trajectory sim, player-driven ec
 - Real ephemerides for Earth, Moon, Mars (and Sun for conjunction geometry)
 - 1:1 real time, no acceleration
 - Trajectory planning with a real tradeoff: transit time vs. delta-v vs. cargo mass
-- **Commit-and-burn: no undo, no recall, no cancel**
-- Limited mid-flight agency: a small number of real decisions with real windows (e.g. re-target to a different destination, but only within the next 6 hours; adjust arrival profile at a fuel cost)
+- **Plan-and-burn: executed burns are forever; planned burns are paper.** No undo, no recall, no cancel of any burn that has fired. Any planned burn may be edited or aborted until it executes (command light-lag applies). *(Amended 2026-08-07, Overseer ruling, longburn-v3t; originally "Commit-and-burn: no undo, no recall, no cancel" with a 6-hour re-target window below.)*
+- Full plan agency at light-lag: any planned burn (re-target, correction, capture, arrival profile) may be edited or aborted until it executes; commands travel at c from the player's HQ, so agency thins with distance
 - Light-lag applied to all displayed information, with visible staleness indicators
 - A single fake market at the destination whose prices move on a scripted/noisy basis while you're in flight, so the cargo decision is a real bet
 - Push/desktop notification on window opening, arrival, and events
@@ -219,7 +219,7 @@ Tested against ~5–10 target-audience players (Expanse readers, Aurora 4X / KSP
 **Pass:**
 1. Testers voluntarily check in more than once daily during a long transit without being prompted
 2. Testers report thinking about the ship when not playing
-3. At least one tester independently expresses regret or satisfaction about a *committed* decision — evidence that irreversibility is landing emotionally
+3. At least one tester independently expresses regret or satisfaction about an *executed burn* — evidence that irreversibility is landing emotionally. (A docked ship has zero stakes beyond opportunity cost; regret anchors to ejected mass, not the commit click. Amended 2026-08-07, longburn-v3t.)
 4. Testers describe the market bet as tense rather than as waiting
 5. Nobody asks for a fast-forward button more than once
 
