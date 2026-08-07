@@ -73,7 +73,7 @@
       "Bash(ls *)",
       "Bash(ls)",
       "Bash(node --test*)",
-      "Bash(npm run build*)",
+      "Bash(npm run typecheck*)",
       "Bash(npm run lint*)",
       "Bash(npm run test*)",
       "Bash(npm test*)",
