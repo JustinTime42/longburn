@@ -1,6 +1,7 @@
 import { SimClock, simTimeMs, type SimTimeMs } from "./clock.js";
 import { burnDurationMs, type QuantizedBurnParameters } from "./mass-cargo.js";
 import { SeededRng } from "./rng.js";
+import type { PositionMeters } from "./causality.js";
 
 /** A view of executed history and elapsed virtual time, never stored by an event. */
 export type ShipPhase = "docked" | "accel" | "coast" | "flip" | "decel" | "arrived";
@@ -37,6 +38,17 @@ export interface ShipState {
 
 export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan";
 
+/** Validation failure whose reason is safe to persist in the dispute record. */
+export class PlanRevisionValidationError extends Error {
+  readonly reason: PlanRevisionRefusalReason;
+
+  constructor(reason: PlanRevisionRefusalReason, message: string) {
+    super(message);
+    this.name = "PlanRevisionValidationError";
+    this.reason = reason;
+  }
+}
+
 export const assertPlanRevisionRefusalReason = (reason: PlanRevisionRefusalReason): PlanRevisionRefusalReason => {
   if (reason !== "executed-burn-conflict" && reason !== "invalid-plan") {
     throw new RangeError("Plan revision refusals require a known reason.");
@@ -48,8 +60,19 @@ export const assertPlanRevisionRefusalReason = (reason: PlanRevisionRefusalReaso
 export type SimEvent =
   | { readonly type: "clockAdvanced"; readonly elapsedMs: number }
   | { readonly type: "randomValueRequested"; readonly upperExclusive: number }
-  | { readonly type: "planRevisionApplied"; readonly flightPlan: FlightPlan }
-  | { readonly type: "planRevisionRefused"; readonly flightPlan: FlightPlan; readonly reason: PlanRevisionRefusalReason }
+  /** Durable record of a command while its light signal is in flight. */
+  | {
+    readonly type: "commandIssued";
+    readonly commandId: string;
+    readonly issuedAtMs: SimTimeMs;
+    readonly arrivalAtMs: SimTimeMs;
+    readonly hqPosition: PositionMeters;
+    readonly arrivalPosition: PositionMeters;
+    readonly replacedNodeIds: readonly string[];
+    readonly flightPlan: FlightPlan;
+  }
+  | { readonly type: "planRevisionApplied"; readonly flightPlan: FlightPlan; readonly commandId?: string; readonly replacedNodeIds?: readonly string[] }
+  | { readonly type: "planRevisionRefused"; readonly flightPlan: FlightPlan; readonly reason: PlanRevisionRefusalReason; readonly commandId?: string }
   | { readonly type: "burnStarted"; readonly node: BurnNode }
   | { readonly type: "burnEnded"; readonly nodeId: string };
 
@@ -98,21 +121,32 @@ const assertPlan = (plan: FlightPlan): FlightPlan => {
 export const validateFlightPlanRevision = (
   plan: FlightPlan,
   now: SimTimeMs,
-  executedBurns: readonly ExecutedBurn[]
+  executedBurns: readonly ExecutedBurn[],
+  replacedNodeIds: readonly string[] = []
 ): FlightPlan => {
-  const flightPlan = assertPlan(plan);
+  // Arrival-time refusal precedence: issued-plan burn conflict, structure,
+  // reintroduced executed burn, past burn, then overlap with an active burn.
   const executedNodeIds = new Set(executedBurns.map(({ node }) => node.nodeId));
+  if (replacedNodeIds.some((nodeId) => executedNodeIds.has(nodeId))) {
+    throw new PlanRevisionValidationError("executed-burn-conflict", "A plan revision arrived after a burn it would replace started.");
+  }
+  let flightPlan: FlightPlan;
+  try {
+    flightPlan = assertPlan(plan);
+  } catch (error: unknown) {
+    throw new PlanRevisionValidationError("invalid-plan", error instanceof Error ? error.message : "Invalid flight-plan revision.");
+  }
   if (flightPlan.nodes.some(({ nodeId }) => executedNodeIds.has(nodeId))) {
-    throw new Error("A flight-plan revision cannot reintroduce an executed burn.");
+    throw new PlanRevisionValidationError("executed-burn-conflict", "A flight-plan revision cannot reintroduce an executed burn.");
   }
   if (flightPlan.nodes.some(({ executeAtMs }) => executeAtMs < now)) {
-    throw new Error("A flight-plan revision cannot schedule a burn in the past.");
+    throw new PlanRevisionValidationError("invalid-plan", "A flight-plan revision cannot schedule a burn in the past.");
   }
   const activeBurn = executedBurns.at(-1);
   if (activeBurn !== undefined && activeBurn.endedAtMs === undefined) {
     const activeBurnEndsAtMs = simTimeMs(activeBurn.startedAtMs + activeBurn.node.burn.burnDurationMs);
     if (flightPlan.nodes.some(({ executeAtMs }) => executeAtMs < activeBurnEndsAtMs)) {
-      throw new Error("A flight-plan revision cannot overlap a burn that is firing.");
+      throw new PlanRevisionValidationError("executed-burn-conflict", "A flight-plan revision cannot overlap a burn that is firing.");
     }
   }
   return flightPlan;
@@ -170,11 +204,16 @@ export class SimEventReducer {
       case "randomValueRequested":
         this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
         return;
+      case "commandIssued":
+        if (event.commandId.length === 0 || event.issuedAtMs !== this.#clock.now || event.arrivalAtMs < event.issuedAtMs) {
+          throw new RangeError("Issued commands require a non-empty identity and a non-past arrival time.");
+        }
+        return;
       case "planRevisionRefused":
         assertPlanRevisionRefusalReason(event.reason);
         return;
       case "planRevisionApplied": {
-        this.#flightPlan = validateFlightPlanRevision(event.flightPlan, this.#clock.now, this.#executedBurns);
+        this.#flightPlan = validateFlightPlanRevision(event.flightPlan, this.#clock.now, this.#executedBurns, event.replacedNodeIds);
         return;
       }
       case "burnStarted": {

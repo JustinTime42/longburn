@@ -55,6 +55,19 @@ describe("event log replay", () => {
     expect(persistedReplay).toThrow("cannot reintroduce an executed burn");
   });
 
+  it("rejects an applied command whose issue-time replacement set includes an executed burn on both replay paths", () => {
+    const events: readonly SimEvent[] = [
+      { type: "planRevisionApplied", flightPlan: plan(node("burn-1", 0)) },
+      { type: "burnStarted", node: node("burn-1", 0) },
+      { type: "clockAdvanced", elapsedMs: 1 }, { type: "burnEnded", nodeId: "burn-1" },
+      { type: "planRevisionApplied", flightPlan: plan(node("replacement", 2)), replacedNodeIds: ["burn-1"] }
+    ];
+    const replay = () => replaySegment(1, events);
+    const persistedReplay = () => replayPersistedSegment({ seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) });
+    expect(replay).toThrow("arrived after a burn it would replace started");
+    expect(persistedReplay).toThrow("arrived after a burn it would replace started");
+  });
+
   it("keeps a refused revision as history without changing the pending plan", () => {
     const events: readonly SimEvent[] = [
       { type: "planRevisionApplied", flightPlan: plan(node("first", 4)) },
