@@ -1,90 +1,112 @@
 import { SimClock, simTimeMs, type SimTimeMs } from "./clock.js";
-import { SeededRng } from "./rng.js";
 import { burnDurationMs, type QuantizedBurnParameters } from "./mass-cargo.js";
+import { SeededRng } from "./rng.js";
 
-export type ShipPhase = "docked" | "accelBurn" | "coast" | "flip" | "decelBurn" | "arrived";
-export type ShipDecisionKind = "retarget" | "arrivalProfile";
+/** A view of executed history and elapsed virtual time, never stored by an event. */
+export type ShipPhase = "docked" | "accel" | "coast" | "flip" | "decel" | "arrived";
+export type BurnKind = "accel" | "correction" | "decel";
 
 /**
- * The committed maneuver is replay input, not a planner result.  Durations are
- * integer milliseconds, the single quantization representation from SO 16.
+ * The quantized, replayable input for one scheduled engine firing. Planner
+ * numerics do not cross this boundary.
  */
-export interface CommittedShipOrder {
-  readonly orderId: string;
-  readonly destinationId: string;
-  /** Integer virtual-clock epoch at which the docked ship begins its burn. */
-  readonly departureAtMs: SimTimeMs;
-  readonly accelerationBurn: QuantizedBurnParameters;
-  readonly coastDurationMs: number;
-  readonly decelerationBurn: QuantizedBurnParameters;
+export interface BurnNode {
+  readonly nodeId: string;
+  readonly executeAtMs: SimTimeMs;
+  readonly kind: BurnKind;
+  readonly burn: QuantizedBurnParameters;
 }
 
-export interface ScheduledShipDecision {
-  readonly kind: ShipDecisionKind;
-  readonly opensAtMs: SimTimeMs;
-  readonly closesAtMs: SimTimeMs;
-  /** Arrival-profile changes consume this separately quantized additional burn. */
-  readonly fuelCostBurn?: QuantizedBurnParameters;
+/** The complete, replaceable set of burns which have not begun firing. */
+export interface FlightPlan {
+  readonly nodes: readonly BurnNode[];
+}
+
+export interface ExecutedBurn {
+  readonly node: BurnNode;
+  readonly startedAtMs: SimTimeMs;
+  readonly endedAtMs?: SimTimeMs;
 }
 
 export interface ShipState {
-  readonly order: CommittedShipOrder;
+  readonly flightPlan: FlightPlan;
+  /** Append-only burn history. A started burn is already irreversible. */
+  readonly executedBurns: readonly ExecutedBurn[];
   readonly phase: ShipPhase;
-  readonly phaseStartedAtMs: SimTimeMs;
-  readonly scheduledDecisions: readonly ScheduledShipDecision[];
 }
 
+export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan";
+
+/** There is deliberately no event which removes or edits an executed burn. */
 export type SimEvent =
   | { readonly type: "clockAdvanced"; readonly elapsedMs: number }
   | { readonly type: "randomValueRequested"; readonly upperExclusive: number }
-  | {
-    readonly type: "shipOrderCommitted";
-    readonly order: CommittedShipOrder;
-    /** Decision windows are part of the single irreversible commitment. */
-    readonly decisions: readonly ScheduledShipDecision[];
-  }
-  | { readonly type: "shipPhaseChanged"; readonly phase: Exclude<ShipPhase, "docked"> };
+  | { readonly type: "planRevisionApplied"; readonly flightPlan: FlightPlan }
+  | { readonly type: "planRevisionRefused"; readonly flightPlan: FlightPlan; readonly reason: PlanRevisionRefusalReason }
+  | { readonly type: "burnStarted"; readonly node: BurnNode }
+  | { readonly type: "burnEnded"; readonly nodeId: string };
 
 export interface SimState {
   readonly time: SimTimeMs;
   readonly randomValues: readonly number[];
-  /** Undefined until an irreversible ship order has been committed. */
   readonly ship?: ShipState;
 }
-
-const assertDuration = (duration: number): number => {
-  if (!Number.isSafeInteger(duration) || duration < 0) {
-    throw new RangeError("Committed ship durations must be non-negative safe integer milliseconds.");
-  }
-  return duration;
-};
 
 const assertBurn = (burn: QuantizedBurnParameters): QuantizedBurnParameters => ({
   burnDurationMs: burnDurationMs(burn.burnDurationMs)
 });
 
-const assertOrder = (order: CommittedShipOrder): CommittedShipOrder => {
-  if (order.orderId.length === 0 || order.destinationId.length === 0) {
-    throw new RangeError("Committed ship orders require non-empty order and destination IDs.");
+const assertNode = (node: BurnNode): BurnNode => {
+  if (node.nodeId.length === 0) throw new RangeError("Burn nodes require a non-empty node ID.");
+  if (node.kind !== "accel" && node.kind !== "correction" && node.kind !== "decel") {
+    throw new RangeError("Burn nodes require a known burn kind.");
   }
   return {
-    orderId: order.orderId,
-    destinationId: order.destinationId,
-    departureAtMs: simTimeMs(order.departureAtMs),
-    accelerationBurn: assertBurn(order.accelerationBurn),
-    coastDurationMs: assertDuration(order.coastDurationMs),
-    decelerationBurn: assertBurn(order.decelerationBurn)
+    nodeId: node.nodeId,
+    executeAtMs: simTimeMs(node.executeAtMs),
+    kind: node.kind,
+    burn: assertBurn(node.burn)
   };
 };
 
-const assertDecision = (decision: ScheduledShipDecision): ScheduledShipDecision => {
-  if (!Number.isSafeInteger(decision.opensAtMs) || !Number.isSafeInteger(decision.closesAtMs) || decision.opensAtMs < 0 || decision.closesAtMs < decision.opensAtMs) {
-    throw new RangeError("Scheduled ship decision times must be ordered non-negative integer milliseconds.");
+const assertPlan = (plan: FlightPlan): FlightPlan => {
+  const nodes = plan.nodes.map(assertNode);
+  for (let index = 1; index < nodes.length; index += 1) {
+    if (nodes[index - 1]!.executeAtMs >= nodes[index]!.executeAtMs) {
+      throw new RangeError("Flight-plan nodes must have strictly increasing execution times.");
+    }
   }
-  return {
-    ...decision,
-    ...(decision.fuelCostBurn === undefined ? {} : { fuelCostBurn: assertBurn(decision.fuelCostBurn) })
-  };
+  if (new Set(nodes.map(({ nodeId }) => nodeId)).size !== nodes.length) {
+    throw new RangeError("Flight-plan node IDs must be unique.");
+  }
+  return { nodes };
+};
+
+/** Validates the event-sourced immutability boundary before a live append. */
+export const validateFlightPlanRevision = (
+  plan: FlightPlan,
+  now: SimTimeMs,
+  executedBurns: readonly ExecutedBurn[]
+): FlightPlan => {
+  const flightPlan = assertPlan(plan);
+  const executedNodeIds = new Set(executedBurns.map(({ node }) => node.nodeId));
+  if (flightPlan.nodes.some(({ nodeId }) => executedNodeIds.has(nodeId))) {
+    throw new Error("A flight-plan revision cannot reintroduce an executed burn.");
+  }
+  if (flightPlan.nodes.some(({ executeAtMs }) => executeAtMs < now)) {
+    throw new Error("A flight-plan revision cannot schedule a burn in the past.");
+  }
+  return flightPlan;
+};
+
+const derivedPhase = (flightPlan: FlightPlan, executedBurns: readonly ExecutedBurn[]): ShipPhase => {
+  const active = executedBurns.at(-1);
+  if (active !== undefined && active.endedAtMs === undefined) {
+    return active.node.kind === "accel" ? "accel" : active.node.kind === "decel" ? "decel" : "flip";
+  }
+  if (executedBurns.length === 0) return "docked";
+  if (flightPlan.nodes.length === 0) return "arrived";
+  return executedBurns.at(-1)?.node.kind === "accel" ? "coast" : "flip";
 };
 
 /** The sole reducer for both durable replay and the live authoritative loop. */
@@ -92,7 +114,8 @@ export class SimEventReducer {
   readonly #clock: SimClock;
   readonly #rng: SeededRng;
   readonly #randomValues: number[] = [];
-  #ship: ShipState | undefined;
+  #flightPlan: FlightPlan | undefined;
+  #executedBurns: ExecutedBurn[] = [];
 
   constructor(seed: number, initialTime: SimTimeMs = simTimeMs(0)) {
     this.#clock = SimClock.production(initialTime);
@@ -102,55 +125,67 @@ export class SimEventReducer {
   get time(): SimTimeMs { return this.#clock.now; }
 
   get state(): SimState {
-    return this.#ship === undefined
-      ? { time: this.#clock.now, randomValues: [...this.#randomValues] }
-      : { time: this.#clock.now, randomValues: [...this.#randomValues], ship: this.#ship };
+    if (this.#flightPlan === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues] };
+    return {
+      time: this.#clock.now,
+      randomValues: [...this.#randomValues],
+      ship: {
+        flightPlan: this.#flightPlan,
+        executedBurns: [...this.#executedBurns],
+        phase: derivedPhase(this.#flightPlan, this.#executedBurns)
+      }
+    };
   }
 
   apply(event: SimEvent): void {
     switch (event.type) {
       case "clockAdvanced":
         this.#clock.advance(event.elapsedMs);
-        break;
+        return;
       case "randomValueRequested":
         this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
-        break;
-      case "shipOrderCommitted":
-        if (this.#ship !== undefined) throw new Error("A ship order is already committed.");
-        this.#ship = {
-          order: assertOrder(event.order),
-          phase: "docked",
-          phaseStartedAtMs: this.#clock.now,
-          scheduledDecisions: event.decisions.map(assertDecision)
-        };
-        break;
-      case "shipPhaseChanged":
-        if (this.#ship === undefined) throw new Error("Cannot change phase without a committed ship order.");
-        this.#ship = { ...this.#ship, phase: event.phase, phaseStartedAtMs: this.#clock.now };
-        break;
+        return;
+      case "planRevisionRefused":
+        assertPlan(event.flightPlan);
+        return;
+      case "planRevisionApplied": {
+        this.#flightPlan = validateFlightPlanRevision(event.flightPlan, this.#clock.now, this.#executedBurns);
+        return;
+      }
+      case "burnStarted": {
+        if (this.#flightPlan === undefined) throw new Error("Cannot start a burn without a flight plan.");
+        const node = assertNode(event.node);
+        if (node.executeAtMs !== this.#clock.now) throw new Error("Burns must start at their scheduled simulation time.");
+        const plannedNode = this.#flightPlan.nodes.find(({ nodeId }) => nodeId === node.nodeId);
+        if (plannedNode === undefined || JSON.stringify(plannedNode) !== JSON.stringify(node)) {
+          throw new Error("A burn must start from the pending flight plan unchanged.");
+        }
+        this.#flightPlan = { nodes: this.#flightPlan.nodes.filter(({ nodeId }) => nodeId !== node.nodeId) };
+        this.#executedBurns = [...this.#executedBurns, { node, startedAtMs: this.#clock.now }];
+        return;
+      }
+      case "burnEnded": {
+        const active = this.#executedBurns.at(-1);
+        if (active === undefined || active.endedAtMs !== undefined || active.node.nodeId !== event.nodeId) {
+          throw new Error("A burn can end only once, after its matching start event.");
+        }
+        const expectedEnd = simTimeMs(active.startedAtMs + active.node.burn.burnDurationMs);
+        if (expectedEnd !== this.#clock.now) throw new Error("Burns must end at their quantized duration boundary.");
+        this.#executedBurns = [...this.#executedBurns.slice(0, -1), { ...active, endedAtMs: this.#clock.now }];
+        return;
     }
   }
 }
+}
 
-/** Rebuild a segment from its append-only event log and its recorded RNG seed. */
-export const replaySegment = (
-  seed: number,
-  events: readonly SimEvent[],
-  initialTime: SimTimeMs = simTimeMs(0)
-): SimState => {
+export const replaySegment = (seed: number, events: readonly SimEvent[], initialTime: SimTimeMs = simTimeMs(0)): SimState => {
   const reducer = new SimEventReducer(seed, initialTime);
-  for (const event of events) {
-    reducer.apply(event);
-  }
-
+  for (const event of events) reducer.apply(event);
   return reducer.state;
 };
 
-/** Replays an event-store stream from its persisted seed and append-only order. */
-export const replayPersistedSegment = (
-  stream: {
-    readonly seed: number;
-    readonly initialTime: SimTimeMs;
-    readonly events: readonly { readonly event: SimEvent }[];
-  }
-): SimState => replaySegment(stream.seed, stream.events.map(({ event }) => event), stream.initialTime);
+export const replayPersistedSegment = (stream: {
+  readonly seed: number;
+  readonly initialTime: SimTimeMs;
+  readonly events: readonly { readonly event: SimEvent }[];
+}): SimState => replaySegment(stream.seed, stream.events.map(({ event }) => event), stream.initialTime);

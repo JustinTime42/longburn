@@ -142,7 +142,7 @@ describe("host tick driver", () => {
     expect(scheduler.cleared).toEqual([scheduler]);
   });
 
-  it("serializes a ship commitment issued while a host tick append is in flight", async () => {
+  it("serializes a plan revision issued while a host tick append is in flight", async () => {
     const backingStore = new InMemorySimulationEventStore();
     let resolveAppendStarted: (() => void) | undefined;
     const appendStarted = new Promise<void>((resolve) => { resolveAppendStarted = resolve; });
@@ -179,29 +179,20 @@ describe("host tick driver", () => {
     const tick = driver.tick();
     await appendStarted;
     let commandPosition = { x: 4, y: 5, z: 6 };
-    const commitment = simulation.commitShipOrder({
-      orderId: "interleaved-order",
-      destinationId: "mars",
-      departureAtMs: simTimeMs(10),
-      accelerationBurn: { burnDurationMs: burnDurationMs(1) },
-      coastDurationMs: 10,
-      decelerationBurn: { burnDurationMs: burnDurationMs(1) }
-    }, { burnDurationMs: burnDurationMs(0) }, () => commandPosition);
+    const commitment = simulation.applyPlanRevision({
+      nodes: [{ nodeId: "interleaved-burn", executeAtMs: simTimeMs(10), kind: "accel", burn: { burnDurationMs: burnDurationMs(1) } }]
+    }, () => commandPosition);
     commandPosition = { x: 10, y: 11, z: 12 };
     releaseFirstAppend?.();
-    const [, decisions] = await Promise.all([tick, commitment]);
+    await Promise.all([tick, commitment]);
 
     expect(driver.running).toBe(true);
     expect(simulation.state).toMatchObject({
       time: simTimeMs(10),
-      ship: { order: { orderId: "interleaved-order" }, phase: "accelBurn" }
+      ship: { flightPlan: { nodes: [] }, phase: "accel" }
     });
     expect((await simulation.persistedStream()).events.map(({ event }) => event.type)).toEqual([
-      "clockAdvanced", "shipOrderCommitted", "shipPhaseChanged"
-    ]);
-    expect(decisions).toEqual([
-      { kind: "retarget", opensAtMs: 10, closesAtMs: 22 },
-      { kind: "arrivalProfile", opensAtMs: 21, closesAtMs: 22, fuelCostBurn: { burnDurationMs: 0 } }
+      "clockAdvanced", "planRevisionApplied", "burnStarted"
     ]);
     expect((await simulation.persistedStream()).events[1]).toEqual(expect.objectContaining({
       eventTime: 10,
