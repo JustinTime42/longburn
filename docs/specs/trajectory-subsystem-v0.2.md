@@ -2,6 +2,7 @@
 
 Status: APPROVED by the Overseer, 2026-08-05 (all four §8 decisions resolved as recommended; see §8).
 Amended: Amendment A, 2026-08-05 (Overseer-approved rulings on longburn-5cz and longburn-dr7; see §9).
+Amendment B, 2026-08-06 (longburn-1at; see §10).
 Author: Vardis Slowfathom (Mayor). Supersedes the implicit design of bead longburn-din.3 rounds 1–2.
 Foundations: `docs/research/lambert-solvers.md`, `docs/research/mars-windows-porkchop.md`,
 `docs/research/torch-continuum-models.md` (each with validated reference scripts under
@@ -59,12 +60,25 @@ solver can compute.
 
 ## 2. Delta-v bookkeeping rulings
 
-- The budget decomposes as `Dv_total = Dv_depart_well + Dv_helio(T, mode) + Dv_arrive_well`.
-  Only the middle term varies with transit time. Well terms are patched-conic point-model constants
-  per (origin, destination, parking orbit): `Dv_well = sqrt(v∞² + 2μ/r_p) − v_orbit` (Oberth
-  included). Tier 0 ships START in a parking orbit; the player-facing cost is the burn from that
-  orbit, NOT raw v∞ (Oberth is worth ~6 km/s on an Earth→Mars run and C3 is a badly miscalibrated
-  proxy — porkchop report §4.3).
+- **[Amendment B]** The budget assembles as
+  `Dv_total = Dv_depart_well(v∞_dep) + Dv_arrive_well(v∞_arr) + (kappa − 1)·Dv_Lambert(T)`.
+  The well burns already impart the hyperbolic excess: for a patched-conic transfer, the impulsive
+  heliocentric cost `Dv_Lambert = |v∞_dep| + |v∞_arr|` is paid entirely inside the two well terms,
+  so a decomposition that adds a full `Dv_helio` on top counts the heliocentric leg twice
+  (incident record: din.3.7 r1 transcribed the previous version of this sentence faithfully and
+  quoted ~12.3 km/s where the true figure is ~6.0; Warden r1 blocker, longburn-1at). The only
+  heliocentric term in the sum is the finite-burn residue
+  `(kappa − 1)·Dv_Lambert = Dv_helio − Dv_Lambert`, which vanishes in the impulsive limit
+  (kappa → 1) and preserves §1.3's invariant: gravity counted exactly once, finite thrust
+  exactly once.
+- Well terms are patched-conic point-model FUNCTIONS of that cell's v∞, evaluated per porkchop
+  cell: `Dv_well(v∞) = sqrt(v∞² + 2μ/r_p) − v_orbit` (Oberth included). They are not constants
+  per (origin, destination, parking orbit), and no term of the sum is T-invariant: the v∞ pair
+  varies across the porkchop grid and the wells vary with it. Tier 0 ships START in a parking
+  orbit; the player-facing cost is the burn from that orbit, NOT raw v∞ (Oberth is worth
+  ~6 km/s on an Earth→Mars run and C3 is a badly miscalibrated proxy — porkchop report §4.3).
+  Reference pin: the §6 2028 fixture assembles to ~6.03 km/s (hand-derived 6.0256 km/s, Warden
+  din.3.7 r2).
 - v∞ vectors are computed against ephemeris body velocities **at their own epochs** (departure body
   at t_dep, arrival body at t_arr). Using one epoch for both is a named classic bug.
 - Rendezvous is position AND velocity matching. The rendezvous invariant is a property test:
@@ -219,3 +233,18 @@ refusal only at quotedDutyCycle > 1, `finiteBurnCaution` at > 0.83, gate compute
 
 Amended text carries `[Amendment A]` markers in §1, §2, and §7.D. Implementation bead filed under
 din.3 as the successor to din.3.4's regime logic.
+
+## 10. Amendment B (approved by the Overseer, 2026-08-06)
+
+Raised by Warden review of din.3.7 (the r1 code was a faithful transcription of §2's then-written
+decomposition; the sentence itself instructed the double-count). Bead: longburn-1at.
+
+**Ruling:** §2's first bullet is replaced. The assembled budget is
+`Dv_total = Dv_depart_well + Dv_arrive_well + (kappa − 1)·Dv_Lambert`. The well burns impart the
+v∞ pair, so the impulsive heliocentric cost lives entirely inside the well terms and only the
+finite-burn residue is added on top. Well terms are per-cell functions of v∞, not constants, and
+every term varies with transit time. Matches the merged planner (`src/planner/pareto.ts`) and the
+§6 2028 fixture pin (6.0256 km/s hand-derived). Authoritative anchors unchanged: §0 (true answer
+~5.6 km/s for the Hohmann freighter case) and §1.3 (gravity counted exactly once).
+
+Amended text carries the `[Amendment B]` marker in §2.
