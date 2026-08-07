@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { SPEED_OF_LIGHT_METERS_PER_SECOND } from "../sim/causality.js";
 import { simTimeMs } from "../sim/clock.js";
 import { InMemorySimulationEventStore, type SimulationEventStore } from "../sim/event-store.js";
+import type { ExecutedBurn } from "../sim/event-log.js";
 import { AuthoritativeSimLoop } from "../sim/loop.js";
 import { burnDurationMs } from "../sim/mass-cargo.js";
 import { PlanRevisionTransport } from "./plan-revision-transport.js";
@@ -13,6 +14,23 @@ const node = (nodeId: string, executeAtMs: number) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind: "accel" as const,
   burn: { burnDurationMs: burnDurationMs(1) }
 });
+
+const expectUnchangedExecutedHistory = (
+  previous: readonly ExecutedBurn[],
+  current: readonly ExecutedBurn[]
+): void => {
+  expect(current.slice(0, previous.length)).toHaveLength(previous.length);
+  for (const [index, executed] of previous.entries()) {
+    const currentExecuted = current[index];
+    expect(currentExecuted).toBeDefined();
+    expect(currentExecuted?.node).toEqual(executed.node);
+    expect(currentExecuted?.startedAtMs).toBe(executed.startedAtMs);
+    expect(currentExecuted?.endedAtMs).toBeOneOf([
+      executed.endedAtMs,
+      executed.endedAtMs === undefined ? simTimeMs(executed.startedAtMs + executed.node.burn.burnDurationMs) : undefined
+    ]);
+  }
+};
 
 const setup = async (id: string) => {
   const loop = await AuthoritativeSimLoop.create({
@@ -200,15 +218,15 @@ describe("PlanRevision command transport", () => {
         const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
         await loop.applyPlanRevision({ nodes: [node("executed", 1)] }, position);
         await loop.advance(1, position);
-        const history = loop.state.ship?.executedBurns.map(({ node: executedNode, startedAtMs }) => ({ executedNode, startedAtMs }));
+        let history = loop.state.ship?.executedBurns ?? [];
         for (const [index, duration] of durations.entries()) {
           await transport.issue({
             nodes: [{ ...node(`pending-${index}`, 10_000 + index), burn: { burnDurationMs: burnDurationMs(duration) } }]
           });
           await loop.advance(1_000, position);
-          const currentHistory = loop.state.ship?.executedBurns
-            .map(({ node: executedNode, startedAtMs }) => ({ executedNode, startedAtMs }));
-          expect(currentHistory?.slice(0, history?.length)).toEqual(history);
+          const currentHistory = loop.state.ship?.executedBurns ?? [];
+          expectUnchangedExecutedHistory(history, currentHistory);
+          history = currentHistory;
         }
       }
     ), { seed: 0x1aa117, numRuns: 100 });

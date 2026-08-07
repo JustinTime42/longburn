@@ -3,18 +3,16 @@ import { describe, expect, it } from "vitest";
 
 import { SPEED_OF_LIGHT_METERS_PER_SECOND } from "./causality.js";
 import { simTimeMs } from "./clock.js";
+import { InMemorySimulationEventStore } from "./event-store.js";
 import { replayPersistedSegment, replaySegment, type SimEvent } from "./event-log.js";
+import { PlanRevisionTransport } from "../host/plan-revision-transport.js";
+import { AuthoritativeSimLoop } from "./loop.js";
 import { burnDurationMs, dequantizeBurnParameters, quantizeBurnParameters } from "./mass-cargo.js";
 
 const node = (nodeId: string, executeAtMs: number, durationMs = 1) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind: "accel" as const,
   burn: { burnDurationMs: burnDurationMs(durationMs) }
 });
-
-const replayBothPaths = (events: readonly SimEvent[], initialTime = 0): void => {
-  const persisted = { seed: 1, initialTime: simTimeMs(initialTime), events: events.map((event) => ({ event })) };
-  expect(replayPersistedSegment(persisted)).toEqual(replaySegment(1, events, simTimeMs(initialTime)));
-};
 
 describe("inbound causality invariant", () => {
   it("accepts the exact static light-time boundary and rejects one millisecond early on both replay paths", () => {
@@ -33,46 +31,61 @@ describe("inbound causality invariant", () => {
           hqPosition, arrivalPosition, replacedNodeIds: [], flightPlan: { nodes: [] }
         };
         const prefix: SimEvent[] = issuedAtMs === 0 ? [] : [{ type: "clockAdvanced", elapsedMs: issuedAtMs }];
-        expect(() => replayBothPaths([...prefix, command])).not.toThrow();
+        const events = [...prefix, command];
+        const persisted = { seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) };
+        expect(() => replaySegment(1, events)).not.toThrow();
+        expect(() => replayPersistedSegment(persisted)).not.toThrow();
         if (lightTimeMs > 0) {
           const early: SimEvent = { ...command, arrivalAtMs: simTimeMs(arrivalAtMs - 1) };
-          expect(() => replayBothPaths([...prefix, early])).toThrow("Causality invariant violated");
+          const earlyEvents = [...prefix, early];
+          const earlyPersisted = { seed: 1, initialTime: simTimeMs(0), events: earlyEvents.map((event) => ({ event })) };
+          expect(() => replaySegment(1, earlyEvents)).toThrow("Causality invariant violated");
+          expect(() => replayPersistedSegment(earlyPersisted)).toThrow("Causality invariant violated");
         }
       }
     ), { seed: 0x1ab0ad, numRuns: 400 });
   });
 
-  it("preserves revision-race streams identically through direct and persisted replay", () => {
-    fc.assert(fc.property(
+  it("replays generated inbound revision races from live, durable, and resumed paths", async () => {
+    await fc.assert(fc.asyncProperty(
       fc.integer({ min: 1, max: 1_000 }),
       fc.constantFrom(-1, 0, 1),
-      (lightSeconds, raceOffset) => {
-        const arrivalAtMs = lightSeconds * 1_000;
-        const burnAtMs = arrivalAtMs + raceOffset;
-        const issued: SimEvent = {
-          type: "commandIssued", commandId: "command", issuedAtMs: simTimeMs(0), arrivalAtMs: simTimeMs(arrivalAtMs),
-          hqPosition: { x: 0, y: 0, z: 0 },
-          arrivalPosition: { x: SPEED_OF_LIGHT_METERS_PER_SECOND * lightSeconds, y: 0, z: 0 },
-          replacedNodeIds: ["old"], flightPlan: { nodes: [node("replacement", arrivalAtMs + 2)] }
+      fc.integer({ min: 0, max: 1_000 }),
+      fc.constantFrom<"x" | "y" | "z">("x", "y", "z"),
+      fc.constantFrom(-1, 1),
+      async (lightSeconds, raceOffset, issueDelayMs, axis, sign) => {
+        const store = new InMemorySimulationEventStore();
+        const loop = await AuthoritativeSimLoop.create({
+          store, stream: { id: `inbound-race-${lightSeconds}-${raceOffset}-${issueDelayMs}-${axis}-${sign}`, seed: 1, initialTime: simTimeMs(0) }
+        });
+        const distance = sign * SPEED_OF_LIGHT_METERS_PER_SECOND * lightSeconds;
+        const shipPosition = {
+          x: axis === "x" ? distance : 0,
+          y: axis === "y" ? distance : 0,
+          z: axis === "z" ? distance : 0
         };
-        const initial: readonly SimEvent[] = [
-          { type: "planRevisionApplied", flightPlan: { nodes: [node("old", burnAtMs)] } },
-          issued
-        ];
-        const events: readonly SimEvent[] = raceOffset > 0
-          ? [...initial,
-            { type: "clockAdvanced", elapsedMs: arrivalAtMs },
-            { type: "planRevisionApplied", commandId: "command", replacedNodeIds: ["old"], flightPlan: { nodes: [node("replacement", arrivalAtMs + 2)] } }
-          ]
-          : [...initial,
-            { type: "clockAdvanced", elapsedMs: burnAtMs },
-            { type: "burnStarted", node: node("old", burnAtMs) },
-            { type: "clockAdvanced", elapsedMs: arrivalAtMs - burnAtMs },
-            ...(raceOffset < 0 ? [{ type: "burnEnded" as const, nodeId: "old" }] : []),
-            { type: "planRevisionRefused", commandId: "command", reason: "executed-burn-conflict", flightPlan: { nodes: [node("replacement", arrivalAtMs + 2)] } }
-          ];
-        // Equal timestamps are burn-first, so both zero and negative offsets refuse.
-        replayBothPaths(events);
+        const arrivalAtMs = issueDelayMs + lightSeconds * 1_000;
+        const burnAtMs = arrivalAtMs + raceOffset;
+        const replacement = { nodes: [node("replacement", arrivalAtMs + 2)] };
+        await loop.applyPlanRevision({ nodes: [node("old", burnAtMs)] }, () => shipPosition);
+        await loop.advance(issueDelayMs, () => shipPosition);
+        const transport = new PlanRevisionTransport({ loop, shipPositionAt: () => shipPosition });
+        await transport.issue(replacement);
+        await loop.advance(lightSeconds * 1_000 + 2, () => shipPosition);
+
+        const persisted = await loop.persistedStream();
+        expect(replayPersistedSegment(persisted)).toEqual(loop.state);
+        expect((await AuthoritativeSimLoop.resume(store, persisted.id)).state).toEqual(loop.state);
+        const arrival = persisted.events.find(({ event }) =>
+          (event.type === "planRevisionApplied" || event.type === "planRevisionRefused") && event.commandId !== undefined
+        )?.event;
+        if (raceOffset > 0) {
+          expect(arrival).toMatchObject({ type: "planRevisionApplied", replacedNodeIds: ["old"] });
+          expect(loop.state.ship?.executedBurns.map(({ node: executed }) => executed.nodeId)).not.toContain("old");
+        } else {
+          expect(arrival).toMatchObject({ type: "planRevisionRefused", reason: "executed-burn-conflict" });
+          expect(loop.state.ship?.executedBurns.map(({ node: executed }) => executed.nodeId)).toContain("old");
+        }
       }
     ), { seed: 0x4015, numRuns: 200 });
   });
