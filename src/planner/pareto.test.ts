@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { TIER0_SHIP } from "../sim/mass-cargo.js";
+import { simTimeMs } from "../sim/clock.js";
 import { utDaysSinceJ2000, type HeliocentricState } from "../sim/ephemerides.js";
 import type { PorkchopCell } from "../sim/window-search.js";
-import { assembleParetoLandscape, TIER0_MARS_CAPTURE_TARGET } from "./pareto.js";
+import { assembleParetoLandscape, TIER0_MARS_CAPTURE_TARGET, tier0TrajectoryPlanner, type ProjectedShipState } from "./pareto.js";
 
 const departure = utDaysSinceJ2000(10_000);
 const state: HeliocentricState = { positionKm: { x: 149_597_870.7, y: 0, z: 0 }, velocityKmPerSecond: { x: 0, y: 29.78, z: 0 } };
@@ -77,5 +78,42 @@ describe("planner Pareto landscape", () => {
     const [window] = assembleParetoLandscape(input([invalid])).windows;
     expect(window?.points).toEqual([]);
     expect(window?.walls).toMatchObject([{ kind: "invalid", reason: "near-180-degree-transfer" }]);
+  });
+
+  it("plans synchronously from the selected current propagated state", () => {
+    const current: ProjectedShipState = {
+      atMs: simTimeMs(20_000), positionKm: { x: 1, y: 2, z: 3 }, velocityKmPerSecond: { x: 4, y: 5, z: 6 }
+    };
+    let received: ProjectedShipState | undefined;
+    const result = tier0TrajectoryPlanner.planFromProjectedState({
+      ...input([]),
+      origin: current,
+      cellSource: { cellsFrom: (origin) => { received = origin; return [cell(departure, 200)]; } }
+    });
+
+    expect(received).toBe(current);
+    expect(result.origin).toBe(current);
+    expect(result.landscape.windows[0]?.points).toHaveLength(1);
+  });
+
+  it("accepts a propagated state at a future node without treating planning as a transported command", () => {
+    const afterOutboundNode: ProjectedShipState = {
+      atMs: simTimeMs(86_400_000),
+      positionKm: { x: 150_000_000, y: 20_000, z: -10_000 },
+      velocityKmPerSecond: { x: 1, y: 29, z: 0 }
+    };
+    const result = tier0TrajectoryPlanner.planFromProjectedState({
+      ...input([]),
+      origin: afterOutboundNode,
+      cellSource: {
+        cellsFrom: (origin) => {
+          expect(origin.atMs).toBe(simTimeMs(86_400_000));
+          return [cell(departure + 1, 200)];
+        }
+      }
+    });
+
+    expect(result.origin).toBe(afterOutboundNode);
+    expect(result.landscape.windows.map(({ departureUtDays }) => departureUtDays)).toEqual([departure + 1]);
   });
 });

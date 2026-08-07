@@ -23,6 +23,7 @@ import {
   type ValidPorkchopCell
 } from "../sim/window-search.js";
 import type { HeliocentricState, UtDaysSinceJ2000 } from "../sim/ephemerides.js";
+import type { SimTimeMs } from "../sim/clock.js";
 
 const SECONDS_PER_DAY = 86_400;
 const KILOMETERS_TO_METERS = 1_000;
@@ -145,6 +146,46 @@ export interface TrajectoryPlanner {
   assemble(request: ParetoPlannerRequest): ParetoLandscape;
 }
 
+/**
+ * An advisory heliocentric ship state at the instant selected for replanning.
+ *
+ * This intentionally is not simulation state. The event log stores only
+ * quantized burn nodes, whose duration alone cannot reproduce a directional
+ * heliocentric velocity. A projection owner supplies this calculated state to
+ * the planner; a committed revision still contains only BurnNodes.
+ */
+export interface ProjectedShipState {
+  /** Virtual-clock instant at which this position and velocity hold. */
+  readonly atMs: SimTimeMs;
+  readonly positionKm: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
+  readonly velocityKmPerSecond: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
+}
+
+/** Builds origin-specific candidate cells from the chosen projected state. */
+export interface ProjectedStateCellSource {
+  cellsFrom(origin: ProjectedShipState): readonly PorkchopCell[];
+}
+
+/**
+ * Planning request for a current state or any future state on a paper flight
+ * plan. This synchronous, local interface has no causal-transport input:
+ * planning is never light-lagged; only a later PlanRevision is transported.
+ */
+export interface ProjectedStatePlannerRequest extends Omit<ParetoPlannerRequest, "cells"> {
+  readonly origin: ProjectedShipState;
+  readonly cellSource: ProjectedStateCellSource;
+}
+
+/** Preserves the exact advisory origin alongside the resulting Pareto curve. */
+export interface ProjectedStateParetoLandscape {
+  readonly origin: ProjectedShipState;
+  readonly landscape: ParetoLandscape;
+}
+
+export interface ProjectedStateTrajectoryPlanner extends TrajectoryPlanner {
+  planFromProjectedState(request: ProjectedStatePlannerRequest): ProjectedStateParetoLandscape;
+}
+
 const magnitude = (vector: { readonly x: number; readonly y: number; readonly z: number }): number =>
   Math.hypot(vector.x, vector.y, vector.z);
 
@@ -244,4 +285,22 @@ export const assembleParetoLandscape = (request: ParetoPlannerRequest): ParetoLa
   };
 };
 
-export const tier0TrajectoryPlanner: TrajectoryPlanner = Object.freeze({ assemble: assembleParetoLandscape });
+/**
+ * Assembles advice from a caller-owned projected state. `cellSource` is the
+ * fidelity boundary: it may run a patched-conic search from the supplied state
+ * without allowing floating-point results into authoritative simulation state.
+ */
+export const planParetoFromProjectedState = (request: ProjectedStatePlannerRequest): ProjectedStateParetoLandscape => ({
+  origin: request.origin,
+  landscape: assembleParetoLandscape({
+    cells: request.cellSource.cellsFrom(request.origin),
+    ephemerides: request.ephemerides,
+    ship: request.ship,
+    arrivalCaptureTarget: request.arrivalCaptureTarget
+  })
+});
+
+export const tier0TrajectoryPlanner: ProjectedStateTrajectoryPlanner = Object.freeze({
+  assemble: assembleParetoLandscape,
+  planFromProjectedState: planParetoFromProjectedState
+});
