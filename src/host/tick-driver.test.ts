@@ -181,6 +181,7 @@ describe("host tick driver", () => {
     const commitment = simulation.commitShipOrder({
       orderId: "interleaved-order",
       destinationId: "mars",
+      departureAtMs: simTimeMs(10),
       accelerationBurn: { burnDurationMs: burnDurationMs(1) },
       coastDurationMs: 10,
       decelerationBurn: { burnDurationMs: burnDurationMs(1) }
@@ -194,7 +195,7 @@ describe("host tick driver", () => {
       ship: { order: { orderId: "interleaved-order" }, phase: "accelBurn" }
     });
     expect((await simulation.persistedStream()).events.map(({ event }) => event.type)).toEqual([
-      "clockAdvanced", "shipOrderCommitted"
+      "clockAdvanced", "shipOrderCommitted", "shipPhaseChanged"
     ]);
   });
 

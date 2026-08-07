@@ -12,6 +12,8 @@ export type ShipDecisionKind = "retarget" | "arrivalProfile";
 export interface CommittedShipOrder {
   readonly orderId: string;
   readonly destinationId: string;
+  /** Integer virtual-clock epoch at which the docked ship begins its burn. */
+  readonly departureAtMs: SimTimeMs;
   readonly accelerationBurn: QuantizedBurnParameters;
   readonly coastDurationMs: number;
   readonly decelerationBurn: QuantizedBurnParameters;
@@ -68,6 +70,7 @@ const assertOrder = (order: CommittedShipOrder): CommittedShipOrder => {
   return {
     orderId: order.orderId,
     destinationId: order.destinationId,
+    departureAtMs: simTimeMs(order.departureAtMs),
     accelerationBurn: assertBurn(order.accelerationBurn),
     coastDurationMs: assertDuration(order.coastDurationMs),
     decelerationBurn: assertBurn(order.decelerationBurn)
@@ -116,7 +119,7 @@ export class SimEventReducer {
         if (this.#ship !== undefined) throw new Error("A ship order is already committed.");
         this.#ship = {
           order: assertOrder(event.order),
-          phase: "accelBurn",
+          phase: "docked",
           phaseStartedAtMs: this.#clock.now,
           scheduledDecisions: event.decisions.map(assertDecision)
         };

@@ -5,7 +5,7 @@
  * authoritative loop receives only integer-millisecond maneuver parameters.
  */
 import type { PositionMeters } from "../sim/causality.js";
-import type { SimTimeMs } from "../sim/clock.js";
+import { simTimeMs, type SimTimeMs } from "../sim/clock.js";
 import {
   type CommittedShipOrder,
   type ScheduledShipDecision,
@@ -34,6 +34,8 @@ export interface ShipOrderPlanner<TPlanInput> {
 export interface CommitShipOrderRequest<TPlanInput> {
   readonly orderId: string;
   readonly destinationId: string;
+  /** H2 converts its selected Pareto point's UT departure epoch onto the sim clock. */
+  readonly departureAtMs: SimTimeMs;
   readonly plan: TPlanInput;
   /** Additional fuel reserved for the scheduled arrival-profile decision. */
   readonly arrivalProfileFuelCost: Pick<BurnParameters, "burnDurationSeconds">;
@@ -64,6 +66,8 @@ export interface CommitShipOrderRestResponse {
 export type ShipOrderCommandRefusalCode =
   | "empty-order-id"
   | "empty-destination-id"
+  | "invalid-departure-time"
+  | "departure-before-commit"
   | "zero-total-duration"
   | "order-already-committed";
 
@@ -81,24 +85,23 @@ export class ShipOrderCommandRefusal extends Error {
 const quantizeDuration = (durationSeconds: number): number =>
   quantizeBurnParameters({ burnDurationSeconds: durationSeconds }).burnDurationMs;
 
-const arrivalTime = (now: SimTimeMs, order: CommittedShipOrder): SimTimeMs => {
+const arrivalTime = (order: CommittedShipOrder): SimTimeMs => {
   const duration = order.accelerationBurn.burnDurationMs + order.coastDurationMs + order.decelerationBurn.burnDurationMs;
-  if (!Number.isSafeInteger(duration) || now + duration > Number.MAX_SAFE_INTEGER) {
+  if (!Number.isSafeInteger(duration) || order.departureAtMs + duration > Number.MAX_SAFE_INTEGER) {
     throw new RangeError("Committed ship order arrival exceeds the simulation time range.");
   }
-  return (now + duration) as SimTimeMs;
+  return (order.departureAtMs + duration) as SimTimeMs;
 };
 
 const scheduledDecisions = (
-  now: SimTimeMs,
   order: CommittedShipOrder,
   arrivalProfileFuelCost: QuantizedBurnParameters
 ): readonly ScheduledShipDecision[] => {
-  const arrival = arrivalTime(now, order);
-  const retargetClosesAt = Math.min(arrival, now + RETARGET_WINDOW_MILLISECONDS) as SimTimeMs;
-  const arrivalProfileOpensAt = (now + order.accelerationBurn.burnDurationMs + order.coastDurationMs) as SimTimeMs;
+  const arrival = arrivalTime(order);
+  const retargetClosesAt = Math.min(arrival, order.departureAtMs + RETARGET_WINDOW_MILLISECONDS) as SimTimeMs;
+  const arrivalProfileOpensAt = (order.departureAtMs + order.accelerationBurn.burnDurationMs + order.coastDurationMs) as SimTimeMs;
   return [
-    { kind: "retarget", opensAtMs: now, closesAtMs: retargetClosesAt },
+    { kind: "retarget", opensAtMs: order.departureAtMs, closesAtMs: retargetClosesAt },
     {
       kind: "arrivalProfile",
       opensAtMs: arrivalProfileOpensAt,
@@ -125,6 +128,15 @@ export class ShipOrderRestController<TPlanInput> {
     const { body } = request;
     if (body.orderId.length === 0) throw new ShipOrderCommandRefusal("empty-order-id");
     if (body.destinationId.length === 0) throw new ShipOrderCommandRefusal("empty-destination-id");
+    let departureAtMs: SimTimeMs;
+    try {
+      departureAtMs = simTimeMs(body.departureAtMs);
+    } catch {
+      throw new ShipOrderCommandRefusal("invalid-departure-time");
+    }
+    if (departureAtMs < this.#simulation.state.time) {
+      throw new ShipOrderCommandRefusal("departure-before-commit");
+    }
     if (this.#simulation.state.ship !== undefined) {
       throw new ShipOrderCommandRefusal("order-already-committed");
     }
@@ -132,6 +144,7 @@ export class ShipOrderRestController<TPlanInput> {
     const order: CommittedShipOrder = {
       orderId: body.orderId,
       destinationId: body.destinationId,
+      departureAtMs,
       accelerationBurn: quantizeBurnParameters(advice.accelerationBurn),
       coastDurationMs: quantizeDuration(advice.coastDurationSeconds),
       decelerationBurn: quantizeBurnParameters(advice.decelerationBurn)
@@ -140,7 +153,6 @@ export class ShipOrderRestController<TPlanInput> {
       throw new ShipOrderCommandRefusal("zero-total-duration");
     }
     const decisions = scheduledDecisions(
-      this.#simulation.state.time,
       order,
       quantizeBurnParameters(body.arrivalProfileFuelCost)
     );
