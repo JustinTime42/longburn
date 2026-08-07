@@ -2,6 +2,8 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { replaySegment, type SimEvent } from "./event-log.js";
+import { simTimeMs } from "./clock.js";
+import { burnDurationMs } from "./mass-cargo.js";
 
 const eventArbitrary = fc.oneof(
   fc.record({
@@ -45,5 +47,53 @@ describe("event log replay", () => {
       ),
       { numRuns: 500 }
     );
+  });
+
+  it("reduces an atomic ship commitment and every phase-change branch", () => {
+    const events: readonly SimEvent[] = [
+      {
+        type: "shipOrderCommitted",
+        order: {
+          orderId: "order-1", destinationId: "mars",
+          accelerationBurn: { burnDurationMs: burnDurationMs(1) }, coastDurationMs: 2, decelerationBurn: { burnDurationMs: burnDurationMs(3) }
+        },
+        decisions: [
+          { kind: "retarget", opensAtMs: simTimeMs(0), closesAtMs: simTimeMs(6) },
+          { kind: "arrivalProfile", opensAtMs: simTimeMs(3), closesAtMs: simTimeMs(6), fuelCostBurn: { burnDurationMs: burnDurationMs(1) } }
+        ]
+      },
+      { type: "clockAdvanced", elapsedMs: 1 }, { type: "shipPhaseChanged", phase: "coast" },
+      { type: "clockAdvanced", elapsedMs: 2 }, { type: "shipPhaseChanged", phase: "flip" },
+      { type: "shipPhaseChanged", phase: "decelBurn" },
+      { type: "clockAdvanced", elapsedMs: 3 }, { type: "shipPhaseChanged", phase: "arrived" }
+    ];
+
+    expect(replaySegment(1, events)).toMatchObject({
+      time: 6,
+      ship: {
+        phase: "arrived",
+        scheduledDecisions: [
+          { kind: "retarget", opensAtMs: 0, closesAtMs: 6 },
+          { kind: "arrivalProfile", opensAtMs: 3, closesAtMs: 6, fuelCostBurn: { burnDurationMs: 1 } }
+        ]
+      }
+    });
+  });
+
+  it("rejects invalid committed orders and scheduled decisions in the shared reducer", () => {
+    const order = {
+      orderId: "order-1", destinationId: "mars",
+      accelerationBurn: { burnDurationMs: burnDurationMs(1) }, coastDurationMs: 0, decelerationBurn: { burnDurationMs: burnDurationMs(0) }
+    };
+    expect(() => replaySegment(1, [{ type: "shipOrderCommitted", order: { ...order, orderId: "" }, decisions: [] }]))
+      .toThrow("Committed ship orders require non-empty order and destination IDs.");
+    expect(() => replaySegment(1, [{ type: "shipOrderCommitted", order: { ...order, coastDurationMs: -1 }, decisions: [] }]))
+      .toThrow("Committed ship durations must be non-negative safe integer milliseconds.");
+    expect(() => replaySegment(1, [{
+      type: "shipOrderCommitted", order,
+      decisions: [{ kind: "retarget", opensAtMs: simTimeMs(4), closesAtMs: simTimeMs(3) }]
+    }])).toThrow("Scheduled ship decision times must be ordered non-negative integer milliseconds.");
+    expect(() => replaySegment(1, [{ type: "shipPhaseChanged", phase: "coast" }]))
+      .toThrow("Cannot change phase without a committed ship order.");
   });
 });

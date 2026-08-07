@@ -1,4 +1,4 @@
-import { SimClock, simTimeMs, type SimTimeMs } from "./clock.js";
+import { simTimeMs, type SimTimeMs } from "./clock.js";
 import type { PositionMeters } from "./causality.js";
 import {
   type PersistedSimulationStream,
@@ -11,11 +11,10 @@ import {
   type CommittedShipOrder,
   type ScheduledShipDecision,
   type ShipPhase,
-  type ShipState,
   type SimEvent,
-  type SimState
+  type SimState,
+  SimEventReducer
 } from "./event-log.js";
-import { SeededRng } from "./rng.js";
 
 export interface AuthoritativeSimLoopOptions {
   readonly stream: SimulationStream;
@@ -43,17 +42,13 @@ export class AuthoritativeSimLoopConflictError extends Error {
  * milliseconds. Host scheduling may use wall time; this sim module cannot.
  */
 export class AuthoritativeSimLoop {
-  readonly #clock: SimClock;
-  readonly #rng: SeededRng;
+  readonly #reducer: SimEventReducer;
   readonly #store: SimulationEventStore;
   readonly #streamId: string;
-  readonly #randomValues: number[] = [];
-  #ship: ShipState | undefined;
   #streamSequence = 0;
 
   private constructor({ stream, store }: AuthoritativeSimLoopOptions) {
-    this.#clock = SimClock.production(stream.initialTime);
-    this.#rng = new SeededRng(stream.seed);
+    this.#reducer = new SimEventReducer(stream.seed, stream.initialTime);
     this.#store = store;
     this.#streamId = stream.id;
   }
@@ -75,9 +70,7 @@ export class AuthoritativeSimLoop {
   }
 
   get state(): SimState {
-    return this.#ship === undefined
-      ? { time: this.#clock.now, randomValues: [...this.#randomValues] }
-      : { time: this.#clock.now, randomValues: [...this.#randomValues], ship: this.#ship };
+    return this.#reducer.state;
   }
 
   /** One host tick. The stored event is durable before it mutates local state. */
@@ -85,19 +78,19 @@ export class AuthoritativeSimLoop {
     if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0) {
       throw new RangeError("Simulation advance must be a non-negative safe integer in milliseconds.");
     }
-    const targetTime = this.#clock.now + elapsedMs;
-    while (this.#clock.now < targetTime) {
+    const targetTime = this.#reducer.time + elapsedMs;
+    while (this.#reducer.time < targetTime) {
       await this.#advanceDueShipPhases(eventPosition);
-      const remainingToTarget = targetTime - this.#clock.now;
+      const remainingToTarget = targetTime - this.#reducer.time;
       const remainingToPhase = this.#remainingToNextShipPhase();
       const step = remainingToPhase === undefined ? remainingToTarget : Math.min(remainingToTarget, remainingToPhase);
       const event: SimEvent = { type: "clockAdvanced", elapsedMs: step };
-      await this.#append({ event, eventTime: simTimeMs(this.#clock.now + step), eventPosition });
+      await this.#append({ event, eventTime: simTimeMs(this.#reducer.time + step), eventPosition });
       this.#apply(event);
       await this.#advanceDueShipPhases(eventPosition);
     }
     await this.#advanceDueShipPhases(eventPosition);
-    return this.#clock.now;
+    return this.#reducer.time;
   }
 
   /**
@@ -109,22 +102,19 @@ export class AuthoritativeSimLoop {
     decisions: readonly ScheduledShipDecision[],
     eventPosition: PositionMeters
   ): Promise<void> {
-    if (this.#ship !== undefined) throw new Error("A ship order is already committed.");
-    await this.#append({ event: { type: "shipOrderCommitted", order }, eventTime: this.#clock.now, eventPosition });
-    this.#apply({ type: "shipOrderCommitted", order });
-    for (const decision of decisions) {
-      await this.#append({ event: { type: "shipDecisionWindowScheduled", decision }, eventTime: this.#clock.now, eventPosition });
-      this.#apply({ type: "shipDecisionWindowScheduled", decision });
-    }
+    if (this.#reducer.state.ship !== undefined) throw new Error("A ship order is already committed.");
+    const event: SimEvent = { type: "shipOrderCommitted", order, decisions };
+    await this.#append({ event, eventTime: this.#reducer.time, eventPosition });
+    this.#apply(event);
     await this.#advanceDueShipPhases(eventPosition);
   }
 
   /** Records each simulation RNG decision so replay never relies on host order. */
   async requestRandom(upperExclusive: number, eventPosition: PositionMeters): Promise<number> {
     const event: SimEvent = { type: "randomValueRequested", upperExclusive };
-    await this.#append({ event, eventTime: this.#clock.now, eventPosition });
+    await this.#append({ event, eventTime: this.#reducer.time, eventPosition });
     this.#apply(event);
-    const value = this.#randomValues.at(-1);
+    const value = this.#reducer.state.randomValues.at(-1);
     if (value === undefined) {
       throw new Error("Random event did not produce a value.");
     }
@@ -145,49 +135,32 @@ export class AuthoritativeSimLoop {
 
   #assertRecordTime(record: StoredSimEvent): void {
     const expectedTime = record.event.type === "clockAdvanced"
-      ? simTimeMs(this.#clock.now + record.event.elapsedMs)
-      : this.#clock.now;
+      ? simTimeMs(this.#reducer.time + record.event.elapsedMs)
+      : this.#reducer.time;
     if (record.eventTime !== expectedTime) {
       throw new RangeError("Persisted event time does not match the authoritative clock.");
     }
   }
 
   #apply(event: SimEvent): void {
-    switch (event.type) {
-      case "clockAdvanced":
-        this.#clock.advance(event.elapsedMs);
-        return;
-      case "randomValueRequested":
-        this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
-        return;
-      case "shipOrderCommitted":
-        if (this.#ship !== undefined) throw new Error("A ship order is already committed.");
-        this.#ship = { order: event.order, phase: "accelBurn", phaseStartedAtMs: this.#clock.now, scheduledDecisions: [] };
-        return;
-      case "shipDecisionWindowScheduled":
-        if (this.#ship === undefined) throw new Error("Cannot schedule a decision without a committed ship order.");
-        this.#ship = { ...this.#ship, scheduledDecisions: [...this.#ship.scheduledDecisions, event.decision] };
-        return;
-      case "shipPhaseChanged":
-        if (this.#ship === undefined) throw new Error("Cannot change phase without a committed ship order.");
-        this.#ship = { ...this.#ship, phase: event.phase, phaseStartedAtMs: this.#clock.now };
-        return;
-    }
+    this.#reducer.apply(event);
   }
 
   #remainingToNextShipPhase(): number | undefined {
-    if (this.#ship === undefined || this.#ship.phase === "arrived") return undefined;
-    const duration = this.#phaseDuration(this.#ship.phase);
-    return Math.max(0, duration - (this.#clock.now - this.#ship.phaseStartedAtMs));
+    const ship = this.#reducer.state.ship;
+    if (ship === undefined || ship.phase === "arrived") return undefined;
+    const duration = this.#phaseDuration(ship.phase);
+    return Math.max(0, duration - (this.#reducer.time - ship.phaseStartedAtMs));
   }
 
   #phaseDuration(phase: ShipPhase): number {
-    if (this.#ship === undefined) throw new Error("No committed ship order.");
+    const ship = this.#reducer.state.ship;
+    if (ship === undefined) throw new Error("No committed ship order.");
     switch (phase) {
-      case "accelBurn": return this.#ship.order.accelerationBurn.burnDurationMs;
-      case "coast": return this.#ship.order.coastDurationMs;
+      case "accelBurn": return ship.order.accelerationBurn.burnDurationMs;
+      case "coast": return ship.order.coastDurationMs;
       case "flip": return 0;
-      case "decelBurn": return this.#ship.order.decelerationBurn.burnDurationMs;
+      case "decelBurn": return ship.order.decelerationBurn.burnDurationMs;
       case "docked":
       case "arrived":
         return 0;
@@ -195,16 +168,18 @@ export class AuthoritativeSimLoop {
   }
 
   async #advanceDueShipPhases(eventPosition: PositionMeters): Promise<void> {
-    while (this.#ship !== undefined && this.#ship.phase !== "arrived" && this.#remainingToNextShipPhase() === 0) {
-      const phase: Exclude<ShipPhase, "docked"> = this.#ship.phase === "accelBurn"
+    while (this.#reducer.state.ship !== undefined && this.#reducer.state.ship.phase !== "arrived" && this.#remainingToNextShipPhase() === 0) {
+      const ship = this.#reducer.state.ship;
+      if (ship === undefined) throw new Error("No committed ship order.");
+      const phase: Exclude<ShipPhase, "docked"> = ship.phase === "accelBurn"
         ? "coast"
-        : this.#ship.phase === "coast"
+        : ship.phase === "coast"
           ? "flip"
-          : this.#ship.phase === "flip"
+          : ship.phase === "flip"
             ? "decelBurn"
             : "arrived";
       const event: SimEvent = { type: "shipPhaseChanged", phase };
-      await this.#append({ event, eventTime: this.#clock.now, eventPosition });
+      await this.#append({ event, eventTime: this.#reducer.time, eventPosition });
       this.#apply(event);
     }
   }

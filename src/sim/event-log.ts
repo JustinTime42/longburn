@@ -35,8 +35,12 @@ export interface ShipState {
 export type SimEvent =
   | { readonly type: "clockAdvanced"; readonly elapsedMs: number }
   | { readonly type: "randomValueRequested"; readonly upperExclusive: number }
-  | { readonly type: "shipOrderCommitted"; readonly order: CommittedShipOrder }
-  | { readonly type: "shipDecisionWindowScheduled"; readonly decision: ScheduledShipDecision }
+  | {
+    readonly type: "shipOrderCommitted";
+    readonly order: CommittedShipOrder;
+    /** Decision windows are part of the single irreversible commitment. */
+    readonly decisions: readonly ScheduledShipDecision[];
+  }
   | { readonly type: "shipPhaseChanged"; readonly phase: Exclude<ShipPhase, "docked"> };
 
 export interface SimState {
@@ -80,41 +84,63 @@ const assertDecision = (decision: ScheduledShipDecision): ScheduledShipDecision 
   };
 };
 
+/** The sole reducer for both durable replay and the live authoritative loop. */
+export class SimEventReducer {
+  readonly #clock: SimClock;
+  readonly #rng: SeededRng;
+  readonly #randomValues: number[] = [];
+  #ship: ShipState | undefined;
+
+  constructor(seed: number, initialTime: SimTimeMs = simTimeMs(0)) {
+    this.#clock = SimClock.production(initialTime);
+    this.#rng = new SeededRng(seed);
+  }
+
+  get time(): SimTimeMs { return this.#clock.now; }
+
+  get state(): SimState {
+    return this.#ship === undefined
+      ? { time: this.#clock.now, randomValues: [...this.#randomValues] }
+      : { time: this.#clock.now, randomValues: [...this.#randomValues], ship: this.#ship };
+  }
+
+  apply(event: SimEvent): void {
+    switch (event.type) {
+      case "clockAdvanced":
+        this.#clock.advance(event.elapsedMs);
+        break;
+      case "randomValueRequested":
+        this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
+        break;
+      case "shipOrderCommitted":
+        if (this.#ship !== undefined) throw new Error("A ship order is already committed.");
+        this.#ship = {
+          order: assertOrder(event.order),
+          phase: "accelBurn",
+          phaseStartedAtMs: this.#clock.now,
+          scheduledDecisions: event.decisions.map(assertDecision)
+        };
+        break;
+      case "shipPhaseChanged":
+        if (this.#ship === undefined) throw new Error("Cannot change phase without a committed ship order.");
+        this.#ship = { ...this.#ship, phase: event.phase, phaseStartedAtMs: this.#clock.now };
+        break;
+    }
+  }
+}
+
 /** Rebuild a segment from its append-only event log and its recorded RNG seed. */
 export const replaySegment = (
   seed: number,
   events: readonly SimEvent[],
   initialTime: SimTimeMs = simTimeMs(0)
 ): SimState => {
-  const clock = SimClock.production(initialTime);
-  const rng = new SeededRng(seed);
-  const randomValues: number[] = [];
-  let ship: ShipState | undefined;
-
+  const reducer = new SimEventReducer(seed, initialTime);
   for (const event of events) {
-    switch (event.type) {
-      case "clockAdvanced":
-        clock.advance(event.elapsedMs);
-        break;
-      case "randomValueRequested":
-        randomValues.push(rng.nextInt(event.upperExclusive));
-        break;
-      case "shipOrderCommitted":
-        if (ship !== undefined) throw new Error("A ship order is already committed.");
-        ship = { order: assertOrder(event.order), phase: "accelBurn", phaseStartedAtMs: clock.now, scheduledDecisions: [] };
-        break;
-      case "shipDecisionWindowScheduled":
-        if (ship === undefined) throw new Error("Cannot schedule a decision without a committed ship order.");
-        ship = { ...ship, scheduledDecisions: [...ship.scheduledDecisions, assertDecision(event.decision)] };
-        break;
-      case "shipPhaseChanged":
-        if (ship === undefined) throw new Error("Cannot change phase without a committed ship order.");
-        ship = { ...ship, phase: event.phase, phaseStartedAtMs: clock.now };
-        break;
-    }
+    reducer.apply(event);
   }
 
-  return ship === undefined ? { time: clock.now, randomValues } : { time: clock.now, randomValues, ship };
+  return reducer.state;
 };
 
 /** Replays an event-store stream from its persisted seed and append-only order. */

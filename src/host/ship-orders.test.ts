@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { simTimeMs } from "../sim/clock.js";
 import { InMemorySimulationEventStore } from "../sim/event-store.js";
 import { AuthoritativeSimLoop } from "../sim/loop.js";
-import { RETARGET_WINDOW_MILLISECONDS, ShipOrderRestController } from "./ship-orders.js";
+import { RETARGET_WINDOW_MILLISECONDS, ShipOrderCommandRefusal, ShipOrderRestController } from "./ship-orders.js";
 
 const origin = { x: 0, y: 0, z: 0 };
 
@@ -59,8 +59,14 @@ describe("ship order REST command", () => {
       ]
     });
     const persisted = await simulation.persistedStream();
-    expect(persisted.events.map(({ event }) => event.type)).toEqual([
-      "shipOrderCommitted", "shipDecisionWindowScheduled", "shipDecisionWindowScheduled"
+    expect(persisted.events).toEqual([
+      expect.objectContaining({
+        event: {
+          type: "shipOrderCommitted",
+          order: response.order,
+          decisions: response.scheduledDecisions
+        }
+      })
     ]);
     expect(JSON.stringify(persisted)).not.toContain("1.2345");
   });
@@ -75,7 +81,7 @@ describe("ship order REST command", () => {
       plan: () => ({
         accelerationBurn: { burnDurationSeconds: 0 },
         coastDurationSeconds: 0,
-        decelerationBurn: { burnDurationSeconds: 0 }
+        decelerationBurn: { burnDurationSeconds: 0.001 }
       })
     });
 
@@ -84,11 +90,11 @@ describe("ship order REST command", () => {
       body: { orderId: "impulse", destinationId: "mars", plan: undefined, arrivalProfileFuelCost: { burnDurationSeconds: 0 } },
       eventPosition: origin
     });
+    await simulation.advance(1, origin);
 
     expect(simulation.state.ship?.phase).toBe("arrived");
     expect((await simulation.persistedStream()).events.map(({ event }) => event.type)).toEqual([
-      "shipOrderCommitted", "shipDecisionWindowScheduled", "shipDecisionWindowScheduled",
-      "shipPhaseChanged", "shipPhaseChanged", "shipPhaseChanged", "shipPhaseChanged"
+      "shipOrderCommitted", "shipPhaseChanged", "shipPhaseChanged", "shipPhaseChanged", "clockAdvanced", "shipPhaseChanged"
     ]);
   });
 
@@ -111,10 +117,37 @@ describe("ship order REST command", () => {
     await simulation.advance(9, origin);
 
     expect((await simulation.persistedStream()).events.map(({ event, eventTime }) => [event.type, eventTime])).toEqual([
-      ["shipOrderCommitted", 0], ["shipDecisionWindowScheduled", 0], ["shipDecisionWindowScheduled", 0],
+      ["shipOrderCommitted", 0],
       ["clockAdvanced", 2], ["shipPhaseChanged", 2], ["clockAdvanced", 5], ["shipPhaseChanged", 5],
       ["shipPhaseChanged", 5], ["clockAdvanced", 9], ["shipPhaseChanged", 9]
     ]);
+  });
+
+  it("refuses malformed or zero-duration commands before any event is persisted", async () => {
+    const store = new InMemorySimulationEventStore();
+    const simulation = await AuthoritativeSimLoop.create({
+      store, stream: { id: "refusals", seed: 1, initialTime: simTimeMs(0) }
+    });
+    const controller = new ShipOrderRestController(simulation, {
+      plan: () => ({
+        accelerationBurn: { burnDurationSeconds: 0 }, coastDurationSeconds: 0, decelerationBurn: { burnDurationSeconds: 0 }
+      })
+    });
+    const request = {
+      method: "POST" as const, path: "/ship-orders" as const, eventPosition: origin,
+      body: { orderId: "valid", destinationId: "mars", plan: undefined, arrivalProfileFuelCost: { burnDurationSeconds: 0 } }
+    };
+
+    await expect(controller.postCommit({ ...request, body: { ...request.body, orderId: "" } })).rejects.toMatchObject(
+      { name: "ShipOrderCommandRefusal", code: "empty-order-id" } satisfies Partial<ShipOrderCommandRefusal>
+    );
+    await expect(controller.postCommit({ ...request, body: { ...request.body, destinationId: "" } })).rejects.toMatchObject(
+      { name: "ShipOrderCommandRefusal", code: "empty-destination-id" } satisfies Partial<ShipOrderCommandRefusal>
+    );
+    await expect(controller.postCommit(request)).rejects.toMatchObject(
+      { name: "ShipOrderCommandRefusal", code: "zero-total-duration" } satisfies Partial<ShipOrderCommandRefusal>
+    );
+    expect((await simulation.persistedStream()).events).toEqual([]);
   });
 
   it("does not invoke a planner while replaying a committed order", async () => {

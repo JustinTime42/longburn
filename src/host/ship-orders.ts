@@ -61,6 +61,23 @@ export interface CommitShipOrderRestResponse {
   readonly scheduledDecisions: readonly ScheduledShipDecision[];
 }
 
+export type ShipOrderCommandRefusalCode =
+  | "empty-order-id"
+  | "empty-destination-id"
+  | "zero-total-duration"
+  | "order-already-committed";
+
+/** A command was refused before it could enter the irreversible event log. */
+export class ShipOrderCommandRefusal extends Error {
+  readonly code: ShipOrderCommandRefusalCode;
+
+  constructor(code: ShipOrderCommandRefusalCode) {
+    super(`Ship order command refused: ${code}.`);
+    this.name = "ShipOrderCommandRefusal";
+    this.code = code;
+  }
+}
+
 const quantizeDuration = (durationSeconds: number): number =>
   quantizeBurnParameters({ burnDurationSeconds: durationSeconds }).burnDurationMs;
 
@@ -106,8 +123,10 @@ export class ShipOrderRestController<TPlanInput> {
 
   async postCommit(request: CommitShipOrderRestRequest<TPlanInput>): Promise<CommitShipOrderRestResponse> {
     const { body } = request;
+    if (body.orderId.length === 0) throw new ShipOrderCommandRefusal("empty-order-id");
+    if (body.destinationId.length === 0) throw new ShipOrderCommandRefusal("empty-destination-id");
     if (this.#simulation.state.ship !== undefined) {
-      throw new Error("A ship order is already committed.");
+      throw new ShipOrderCommandRefusal("order-already-committed");
     }
     const advice = this.#planner.plan(body.plan);
     const order: CommittedShipOrder = {
@@ -117,6 +136,9 @@ export class ShipOrderRestController<TPlanInput> {
       coastDurationMs: quantizeDuration(advice.coastDurationSeconds),
       decelerationBurn: quantizeBurnParameters(advice.decelerationBurn)
     };
+    if (order.accelerationBurn.burnDurationMs + order.coastDurationMs + order.decelerationBurn.burnDurationMs === 0) {
+      throw new ShipOrderCommandRefusal("zero-total-duration");
+    }
     const decisions = scheduledDecisions(
       this.#simulation.state.time,
       order,
