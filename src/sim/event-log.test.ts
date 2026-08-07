@@ -55,13 +55,15 @@ describe("event log replay", () => {
         type: "shipOrderCommitted",
         order: {
           orderId: "order-1", destinationId: "mars",
+          departureAtMs: simTimeMs(2),
           accelerationBurn: { burnDurationMs: burnDurationMs(1) }, coastDurationMs: 2, decelerationBurn: { burnDurationMs: burnDurationMs(3) }
         },
         decisions: [
-          { kind: "retarget", opensAtMs: simTimeMs(0), closesAtMs: simTimeMs(6) },
-          { kind: "arrivalProfile", opensAtMs: simTimeMs(3), closesAtMs: simTimeMs(6), fuelCostBurn: { burnDurationMs: burnDurationMs(1) } }
+          { kind: "retarget", opensAtMs: simTimeMs(2), closesAtMs: simTimeMs(8) },
+          { kind: "arrivalProfile", opensAtMs: simTimeMs(5), closesAtMs: simTimeMs(8), fuelCostBurn: { burnDurationMs: burnDurationMs(1) } }
         ]
       },
+      { type: "clockAdvanced", elapsedMs: 2 }, { type: "shipPhaseChanged", phase: "accelBurn" },
       { type: "clockAdvanced", elapsedMs: 1 }, { type: "shipPhaseChanged", phase: "coast" },
       { type: "clockAdvanced", elapsedMs: 2 }, { type: "shipPhaseChanged", phase: "flip" },
       { type: "shipPhaseChanged", phase: "decelBurn" },
@@ -69,12 +71,12 @@ describe("event log replay", () => {
     ];
 
     expect(replaySegment(1, events)).toMatchObject({
-      time: 6,
+      time: 8,
       ship: {
         phase: "arrived",
         scheduledDecisions: [
-          { kind: "retarget", opensAtMs: 0, closesAtMs: 6 },
-          { kind: "arrivalProfile", opensAtMs: 3, closesAtMs: 6, fuelCostBurn: { burnDurationMs: 1 } }
+          { kind: "retarget", opensAtMs: 2, closesAtMs: 8 },
+          { kind: "arrivalProfile", opensAtMs: 5, closesAtMs: 8, fuelCostBurn: { burnDurationMs: 1 } }
         ]
       }
     });
@@ -83,6 +85,7 @@ describe("event log replay", () => {
   it("rejects invalid committed orders and scheduled decisions in the shared reducer", () => {
     const order = {
       orderId: "order-1", destinationId: "mars",
+      departureAtMs: simTimeMs(0),
       accelerationBurn: { burnDurationMs: burnDurationMs(1) }, coastDurationMs: 0, decelerationBurn: { burnDurationMs: burnDurationMs(0) }
     };
     expect(() => replaySegment(1, [{ type: "shipOrderCommitted", order: { ...order, orderId: "" }, decisions: [] }]))

@@ -178,6 +178,7 @@ export class AuthoritativeSimLoop {
   #remainingToNextShipPhase(): number | undefined {
     const ship = this.#reducer.state.ship;
     if (ship === undefined || ship.phase === "arrived") return undefined;
+    if (ship.phase === "docked") return Math.max(0, ship.order.departureAtMs - this.#reducer.time);
     const duration = this.#phaseDuration(ship.phase);
     return Math.max(0, duration - (this.#reducer.time - ship.phaseStartedAtMs));
   }
@@ -190,7 +191,7 @@ export class AuthoritativeSimLoop {
       case "coast": return ship.order.coastDurationMs;
       case "flip": return 0;
       case "decelBurn": return ship.order.decelerationBurn.burnDurationMs;
-      case "docked":
+      case "docked": return 0;
       case "arrived":
         return 0;
     }
@@ -200,13 +201,15 @@ export class AuthoritativeSimLoop {
     while (this.#reducer.state.ship !== undefined && this.#reducer.state.ship.phase !== "arrived" && this.#remainingToNextShipPhase() === 0) {
       const ship = this.#reducer.state.ship;
       if (ship === undefined) throw new Error("No committed ship order.");
-      const phase: Exclude<ShipPhase, "docked"> = ship.phase === "accelBurn"
-        ? "coast"
-        : ship.phase === "coast"
-          ? "flip"
-          : ship.phase === "flip"
-            ? "decelBurn"
-            : "arrived";
+      const phase: Exclude<ShipPhase, "docked"> = ship.phase === "docked"
+        ? "accelBurn"
+        : ship.phase === "accelBurn"
+          ? "coast"
+          : ship.phase === "coast"
+            ? "flip"
+            : ship.phase === "flip"
+              ? "decelBurn"
+              : "arrived";
       const event: SimEvent = { type: "shipPhaseChanged", phase };
       await this.#append({ event, eventTime: this.#reducer.time, eventPosition });
       this.#apply(event);
