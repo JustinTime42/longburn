@@ -116,6 +116,9 @@ solver can compute.
 - The Tier 0 ship configuration fixes its departure wet mass at 1,000 t for authoritative
   propellant accounting. A plan revision projects each quantized node sequentially from that
   remaining mass and refuses at arrival if it would consume structure; callers never name fuel costs.
+  (Overseer-ratified 2026-08-07, longburn-40j.3; Warden note: the constant is behaviorally inert
+  today — the accept/refuse decision is scale-invariant in wet mass, so it sets readout units only,
+  becoming load-bearing when cargo mass exists. Ship system v2 is filed: longburn-hev.)
 - For a fixed ship the Pareto front is the 2-D curve `(T, Dv*(T))`; cargo is a derived readout.
   The surface is 3-D only across ships (v_e as decision variable). The planner API returns the
   per-window curve with feasibility walls; it does not fabricate a third independent axis.
