@@ -1,6 +1,7 @@
 # Flight-Plan Model Spec v0.1 — plan-and-burn
 
-Status: DRAFT, pending Overseer approval (longburn-wyu).
+Status: APPROVED by the Overseer, 2026-08-07 (longburn-wyu; §7 questions resolved in-session,
+including the planning-is-never-light-lagged ruling).
 Author: Vardis Slowfathom (Mayor).
 Authority: Overseer ruling 2026-08-07 (recorded on longburn-wci and longburn-v3t; amended
 design pillar 2 and GDD lines 204-205/222). Supersedes the single-order commit-and-burn model
@@ -111,11 +112,13 @@ the causal transport fence, no-cancel-of-history as a type-level absence.
 - Immutability: property test that no reachable command sequence mutates an executed burn.
 - Quantization round-trip per node; fuel-refusal boundary cases.
 
-## 7. Open questions for the Overseer (approve-with-answers)
+## 7. Resolved questions (Overseer, 2026-08-07)
 
-1. **HQ default**: fixed at Earth at world-join for T0 — confirm.
-2. **Burn-execution report**: the ship reports each executed burn back to HQ at light-lag
-   (din.7 notification trigger: "burn executed as planned" arriving minutes later) — confirm.
-3. **In-flight planner access**: T0 keeps the planner server-side and instant (the ~3.3-3.8 s
-   sweep, ddv). Planning latency as a light-lagged in-fiction service is future-tier flavor —
-   defer? (Recommend: defer; c9q territory.)
+1. **HQ default**: CONFIRMED — fixed at Earth at world-join for T0.
+2. **Burn-execution report**: CONFIRMED — all ship reports, including executed burns, travel
+   back at light speed (din.7 notification trigger arrives light-lagged).
+3. **Planning is never light-lagged — permanent ruling, not a deferral.** Planning is a tool
+   for the player, local to them by nature; it carries no lag at any tier. The ORDER (the
+   PlanRevision command) is the thing that is light-lagged, and ship reports come back at c.
+   The information a plan is built FROM is naturally stale by light-lag (the player plans
+   against the world as they can see it); that staleness needs no extra mechanic.
