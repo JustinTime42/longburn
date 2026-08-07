@@ -9,7 +9,7 @@ Build LONGBURN — a persistent, single-world, async strategy MMO in the real so
 ## Constitution-tier design pillars (agents REFUSE violating changes; flag and escalate instead)
 
 1. No gamey nonsense: constraints are physical/economic consequences, never rules.
-2. Commitment is irreversible. No undo, no recall, no fast-forward — as PRODUCT rules.
+2. The burn is irreversible; the plan is paper. Ejected mass never comes back: an executed burn and all its consequences are history (no undo, no recall, no fast-forward, as PRODUCT rules). Planned burns may be edited or aborted until the moment they execute, gated only by command light-lag. Stakes begin when the engine fires. (Reworded 2026-08-07 by Overseer ruling, longburn-wci; originally read: Commitment is irreversible.)
 3. Depth over content faucets.
 4. Players are the economy; NPCs only where players are absent, self-exiting.
 5. Simulation over presentation.
