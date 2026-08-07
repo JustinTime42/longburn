@@ -8,6 +8,7 @@ import {
   deltaVForBurn,
   dequantizeBurnParameters,
   massRatioForDeltaV,
+  projectPropellantForBurns,
   quantizeBurnParameters,
   TIER0_SHIP,
   viabilityWallDeltaV,
@@ -89,5 +90,40 @@ describe("burn commitment quantization", () => {
       deltaVKmPerSecond: deltaVForBurn(TIER0_SHIP.accelerationKmPerSecond2, 0.001),
       burnDurationSeconds: 0.001
     });
+  });
+});
+
+describe("sequential propellant projection", () => {
+  it("accepts an exactly budgeted node and refuses a one-gram overrun across generated rocket-equation boundaries", () => {
+    fc.assert(fc.property(fc.integer({ min: 1, max: 10_000 }), (durationMs) => {
+      const deltaV = durationMs / 1_000;
+      const oneMillisecondDeltaV = 0.001;
+      const wetMassGrams = 1 / (Math.exp(-deltaV) - Math.exp(-(deltaV + oneMillisecondDeltaV)));
+      const ship = {
+        exhaustVelocityKmPerSecond: 1,
+        accelerationKmPerSecond2: 1,
+        structuralMassFraction: Math.exp(-deltaV),
+        wetMassGrams
+      };
+      const atBudget = projectPropellantForBurns([{ burnDurationMs: burnDurationMs(durationMs) }], ship);
+      const oneGramOver = projectPropellantForBurns([{ burnDurationMs: burnDurationMs(durationMs + 1) }], ship);
+
+      expect(atBudget.kind).toBe("sufficient");
+      expect(atBudget.nodes[0]?.remainingPropellantGrams).toBeCloseTo(0, 9);
+      expect(oneGramOver.kind).toBe("exhausted");
+      expect(oneGramOver.nodes[0]?.remainingPropellantGrams).toBeCloseTo(-1, 9);
+    }), { seed: 0x403, numRuns: 100 });
+  });
+
+  it("projects each node from the previous node's remaining wet mass", () => {
+    const ship = { ...TIER0_SHIP, wetMassGrams: 1_000_000 };
+    const projected = projectPropellantForBurns([
+      { burnDurationMs: burnDurationMs(10_000) },
+      { burnDurationMs: burnDurationMs(20_000) }
+    ], ship);
+
+    expect(projected.kind).toBe("sufficient");
+    expect(projected.nodes).toHaveLength(2);
+    expect(projected.nodes[1]?.wetMassGrams).toBeLessThan(projected.nodes[0]?.wetMassGrams ?? Infinity);
   });
 });

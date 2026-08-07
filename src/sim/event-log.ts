@@ -1,5 +1,5 @@
 import { SimClock, simTimeMs, type SimTimeMs } from "./clock.js";
-import { burnDurationMs, type QuantizedBurnParameters } from "./mass-cargo.js";
+import { burnDurationMs, projectPropellantForBurns, type QuantizedBurnParameters } from "./mass-cargo.js";
 import { SeededRng } from "./rng.js";
 import { assertInboundCausalityInvariant, type PositionMeters } from "./causality.js";
 
@@ -36,7 +36,7 @@ export interface ShipState {
   readonly phase: ShipPhase;
 }
 
-export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan";
+export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan" | "insufficient-propellant";
 
 /** Validation failure whose reason is safe to persist in the dispute record. */
 export class PlanRevisionValidationError extends Error {
@@ -50,7 +50,7 @@ export class PlanRevisionValidationError extends Error {
 }
 
 export const assertPlanRevisionRefusalReason = (reason: PlanRevisionRefusalReason): PlanRevisionRefusalReason => {
-  if (reason !== "executed-burn-conflict" && reason !== "invalid-plan") {
+  if (reason !== "executed-burn-conflict" && reason !== "invalid-plan" && reason !== "insufficient-propellant") {
     throw new RangeError("Plan revision refusals require a known reason.");
   }
   return reason;
@@ -148,6 +148,16 @@ export const validateFlightPlanRevision = (
     if (flightPlan.nodes.some(({ executeAtMs }) => executeAtMs < activeBurnEndsAtMs)) {
       throw new PlanRevisionValidationError("executed-burn-conflict", "A flight-plan revision cannot overlap a burn that is firing.");
     }
+  }
+  const projectedPropellant = projectPropellantForBurns([
+    ...executedBurns.map(({ node }) => node.burn),
+    ...flightPlan.nodes.map(({ burn }) => burn)
+  ]);
+  if (projectedPropellant.kind === "exhausted") {
+    throw new PlanRevisionValidationError(
+      "insufficient-propellant",
+      "A flight-plan revision exceeds the ship's remaining propellant at its projected burn nodes."
+    );
   }
   return flightPlan;
 };
