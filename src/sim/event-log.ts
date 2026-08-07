@@ -37,6 +37,13 @@ export interface ShipState {
 
 export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan";
 
+export const assertPlanRevisionRefusalReason = (reason: PlanRevisionRefusalReason): PlanRevisionRefusalReason => {
+  if (reason !== "executed-burn-conflict" && reason !== "invalid-plan") {
+    throw new RangeError("Plan revision refusals require a known reason.");
+  }
+  return reason;
+};
+
 /** There is deliberately no event which removes or edits an executed burn. */
 export type SimEvent =
   | { readonly type: "clockAdvanced"; readonly elapsedMs: number }
@@ -72,8 +79,13 @@ const assertNode = (node: BurnNode): BurnNode => {
 const assertPlan = (plan: FlightPlan): FlightPlan => {
   const nodes = plan.nodes.map(assertNode);
   for (let index = 1; index < nodes.length; index += 1) {
-    if (nodes[index - 1]!.executeAtMs >= nodes[index]!.executeAtMs) {
+    const previous = nodes[index - 1]!;
+    const next = nodes[index]!;
+    if (previous.executeAtMs >= next.executeAtMs) {
       throw new RangeError("Flight-plan nodes must have strictly increasing execution times.");
+    }
+    if (previous.executeAtMs + previous.burn.burnDurationMs > next.executeAtMs) {
+      throw new RangeError("Flight-plan burns cannot overlap.");
     }
   }
   if (new Set(nodes.map(({ nodeId }) => nodeId)).size !== nodes.length) {
@@ -96,8 +108,21 @@ export const validateFlightPlanRevision = (
   if (flightPlan.nodes.some(({ executeAtMs }) => executeAtMs < now)) {
     throw new Error("A flight-plan revision cannot schedule a burn in the past.");
   }
+  const activeBurn = executedBurns.at(-1);
+  if (activeBurn !== undefined && activeBurn.endedAtMs === undefined) {
+    const activeBurnEndsAtMs = simTimeMs(activeBurn.startedAtMs + activeBurn.node.burn.burnDurationMs);
+    if (flightPlan.nodes.some(({ executeAtMs }) => executeAtMs < activeBurnEndsAtMs)) {
+      throw new Error("A flight-plan revision cannot overlap a burn that is firing.");
+    }
+  }
   return flightPlan;
 };
+
+const sameBurnNode = (left: BurnNode, right: BurnNode): boolean =>
+  left.nodeId === right.nodeId
+  && left.executeAtMs === right.executeAtMs
+  && left.kind === right.kind
+  && left.burn.burnDurationMs === right.burn.burnDurationMs;
 
 const derivedPhase = (flightPlan: FlightPlan, executedBurns: readonly ExecutedBurn[]): ShipPhase => {
   const active = executedBurns.at(-1);
@@ -146,7 +171,7 @@ export class SimEventReducer {
         this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
         return;
       case "planRevisionRefused":
-        assertPlan(event.flightPlan);
+        assertPlanRevisionRefusalReason(event.reason);
         return;
       case "planRevisionApplied": {
         this.#flightPlan = validateFlightPlanRevision(event.flightPlan, this.#clock.now, this.#executedBurns);
@@ -157,7 +182,7 @@ export class SimEventReducer {
         const node = assertNode(event.node);
         if (node.executeAtMs !== this.#clock.now) throw new Error("Burns must start at their scheduled simulation time.");
         const plannedNode = this.#flightPlan.nodes.find(({ nodeId }) => nodeId === node.nodeId);
-        if (plannedNode === undefined || JSON.stringify(plannedNode) !== JSON.stringify(node)) {
+        if (plannedNode === undefined || !sameBurnNode(plannedNode, node)) {
           throw new Error("A burn must start from the pending flight plan unchanged.");
         }
         this.#flightPlan = { nodes: this.#flightPlan.nodes.filter(({ nodeId }) => nodeId !== node.nodeId) };
@@ -173,9 +198,9 @@ export class SimEventReducer {
         if (expectedEnd !== this.#clock.now) throw new Error("Burns must end at their quantized duration boundary.");
         this.#executedBurns = [...this.#executedBurns.slice(0, -1), { ...active, endedAtMs: this.#clock.now }];
         return;
+      }
     }
   }
-}
 }
 
 export const replaySegment = (seed: number, events: readonly SimEvent[], initialTime: SimTimeMs = simTimeMs(0)): SimState => {

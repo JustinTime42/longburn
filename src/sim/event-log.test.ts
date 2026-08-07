@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 
 import { simTimeMs } from "./clock.js";
 import { InMemorySimulationEventStore } from "./event-store.js";
-import { replayPersistedSegment, replaySegment, type FlightPlan, type SimEvent } from "./event-log.js";
+import { replayPersistedSegment, replaySegment, type FlightPlan, type PlanRevisionRefusalReason, type SimEvent } from "./event-log.js";
 import { AuthoritativeSimLoop } from "./loop.js";
 import { burnDurationMs } from "./mass-cargo.js";
 
-const node = (nodeId: string, executeAtMs: number, kind: "accel" | "correction" | "decel" = "accel") => ({
-  nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(1) }
+const node = (nodeId: string, executeAtMs: number, kind: "accel" | "correction" | "decel" = "accel", durationMs = 1) => ({
+  nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(durationMs) }
 });
 
 const plan = (...nodes: ReturnType<typeof node>[]): FlightPlan => ({ nodes });
@@ -58,7 +58,7 @@ describe("event log replay", () => {
   it("keeps a refused revision as history without changing the pending plan", () => {
     const events: readonly SimEvent[] = [
       { type: "planRevisionApplied", flightPlan: plan(node("first", 4)) },
-      { type: "planRevisionRefused", flightPlan: plan(node("replacement", 4)), reason: "executed-burn-conflict" }
+      { type: "planRevisionRefused", flightPlan: plan(node("replacement", 4), node("replacement", 5)), reason: "invalid-plan" }
     ];
     expect(replaySegment(1, events).ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["first"]);
   });
@@ -82,6 +82,8 @@ describe("event log replay", () => {
   it("rejects malformed plans and impossible burn history in the shared reducer", () => {
     expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("late", 2), node("early", 1)) }]))
       .toThrow("strictly increasing");
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("first", 0, "accel", 10), node("overlap", 5, "decel")) }]))
+      .toThrow("cannot overlap");
     expect(() => replaySegment(1, [{ type: "burnStarted", node: node("orphan", 0) }])).toThrow("without a flight plan");
     expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("one", 1)) }, { type: "burnStarted", node: node("one", 1) }]))
       .toThrow("scheduled simulation time");
@@ -92,5 +94,40 @@ describe("event log replay", () => {
     const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "preappend-validation", seed: 1, initialTime: simTimeMs(2) } });
     await expect(loop.applyPlanRevision(plan(node("past", 1)), () => ({ x: 0, y: 0, z: 0 }))).rejects.toThrow("cannot schedule a burn in the past");
     expect((await loop.persistedStream()).events).toEqual([]);
+  });
+
+  it("rejects overlapping burns before they can enter the durable log", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "overlapping-burns", seed: 1, initialTime: simTimeMs(0) } });
+    await expect(loop.applyPlanRevision(plan(node("a", 0, "accel", 10), node("b", 5, "decel")), () => ({ x: 0, y: 0, z: 0 }))).rejects.toThrow("cannot overlap");
+    expect((await loop.persistedStream()).events).toEqual([]);
+  });
+
+  it("rejects a revision scheduled inside a burn that is firing before append", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "in-flight-overlap", seed: 1, initialTime: simTimeMs(0) } });
+    await loop.applyPlanRevision(plan(node("a", 0, "accel", 10)), () => ({ x: 0, y: 0, z: 0 }));
+    await expect(loop.applyPlanRevision(plan(node("b", 5, "decel")), () => ({ x: 0, y: 0, z: 0 }))).rejects.toThrow("cannot overlap a burn that is firing");
+    expect((await loop.persistedStream()).events).toHaveLength(2);
+  });
+
+  it("records a malformed refused revision as opaque history", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "opaque-refusal", seed: 1, initialTime: simTimeMs(0) } });
+    await loop.applyPlanRevision(plan(node("first", 4)), () => ({ x: 0, y: 0, z: 0 }));
+    await loop.refusePlanRevision(plan(node("replacement", 4), node("replacement", 5)), "invalid-plan", () => ({ x: 0, y: 0, z: 0 }));
+    const persisted = await loop.persistedStream();
+    expect(persisted.events).toHaveLength(2);
+    expect(replayPersistedSegment(persisted).ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["first"]);
+  });
+
+  it("validates a refusal reason before it can enter the durable log", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "refusal-reason-validation", seed: 1, initialTime: simTimeMs(0) } });
+    await expect(loop.refusePlanRevision(plan(node("replacement", 4)), "unknown" as PlanRevisionRefusalReason, () => ({ x: 0, y: 0, z: 0 })))
+      .rejects.toThrow("require a known reason");
+    expect((await loop.persistedStream()).events).toEqual([]);
+    expect(() => replaySegment(1, [{ type: "planRevisionRefused", flightPlan: plan(node("replacement", 4)), reason: "unknown" as PlanRevisionRefusalReason }]))
+      .toThrow("require a known reason");
   });
 });

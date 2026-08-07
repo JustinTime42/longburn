@@ -1,7 +1,7 @@
 import { simTimeMs, type SimTimeMs } from "./clock.js";
 import type { PositionMeters } from "./causality.js";
 import type { PersistedSimulationStream, SimulationEventStore, SimulationStream, StreamSequenceConflict, StoredSimEvent } from "./event-store.js";
-import { type FlightPlan, type PlanRevisionRefusalReason, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
+import { assertPlanRevisionRefusalReason, type FlightPlan, type PlanRevisionRefusalReason, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
 
 export interface AuthoritativeSimLoopOptions { readonly stream: SimulationStream; readonly store: SimulationEventStore; }
 
@@ -65,7 +65,7 @@ export class AuthoritativeSimLoop {
   /** Records an arrival-time refusal without changing the paper plan. */
   async refusePlanRevision(flightPlan: FlightPlan, reason: PlanRevisionRefusalReason, eventPosition: () => PositionMeters): Promise<void> {
     return this.#serialize(async () => {
-      const event: SimEvent = { type: "planRevisionRefused", flightPlan, reason };
+      const event: SimEvent = { type: "planRevisionRefused", flightPlan, reason: assertPlanRevisionRefusalReason(reason) };
       await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
       this.#reducer.apply(event);
     });
@@ -104,16 +104,20 @@ export class AuthoritativeSimLoop {
     if (ship === undefined) return undefined;
     const active = ship.executedBurns.at(-1);
     if (active !== undefined && active.endedAtMs === undefined) {
-      return Math.max(0, active.node.burn.burnDurationMs - (this.#reducer.time - active.startedAtMs));
+      const remaining = active.node.burn.burnDurationMs - (this.#reducer.time - active.startedAtMs);
+      if (remaining < 0) throw new Error("Active burn boundary is behind the authoritative simulation time.");
+      return remaining;
     }
     const next = ship.flightPlan.nodes[0];
-    return next === undefined ? undefined : Math.max(0, next.executeAtMs - this.#reducer.time);
+    if (next === undefined) return undefined;
+    const remaining = next.executeAtMs - this.#reducer.time;
+    if (remaining < 0) throw new Error("Pending burn boundary is behind the authoritative simulation time.");
+    return remaining;
   }
 
   async #advanceDueBurns(eventPosition: () => PositionMeters): Promise<void> {
     while (this.#remainingToNextBurnBoundary() === 0) {
-      const ship = this.#reducer.state.ship;
-      if (ship === undefined) return;
+      const ship = this.#reducer.state.ship!;
       const active = ship.executedBurns.at(-1);
       const event: SimEvent = active !== undefined && active.endedAtMs === undefined
         ? { type: "burnEnded", nodeId: active.node.nodeId }
