@@ -94,25 +94,29 @@ describe("burn commitment quantization", () => {
 });
 
 describe("sequential propellant projection", () => {
-  it("accepts an exactly budgeted node and refuses a one-gram overrun across generated rocket-equation boundaries", () => {
-    fc.assert(fc.property(fc.integer({ min: 1, max: 10_000 }), (durationMs) => {
-      const deltaV = durationMs / 1_000;
-      const oneMillisecondDeltaV = 0.001;
-      const wetMassGrams = 1 / (Math.exp(-deltaV) - Math.exp(-(deltaV + oneMillisecondDeltaV)));
-      const ship = {
-        exhaustVelocityKmPerSecond: 1,
-        accelerationKmPerSecond2: 1,
-        structuralMassFraction: Math.exp(-deltaV),
-        wetMassGrams
-      };
-      const atBudget = projectPropellantForBurns([{ burnDurationMs: burnDurationMs(durationMs) }], ship);
-      const oneGramOver = projectPropellantForBurns([{ burnDurationMs: burnDurationMs(durationMs + 1) }], ship);
+  it("accepts or refuses by the exact summed duration against the viability wall", () => {
+    const ship = {
+      exhaustVelocityKmPerSecond: 1,
+      accelerationKmPerSecond2: 1,
+      structuralMassFraction: 0.5,
+      wetMassGrams: 1_000_000
+    };
 
-      expect(atBudget.kind).toBe("sufficient");
-      expect(atBudget.nodes[0]?.remainingPropellantGrams).toBeCloseTo(0, 9);
-      expect(oneGramOver.kind).toBe("exhausted");
-      expect(oneGramOver.nodes[0]?.remainingPropellantGrams).toBeCloseTo(-1, 9);
-    }), { seed: 0x403, numRuns: 100 });
+    // ln(2) is between 0.693 and 0.694. The multi-node case proves that the
+    // acceptance predicate uses the exact integer sum, not per-node rounding.
+    const belowWall = projectPropellantForBurns([
+      { burnDurationMs: burnDurationMs(1) },
+      { burnDurationMs: burnDurationMs(692) }
+    ], ship);
+    const aboveWall = projectPropellantForBurns([
+      { burnDurationMs: burnDurationMs(1) },
+      { burnDurationMs: burnDurationMs(693) }
+    ], ship);
+
+    expect(belowWall.kind).toBe("sufficient");
+    expect(aboveWall.kind).toBe("exhausted");
+    expect(belowWall.nodes).toHaveLength(2);
+    expect(aboveWall.nodes).toHaveLength(2);
   });
 
   it("projects each node from the previous node's remaining wet mass", () => {

@@ -205,12 +205,32 @@ export const projectPropellantForBurns = (
   ship: ShipMassConfig = TIER0_SHIP
 ): PropellantProjection => {
   validateShip(ship);
+  const committedBurns = burns.map(assertBurnParameters);
+  let totalBurnDurationMs = 0;
+  for (const burn of committedBurns) {
+    totalBurnDurationMs += burn.burnDurationMs;
+    if (!Number.isSafeInteger(totalBurnDurationMs)) {
+      throw new RangeError("Total burn duration must be a non-negative safe integer in milliseconds.");
+    }
+  }
+
+  // Acceptance is based solely on the quantized commitment. The duration sum
+  // is exact, and this one delta-v multiplication is compared with the same
+  // logarithmic wall used by cargo assessment. Do not use the per-node
+  // rocket-equation readouts below to decide accept/refuse: Math.exp is
+  // implementation-approximated and those values are replay-time display data.
+  const totalDeltaVKmPerSecond = deltaVForBurn(
+    ship.accelerationKmPerSecond2,
+    totalBurnDurationMs / 1_000
+  );
+  const sufficient = totalDeltaVKmPerSecond < viabilityWallDeltaV(ship);
+
   const structuralMassGrams = ship.wetMassGrams * ship.structuralMassFraction;
   let wetMassGrams = ship.wetMassGrams;
   const nodes: ProjectedBurnFuelState[] = [];
 
-  for (const burn of burns) {
-    const { deltaVKmPerSecond } = dequantizeBurnParameters(assertBurnParameters(burn), ship);
+  for (const burn of committedBurns) {
+    const { deltaVKmPerSecond } = dequantizeBurnParameters(burn, ship);
     wetMassGrams /= massRatioForDeltaV(deltaVKmPerSecond, ship.exhaustVelocityKmPerSecond);
     nodes.push({
       burnDurationMs: burn.burnDurationMs,
@@ -219,13 +239,7 @@ export const projectPropellantForBurns = (
     });
   }
 
-  // Floating-point error is bounded relative to the configured wet mass. This
-  // only admits a rounding-equivalent boundary, never a physical gram over it.
-  const toleranceGrams = Number.EPSILON * ship.wetMassGrams * 8;
-  const finalState = nodes.at(-1);
-  return finalState === undefined || finalState.remainingPropellantGrams >= -toleranceGrams
-    ? { kind: "sufficient", nodes }
-    : { kind: "exhausted", nodes };
+  return sufficient ? { kind: "sufficient", nodes } : { kind: "exhausted", nodes };
 };
 
 const assertBurnParameters = (burn: QuantizedBurnParameters): QuantizedBurnParameters => ({
