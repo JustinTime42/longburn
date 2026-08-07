@@ -117,8 +117,13 @@ const assertPlan = (plan: FlightPlan): FlightPlan => {
   return { nodes };
 };
 
-/** Validates the event-sourced immutability boundary before a live append. */
-export const validateFlightPlanRevision = (
+/**
+ * Validates facts that remain meaningful for both a live append and replay.
+ *
+ * This deliberately excludes propellant: accepted events are historical facts,
+ * and mutable ship balance configuration must never affect their replay.
+ */
+const validateRecordedFlightPlanRevision = (
   plan: FlightPlan,
   now: SimTimeMs,
   executedBurns: readonly ExecutedBurn[],
@@ -149,6 +154,17 @@ export const validateFlightPlanRevision = (
       throw new PlanRevisionValidationError("executed-burn-conflict", "A flight-plan revision cannot overlap a burn that is firing.");
     }
   }
+  return flightPlan;
+};
+
+/** Validates the event-sourced immutability boundary before a live append. */
+export const validateFlightPlanRevision = (
+  plan: FlightPlan,
+  now: SimTimeMs,
+  executedBurns: readonly ExecutedBurn[],
+  replacedNodeIds: readonly string[] = []
+): FlightPlan => {
+  const flightPlan = validateRecordedFlightPlanRevision(plan, now, executedBurns, replacedNodeIds);
   const projectedPropellant = projectPropellantForBurns([
     ...executedBurns.map(({ node }) => node.burn),
     ...flightPlan.nodes.map(({ burn }) => burn)
@@ -224,7 +240,7 @@ export class SimEventReducer {
         assertPlanRevisionRefusalReason(event.reason);
         return;
       case "planRevisionApplied": {
-        this.#flightPlan = validateFlightPlanRevision(event.flightPlan, this.#clock.now, this.#executedBurns, event.replacedNodeIds);
+        this.#flightPlan = validateRecordedFlightPlanRevision(event.flightPlan, this.#clock.now, this.#executedBurns, event.replacedNodeIds);
         return;
       }
       case "burnStarted": {

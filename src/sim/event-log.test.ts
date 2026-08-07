@@ -5,7 +5,7 @@ import { simTimeMs } from "./clock.js";
 import { InMemorySimulationEventStore } from "./event-store.js";
 import { replayPersistedSegment, replaySegment, type FlightPlan, type PlanRevisionRefusalReason, type SimEvent } from "./event-log.js";
 import { AuthoritativeSimLoop } from "./loop.js";
-import { burnDurationMs } from "./mass-cargo.js";
+import { burnDurationMs, projectPropellantForBurns, TIER0_SHIP } from "./mass-cargo.js";
 
 const node = (nodeId: string, executeAtMs: number, kind: "accel" | "correction" | "decel" = "accel", durationMs = 1) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(durationMs) }
@@ -114,6 +114,21 @@ describe("event log replay", () => {
     const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "overlapping-burns", seed: 1, initialTime: simTimeMs(0) } });
     await expect(loop.applyPlanRevision(plan(node("a", 0, "accel", 10), node("b", 5, "decel")), () => ({ x: 0, y: 0, z: 0 }))).rejects.toThrow("cannot overlap");
     expect((await loop.persistedStream()).events).toEqual([]);
+  });
+
+  it("replays an accepted revision after a ship config change makes it propellant-exhausted", () => {
+    const historicallyAcceptedPlan = plan(node("long-burn", 0, "accel", 200_000_000));
+    expect(projectPropellantForBurns(
+      historicallyAcceptedPlan.nodes.map(({ burn }) => burn),
+      { ...TIER0_SHIP, structuralMassFraction: 0.05 }
+    )).toMatchObject({ kind: "sufficient" });
+    expect(projectPropellantForBurns(historicallyAcceptedPlan.nodes.map(({ burn }) => burn))).toMatchObject({ kind: "exhausted" });
+
+    const events: readonly SimEvent[] = [{ type: "planRevisionApplied", flightPlan: historicallyAcceptedPlan }];
+    const persisted = { seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) };
+
+    expect(replaySegment(1, events).ship?.flightPlan).toEqual(historicallyAcceptedPlan);
+    expect(replayPersistedSegment(persisted).ship?.flightPlan).toEqual(historicallyAcceptedPlan);
   });
 
   it("rejects a revision scheduled inside a burn that is firing before append", async () => {
