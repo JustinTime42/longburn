@@ -9,7 +9,6 @@ emit="$root/fort/scripts/emit.sh"
 suffix="${bead##*-}"
 wt="/home/justin/dev/longburn-worktrees/$suffix"
 
-title=$(bd show "$bead" 2>/dev/null | head -2 | tail -1 || echo "$bead")
 bd update "$bead" --claim -a orin >/dev/null 2>&1 || true
 "$emit" bead.claimed "Orin claims $bead" -a orin -s forge -t "$bead"
 

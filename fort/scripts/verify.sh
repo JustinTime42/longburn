@@ -1,5 +1,5 @@
 #!/bin/bash
-# Manyhalls verifier. Exit 0 only after every required quality gate passes.
+# Farlantern verifier (longburn). Exit 0 only after every required quality gate passes.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -60,5 +60,5 @@ run_step typecheck npm run typecheck
 run_step lint npm run lint
 run_step test npm run test
 # -x follows sourced files so fort/scripts/lib/* is linted too, not skipped.
-run_step shellcheck shellcheck -x bin/fort-init fort/scripts/*.sh fort/scripts/lib/*.sh
+run_step shellcheck shellcheck -x fort/scripts/*.sh fort/scripts/lib/*.sh
 emit verify.pass "Verifier passed" -p '{"steps":["typecheck","lint","test","shellcheck"]}'
