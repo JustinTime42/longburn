@@ -74,8 +74,18 @@ export class InMemoryDeliveryCursorStore implements DeliveryCursorStore {
   }
 }
 
-export interface PostgresCursorQueryClient {
+/** A query runner pinned to one PostgreSQL connection. */
+export interface PostgresCursorSession {
   query<Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]): Promise<{ readonly rows: readonly Row[] }>;
+}
+
+/**
+ * PostgreSQL boundary for the acknowledgement ledger. `withTransaction` must
+ * run its callback on one dedicated database session, not a pool-wide query
+ * dispatcher. It commits on success and rolls back when the callback throws.
+ */
+export interface PostgresCursorQueryClient extends PostgresCursorSession {
+  withTransaction<Result>(callback: (session: PostgresCursorSession) => Promise<Result>): Promise<Result>;
 }
 
 interface CursorRow extends Record<string, unknown> {
@@ -105,20 +115,19 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
 
   async acknowledge(observerId: string, acknowledgement: DeliveryAcknowledgement): Promise<DeliveryCursor> {
     validAcknowledgement(acknowledgement);
-    await this.#client.query("BEGIN");
-    try {
-      const inserted = await this.#client.query<{ readonly observer_id: string }>(
+    return this.#client.withTransaction(async (session) => {
+      const inserted = await session.query<{ readonly observer_id: string }>(
         `INSERT INTO delivery_acknowledgements (observer_id, global_position, message_id)
          VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING observer_id`,
         [observerId, acknowledgement.globalPosition, acknowledgement.messageId]
       );
       if (inserted.rows.length === 0) throw new RangeError("Delivery message is already acknowledged.");
 
-      await this.#client.query(
+      await session.query(
         `INSERT INTO delivery_cursors (observer_id, low_watermark)
          VALUES ($1, 0) ON CONFLICT DO NOTHING`, [observerId]
       );
-      const locked = await this.#client.query<CursorRow>(
+      const locked = await session.query<CursorRow>(
         `SELECT c.observer_id, c.low_watermark::double precision AS low_watermark,
                 a.global_position::double precision AS global_position, a.message_id
            FROM delivery_cursors c
@@ -132,15 +141,15 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
         throw new RangeError("Delivery message is already acknowledged.");
       }
       const beforeCompaction = deserializeCursor(locked.rows);
-      await this.#client.query(
+      await session.query(
         "UPDATE delivery_cursors SET low_watermark = $2 WHERE observer_id = $1",
         [observerId, beforeCompaction.lowWatermark]
       );
-      await this.#client.query(
+      await session.query(
         "DELETE FROM delivery_acknowledgements WHERE observer_id = $1 AND global_position <= $2",
         [observerId, beforeCompaction.lowWatermark]
       );
-      const remainder = await this.#client.query<CursorRow>(
+      const remainder = await session.query<CursorRow>(
         `SELECT c.observer_id, c.low_watermark::double precision AS low_watermark,
                 a.global_position::double precision AS global_position, a.message_id
            FROM delivery_cursors c
@@ -150,12 +159,8 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
       );
       const cursor = deserializeCursor(remainder.rows);
       if (!hasAcknowledged(cursor, acknowledgement)) throw new Error("Delivery acknowledgement persistence returned mismatched acknowledgement.");
-      await this.#client.query("COMMIT");
       return cursor;
-    } catch (error) {
-      await this.#client.query("ROLLBACK");
-      throw error;
-    }
+    });
   }
 }
 

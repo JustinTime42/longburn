@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hasAcknowledged, InMemoryDeliveryCursorStore, PostgresDeliveryCursorStore, type PostgresCursorQueryClient } from "./delivery-cursor.js";
+import { hasAcknowledged, InMemoryDeliveryCursorStore, PostgresDeliveryCursorStore, type PostgresCursorQueryClient, type PostgresCursorSession } from "./delivery-cursor.js";
 
 const acknowledgement = (globalPosition: number, messageId = `message-${globalPosition}`) => ({ globalPosition, messageId });
 
@@ -27,6 +27,7 @@ describe("InMemoryDeliveryCursorStore", () => {
 const postgresCursorDouble = (): {
   readonly client: PostgresCursorQueryClient;
   readonly calls: { sql: string; values: readonly unknown[] | undefined }[];
+  readonly transactions: { committed: boolean }[];
 } => {
   type StoredAcknowledgement = { readonly globalPosition: number; readonly messageId: string };
   type State = { cursors: Map<string, number>; acknowledgements: Map<string, StoredAcknowledgement[]> };
@@ -37,6 +38,7 @@ const postgresCursorDouble = (): {
   let committed: State = { cursors: new Map(), acknowledgements: new Map() };
   let transaction: State | undefined;
   const calls: { sql: string; values: readonly unknown[] | undefined }[] = [];
+  const transactions: { committed: boolean }[] = [];
   const result = <Row extends Record<string, unknown>>(rows: readonly Record<string, unknown>[]): { readonly rows: readonly Row[] } => ({
     rows: rows as readonly Row[]
   });
@@ -54,23 +56,8 @@ const postgresCursorDouble = (): {
         message_id: acknowledgement.messageId
       }));
   };
-  const client: PostgresCursorQueryClient = {
-    async query<Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) {
+  const query: PostgresCursorSession["query"] = async <Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) => {
       calls.push({ sql, values });
-      if (sql === "BEGIN") {
-        transaction = copyState(committed);
-        return result<Row>([]);
-      }
-      if (sql === "COMMIT") {
-        if (transaction === undefined) throw new Error("COMMIT without BEGIN");
-        committed = transaction;
-        transaction = undefined;
-        return result<Row>([]);
-      }
-      if (sql === "ROLLBACK") {
-        transaction = undefined;
-        return result<Row>([]);
-      }
       const observerId = values?.[0];
       if (typeof observerId !== "string") throw new Error("Expected observer ID.");
       if (sql.includes("INSERT INTO delivery_acknowledgements")) {
@@ -104,24 +91,38 @@ const postgresCursorDouble = (): {
       }
       if (sql.includes("FROM delivery_cursors")) return result<Row>(cursorRows(observerId));
       throw new Error(`Unexpected SQL: ${sql}`);
+  };
+  const client: PostgresCursorQueryClient = {
+    query,
+    async withTransaction<Result>(callback: (session: PostgresCursorSession) => Promise<Result>): Promise<Result> {
+      if (transaction !== undefined) throw new Error("Nested cursor transactions are unsupported.");
+      transaction = copyState(committed);
+      const record = { committed: false };
+      transactions.push(record);
+      try {
+        const value = await callback({ query });
+        committed = transaction;
+        record.committed = true;
+        return value;
+      } finally {
+        transaction = undefined;
+      }
     }
   };
-  return { client, calls };
+  return { client, calls, transactions };
 };
 
 describe("PostgresDeliveryCursorStore", () => {
   assertCursorContract(() => new PostgresDeliveryCursorStore(postgresCursorDouble().client));
 
-  it("acknowledges with ordinary transactional statements and rolls back duplicates", async () => {
+  it("acknowledges through one transaction-bound session and rolls back duplicates", async () => {
     const database = postgresCursorDouble();
     const store = new PostgresDeliveryCursorStore(database.client);
     await store.acknowledge("hq-player", acknowledgement(1));
     await expect(store.acknowledge("hq-player", acknowledgement(1))).rejects.toThrow("already acknowledged");
-    expect(database.calls.map(({ sql }) => sql)).toContain("BEGIN");
     expect(database.calls.some(({ sql }) => sql.includes("FOR UPDATE OF c"))).toBe(true);
     expect(database.calls.some(({ sql }) => sql.startsWith("DELETE FROM delivery_acknowledgements"))).toBe(true);
-    expect(database.calls.filter(({ sql }) => sql === "COMMIT")).toHaveLength(1);
-    expect(database.calls.filter(({ sql }) => sql === "ROLLBACK")).toHaveLength(1);
+    expect(database.transactions).toEqual([{ committed: true }, { committed: false }]);
     expect(database.calls.some(({ sql }) => sql.includes("WITH RECURSIVE"))).toBe(false);
   });
 });
