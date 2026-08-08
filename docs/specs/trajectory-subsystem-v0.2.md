@@ -114,8 +114,11 @@ solver can compute.
   Cargo ≤ 0 is a typed "nonviable" result distinct from infeasible-trajectory. The viability wall
   `Dv_max = v_e·ln(1/f_struct)` is a design constant, not an emergent accident.
 - The Tier 0 ship configuration fixes its departure wet mass at 1,000 t for authoritative
-  propellant accounting. A plan revision projects each quantized node sequentially from that
-  remaining mass and refuses at arrival if it would consume structure; callers never name fuel costs.
+  propellant accounting. A plan revision is accepted or refused at arrival by the **exact
+  integer wall comparison** (sufficient iff total quantized delta-v < the viability wall,
+  strict; at-the-wall refuses — longburn-hvx, amended here by longburn-7n6); sequential
+  per-node projection from remaining mass survives as a readout, not the decision mechanism.
+  Callers never name fuel costs.
   (Overseer-ratified 2026-08-07, longburn-40j.3; Warden note: the constant is behaviorally inert
   today — the accept/refuse decision is scale-invariant in wet mass, so it sets readout units only,
   becoming load-bearing when cargo mass exists. Ship system v2 is filed: longburn-hev.)

@@ -52,6 +52,13 @@ Enforced in three layers, strongest first:
    BOTH replay paths — the din.4 r2 lesson).
 3. **Command boundary**: typed refusals before anything appends (§3).
 
+**Validation is live-only (Overseer ruling, longburn-kg2, 2026-08-07):** accepted revisions
+are never re-validated against ship configuration on replay — "once it has already happened,
+we accept the historical fact at face value." Fuel sufficiency is a command-boundary decision,
+not a log invariant; no config-dependent predicate may re-enter the reducer's replay path
+(mechanical guard filed as longburn-gy5). A future implementer re-adding a propellant check
+to replay would silently reintroduce the kg2 bug class.
+
 ## 3. Commands and light-lag
 
 Player commands are physical signals. They originate at the player's **HQ**, travel at c, and
@@ -91,6 +98,11 @@ planned burn, the last instant a revision issued NOW could still arrive before i
 - Fuel: a revision is validated at arrival against remaining propellant at the projected
   execution states (rocket equation per node, mass-cargo module). Over-budget revisions get a
   typed refusal (subsumes longburn-guc's finding: no caller-named fuel costs anywhere).
+  **Boundary semantics (AMENDED 2026-08-08, longburn-7n6; decided by longburn-hvx):** the
+  decision is the exact integer wall comparison — sufficient iff total quantized delta-v is
+  **strictly less than** the viability wall; exactly-at-the-wall refuses. The old
+  ≤-with-mass-scaled-tolerance rule is dead. Sequential per-node projection survives as
+  readouts (remaining-mass display), not as the decision mechanism.
 
 ## 5. What dissolves, what survives
 
