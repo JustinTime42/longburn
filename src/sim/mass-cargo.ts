@@ -50,6 +50,15 @@ export interface ShipMassConfig {
   readonly structuralMassFraction: number;
   /** Authoritative departure wet mass used for propellant accounting. */
   readonly wetMassGrams: number;
+  /**
+   * Frozen, strict viability ceiling for total committed burn duration.
+   *
+   * This is derived when a ship configuration is authored, never while an
+   * authoritative command is accepted or refused. Keeping the ceiling in the
+   * same integer unit as commitments avoids engine-specific transcendental
+   * rounding at the live boundary.
+   */
+  readonly maxViableBurnDurationMs: BurnDurationMs;
 }
 
 /**
@@ -61,7 +70,10 @@ export const TIER0_SHIP: Readonly<ShipMassConfig> = Object.freeze({
   exhaustVelocityKmPerSecond: 1_000,
   accelerationKmPerSecond2: 0.009_806_65,
   structuralMassFraction: 0.15,
-  wetMassGrams: 1_000_000_000
+  wetMassGrams: 1_000_000_000,
+  // Derived once from ve * ln(1 / f_struct), then frozen as the largest
+  // millisecond commitment strictly below that wall.
+  maxViableBurnDurationMs: burnDurationMs(193_452_400)
 });
 
 /**
@@ -176,6 +188,7 @@ const validateShip = (ship: ShipMassConfig): void => {
     throw new RangeError("Structural mass fraction must be finite and in (0, 1).");
   }
   positiveFinite("Wet mass", ship.wetMassGrams);
+  burnDurationMs(ship.maxViableBurnDurationMs);
 };
 
 const quantizedInteger = (name: string, value: number): number => {
@@ -264,24 +277,7 @@ export const projectPropellantForBurns = (
 ): PropellantProjection => {
   validateShip(ship);
   const committedBurns = burns.map(assertBurnParameters);
-  let totalBurnDurationMs = 0;
-  for (const burn of committedBurns) {
-    totalBurnDurationMs += burn.burnDurationMs;
-    if (!Number.isSafeInteger(totalBurnDurationMs)) {
-      throw new RangeError("Total burn duration must be a non-negative safe integer in milliseconds.");
-    }
-  }
-
-  // Acceptance is based solely on the quantized commitment. The duration sum
-  // is exact, and this one delta-v multiplication is compared with the same
-  // logarithmic wall used by cargo assessment. Do not use the per-node
-  // rocket-equation readouts below to decide accept/refuse: Math.exp is
-  // implementation-approximated and those values are replay-time display data.
-  const totalDeltaVKmPerSecond = deltaVForBurn(
-    ship.accelerationKmPerSecond2,
-    totalBurnDurationMs / 1_000
-  );
-  const sufficient = totalDeltaVKmPerSecond < viabilityWallDeltaV(ship);
+  const sufficient = hasSufficientCommittedPropellant(committedBurns, ship.maxViableBurnDurationMs);
 
   const structuralMassGrams = ship.wetMassGrams * ship.structuralMassFraction;
   let wetMassGrams = ship.wetMassGrams;
@@ -299,6 +295,25 @@ export const projectPropellantForBurns = (
 
   return sufficient ? { kind: "sufficient", nodes } : { kind: "exhausted", nodes };
 };
+
+/**
+ * The live accept/refuse predicate. It intentionally contains no calls: the
+ * ESLint guard makes this an integer-arithmetic-only boundary so planner or
+ * rocket-equation transcendentals cannot become authoritative by accident.
+ */
+function hasSufficientCommittedPropellant(
+  burns: readonly QuantizedBurnParameters[],
+  maxViableBurnDurationMs: BurnDurationMs
+): boolean {
+  let totalBurnDurationMs = 0;
+  for (const burn of burns) {
+    if (totalBurnDurationMs > Number.MAX_SAFE_INTEGER - burn.burnDurationMs) {
+      throw new RangeError("Total burn duration must be a non-negative safe integer in milliseconds.");
+    }
+    totalBurnDurationMs += burn.burnDurationMs;
+  }
+  return totalBurnDurationMs <= maxViableBurnDurationMs;
+}
 
 const assertBurnParameters = (burn: QuantizedBurnParameters): QuantizedBurnParameters => ({
   burnDurationMs: burnDurationMs(burn.burnDurationMs)

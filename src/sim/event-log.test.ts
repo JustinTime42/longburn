@@ -137,7 +137,12 @@ describe("event log replay", () => {
     const historicallyAcceptedPlan = plan(node("long-burn", 0, "accel", 200_000_000));
     expect(projectPropellantForBurns(
       historicallyAcceptedPlan.nodes.map(({ burn }) => burn),
-      { ...TIER0_SHIP, structuralMassFraction: 0.05 }
+      {
+        ...TIER0_SHIP,
+        structuralMassFraction: 0.05,
+        // A prior ship configuration carries its own frozen boundary fact.
+        maxViableBurnDurationMs: burnDurationMs(200_000_001)
+      }
     )).toMatchObject({ kind: "sufficient" });
     expect(projectPropellantForBurns(historicallyAcceptedPlan.nodes.map(({ burn }) => burn))).toMatchObject({ kind: "exhausted" });
 

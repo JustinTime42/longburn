@@ -116,17 +116,19 @@ describe("burn commitment quantization", () => {
 });
 
 describe("sequential propellant projection", () => {
-  it("refuses the same just-over-wall commitment independently of wet mass", () => {
+  it("refuses the same just-over-ceiling commitment independently of wet mass", () => {
     const ship = {
       exhaustVelocityKmPerSecond: 1,
       accelerationKmPerSecond2: 693.1471805599599,
-      structuralMassFraction: 0.49999999999999445
+      structuralMassFraction: 0.49999999999999445,
+      wetMassGrams: 1,
+      maxViableBurnDurationMs: burnDurationMs(0)
     };
 
-    // One millisecond is just over this ship's logarithmic wall. The former
-    // mass-scaled tolerance accepted it at 1 g but refused it at 1,000,000 g.
+    // This ship's frozen ceiling is zero milliseconds. The decision must not
+    // depend on wet mass, which is a readout-only quantity at this boundary.
     const burns = [{ burnDurationMs: burnDurationMs(1) }];
-    const gramShip = projectPropellantForBurns(burns, { ...ship, wetMassGrams: 1 });
+    const gramShip = projectPropellantForBurns(burns, ship);
     const tonneShip = projectPropellantForBurns(burns, { ...ship, wetMassGrams: 1_000_000 });
 
     expect(gramShip.kind).toBe("exhausted");
@@ -143,6 +145,10 @@ describe("sequential propellant projection", () => {
     expect(aboveWall.kind).toBe("exhausted");
     expect(belowWall.nodes[0]?.remainingPropellantGrams).toBeGreaterThan(0);
     expect(aboveWall.nodes[0]?.remainingPropellantGrams).toBeLessThan(0);
+  });
+
+  it("accepts by the frozen per-ship integer duration ceiling", () => {
+    expect(TIER0_SHIP.maxViableBurnDurationMs).toBe(burnDurationMs(193_452_400));
   });
 
   it("accepts an empty committed-burn sequence", () => {

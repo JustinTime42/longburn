@@ -32,6 +32,35 @@ const causalBoundaryPlugin = {
   }
 };
 
+const authoritativePropellantPlugin = {
+  rules: {
+    "integer-only-acceptance": {
+      meta: {
+        type: "problem",
+        docs: { description: "Keep authoritative propellant acceptance free of function calls and transcendentals." },
+        schema: [],
+        messages: {
+          integerOnly: "Authoritative propellant acceptance must use integer arithmetic only; calls can reintroduce transcendentals."
+        }
+      },
+      create(context) {
+        let predicateDepth = 0;
+        return {
+          "FunctionDeclaration[id.name='hasSufficientCommittedPropellant']"() {
+            predicateDepth += 1;
+          },
+          "FunctionDeclaration[id.name='hasSufficientCommittedPropellant']:exit"() {
+            predicateDepth -= 1;
+          },
+          CallExpression(node) {
+            if (predicateDepth > 0) context.report({ node, messageId: "integerOnly" });
+          }
+        };
+      }
+    }
+  }
+};
+
 export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -42,7 +71,9 @@ export default tseslint.config(
   },
   {
     files: ["src/sim/**/*.ts", "test/fixtures/sim/**/*.ts"],
+    plugins: { "authoritative-propellant": authoritativePropellantPlugin },
     rules: {
+      "authoritative-propellant/integer-only-acceptance": "error",
       "no-restricted-properties": [
         "error",
         {

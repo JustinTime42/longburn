@@ -9,6 +9,7 @@ describe("simulation determinism lint guard", () => {
 
     expect(simConfig.rules["no-restricted-properties"]).toEqual(expect.arrayContaining([2]));
     expect(simConfig.rules["no-restricted-syntax"]).toEqual(expect.arrayContaining([2]));
+    expect(simConfig.rules["authoritative-propellant/integer-only-acceptance"]).toEqual([2]);
     expect(simConfig.rules["causal-boundary/no-raw-outbound"]).toEqual([2]);
     expect(hostConfig.rules["no-restricted-properties"]).toBeUndefined();
     expect(hostConfig.rules["no-restricted-syntax"]).toBeUndefined();
@@ -33,5 +34,14 @@ describe("simulation determinism lint guard", () => {
 
     expect(result?.errorCount).toBe(1);
     expect(result?.messages[0]?.message).toBe("Outbound messages must pass through CausalEmissionGate.");
+  });
+
+  it("rejects calls in the authoritative propellant accept/refuse predicate", async () => {
+    const eslint = new ESLint({ ignore: false });
+    const [result] = await eslint.lintFiles(["test/fixtures/sim/transcendental-acceptance.ts"]);
+
+    expect(result?.errorCount).toBe(1);
+    expect(result?.messages[0]?.message)
+      .toBe("Authoritative propellant acceptance must use integer arithmetic only; calls can reintroduce transcendentals.");
   });
 });
