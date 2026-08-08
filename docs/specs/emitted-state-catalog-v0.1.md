@@ -78,6 +78,24 @@ structural). The gate asserts the invariant on every message against the exact s
 schedules at `ceil`, fails closed with incident + counter on violation, malformed
 provenance, or computation error. All times sim times. Conservative direction only.
 
+## 3a. Failure-reason taxonomy (added 2026-08-08, Warden cav f3)
+
+The gate's `EmissionFailureReason` members, which din.5.2/din.5.3 branch on. Every
+failure fails closed (nothing sent) and records an incident; the reason classifies, it
+never excuses.
+
+| Reason | Meaning |
+|---|---|
+| `invalid-provenance` | A time failed validation (non-negative safe-integer sim ms) before comparison — includes NaN and malformed decodes |
+| `invalid-position` | A position was non-finite or otherwise unusable, wherever sampled (event, arrival iterates, or emission time — Warden cav f1) |
+| `light-cone-failure` | The arrival-time solve failed to converge inside its hard iteration cap, or errored |
+| `early-emission` | The invariant itself would be violated: emission before the earliest legal tick |
+| `invalid-envelope` | The EmittedMessage failed schema validation (bad payload, empty observerId, reserved class) |
+| `transport-failure` | The transport layer reported failure after the gate released the message; the message may already be on the wire — retries re-enter the gate and are legal duplicates (idempotent delivery, §1) |
+
+One gate-level test per member is the required bar (longburn-w35) — this set is
+control-flow input, not just log vocabulary.
+
 ## 4. Out of scope (fence, SO 13)
 
 Multi-observer topology (T2+), out-of-band channel defenses (§4.5 analysis), relativistic
