@@ -116,6 +116,16 @@ describe("event log replay", () => {
     expect((await loop.persistedStream()).events).toEqual([]);
   });
 
+  it("refuses a delta-v vector that exceeds its committed burn duration before append", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "delta-v-duration-boundary", seed: 1, initialTime: simTimeMs(0) } });
+    await expect(loop.applyPlanRevision(
+      plan({ ...node("impossible", 1), deltaVMmPerSecond: { x: 1_000_000_000, y: 0, z: 0 } }),
+      () => ({ x: 0, y: 0, z: 0 })
+    )).rejects.toMatchObject({ reason: "invalid-plan" });
+    expect((await loop.persistedStream()).events).toEqual([]);
+  });
+
   it("rejects overlapping burns before they can enter the durable log", async () => {
     const store = new InMemorySimulationEventStore();
     const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "overlapping-burns", seed: 1, initialTime: simTimeMs(0) } });
@@ -136,6 +146,13 @@ describe("event log replay", () => {
 
     expect(replaySegment(1, events).ship?.flightPlan).toEqual({ ...historicallyAcceptedPlan, destination: "earth" });
     expect(replayPersistedSegment(persisted).ship?.flightPlan).toEqual({ ...historicallyAcceptedPlan, destination: "earth" });
+  });
+
+  it("replays an already-stored delta-v/duration mismatch as history", () => {
+    const historicalPlan = plan({ ...node("historical", 0), deltaVMmPerSecond: { x: 1_000_000_000, y: 0, z: 0 } });
+    const events: readonly SimEvent[] = [{ type: "planRevisionApplied", commandId: "command-1", flightPlan: historicalPlan }];
+    expect(replaySegment(1, events).ship?.flightPlan).toEqual(historicalPlan);
+    expect(replayPersistedSegment({ seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) }).ship?.flightPlan).toEqual(historicalPlan);
   });
 
   it("rejects a recorded plan without a durable destination instead of inventing Earth", () => {

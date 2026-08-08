@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 
 import {
+  assertTier0DeltaVConsistentWithBurn,
   assessCargo,
   burnDurationMs,
   BURN_DURATION_QUANTUM_MILLISECONDS,
@@ -64,6 +65,21 @@ describe("mass and cargo", () => {
 });
 
 describe("burn commitment quantization", () => {
+  it("uses an exact integer impulse ceiling for committed delta-v vectors", () => {
+    expect(() => assertTier0DeltaVConsistentWithBurn(
+      { x: 9, y: 3, z: 0 }, { burnDurationMs: burnDurationMs(1) }
+    )).not.toThrow();
+    expect(() => assertTier0DeltaVConsistentWithBurn(
+      { x: 10, y: 0, z: 0 }, { burnDurationMs: burnDurationMs(1) }
+    )).toThrow("exceeds the fixed ship acceleration");
+    expect(() => assertTier0DeltaVConsistentWithBurn(
+      { x: 7, y: 7, z: 0 }, { burnDurationMs: burnDurationMs(1) }
+    )).toThrow("exceeds the fixed ship acceleration");
+    expect(() => assertTier0DeltaVConsistentWithBurn(
+      { x: 980_665, y: 0, z: 0 }, { burnDurationMs: burnDurationMs(100_000) }
+    )).not.toThrow();
+  });
+
   it("round-trips every duration commitment and derives a self-consistent delta-v and propellant triple", () => {
     fc.assert(fc.property(
       fc.record({
