@@ -28,7 +28,7 @@ const gateEmitter = (sent: string[]) => {
 };
 
 const schedulerOptions = (cursors: InMemoryDeliveryCursorStore, emit: ReturnType<typeof gateEmitter>) => ({
-  cursors, emit, recordIncident: () => {}, incrementCausalityFailure: () => {}
+  cursors, emit, recordIncident: () => {}, incrementCausalityFailure: () => {}, incrementBelowCursorSuppression: () => {}
 });
 
 describe("EmissionScheduler", () => {
@@ -47,7 +47,7 @@ describe("EmissionScheduler", () => {
     const cursors = new InMemoryDeliveryCursorStore();
     const firstAttempt = vi.fn(async () => ({ sent: false as const, reason: "transport-failure" as const }));
     const work = [scheduled(1), scheduled(3)];
-    const failed = new EmissionScheduler({ cursors, emit: firstAttempt, recordIncident: () => {}, incrementCausalityFailure: () => {} });
+    const failed = new EmissionScheduler({ cursors, emit: firstAttempt, recordIncident: () => {}, incrementCausalityFailure: () => {}, incrementBelowCursorSuppression: () => {} });
     await expect(failed.run("hq-player", simTimeMs(1_000), work)).resolves.toMatchObject({ blocked: [expect.any(String)] });
     expect(await cursors.read("hq-player")).toBeUndefined();
 
@@ -64,7 +64,7 @@ describe("EmissionScheduler", () => {
     const emit = vi.fn(gateEmitter([]));
     const recordIncident = vi.fn();
     const incrementCausalityFailure = vi.fn();
-    const scheduler = new EmissionScheduler({ cursors: new InMemoryDeliveryCursorStore(), emit, recordIncident, incrementCausalityFailure });
+    const scheduler = new EmissionScheduler({ cursors: new InMemoryDeliveryCursorStore(), emit, recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression: () => {} });
     const malformed = scheduled(1);
     (malformed.message.event.eventPosition as { x: number }).x = Number.NaN;
 
@@ -72,5 +72,29 @@ describe("EmissionScheduler", () => {
     expect(emit).not.toHaveBeenCalled();
     expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "invalid-position" }));
     expect(incrementCausalityFailure).toHaveBeenCalledOnce();
+  });
+
+  it("counts below-cursor suppression so a late omitted report is observable", async () => {
+    const cursors = new InMemoryDeliveryCursorStore();
+    await cursors.advance({ observerId: "hq-player", globalPosition: 3, messageId: "message-3" });
+    const emit = vi.fn(gateEmitter([]));
+    const incrementBelowCursorSuppression = vi.fn();
+    const scheduler = new EmissionScheduler({
+      cursors, emit, recordIncident: () => {}, incrementCausalityFailure: () => {}, incrementBelowCursorSuppression
+    });
+
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(1)])).resolves.toEqual({ emitted: [], deferred: [], blocked: [] });
+    expect(emit).not.toHaveBeenCalled();
+    expect(incrementBelowCursorSuppression).toHaveBeenCalledOnce();
+  });
+
+  it("rejects out-of-order input before it can skip an earlier report", async () => {
+    const emit = vi.fn(gateEmitter([]));
+    const scheduler = new EmissionScheduler({
+      cursors: new InMemoryDeliveryCursorStore(), emit, recordIncident: () => {}, incrementCausalityFailure: () => {}, incrementBelowCursorSuppression: () => {}
+    });
+
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(3), scheduled(1)])).rejects.toThrow("strictly ascending");
+    expect(emit).not.toHaveBeenCalled();
   });
 });
