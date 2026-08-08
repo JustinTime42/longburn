@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { simTimeMs } from "../sim/clock.js";
 import { InMemoryDeliveryCursorStore } from "../sim/delivery-cursor.js";
+import { InMemorySimulationEventStore, type StoredSimEvent } from "../sim/event-store.js";
 import type { EmissionCandidate, EmittableMessage } from "../sim/emitted-message.js";
 import { EmissionScheduler, type ScheduledEmission } from "../sim/emission-scheduler.js";
+import { AuthoritativeSimLoop } from "../sim/loop.js";
+import { burnDurationMs } from "../sim/mass-cargo.js";
 import { CausalStateEgress } from "./causal-state-egress.js";
 
 // Deliberately independent from ../sim/causality.ts. This is the physical
@@ -39,6 +42,26 @@ const report = (
     observerPositionAt: () => HQ
   }
 });
+
+const scheduledArrival = (arrival: StoredSimEvent): ScheduledEmission => {
+  if (arrival.event.type !== "arrivalRecorded") throw new Error("Expected an authoritative arrival record.");
+  return {
+    sourceGlobalPosition: arrival.globalPosition,
+    message: {
+      observerId: "hq-player",
+      event: {
+        streamId: "arrival-position-regression",
+        streamSequence: arrival.streamSequence,
+        globalPosition: arrival.globalPosition,
+        eventTime: arrival.eventTime,
+        eventPosition: arrival.eventPosition
+      },
+      class: "shipReport",
+      payload: { event: "arrivalRecorded", destination: arrival.event.arrivalState.destination },
+      observerPositionAt: () => HQ
+    }
+  };
+};
 
 const candidate = (eventTimeMs: number, emissionTimeMs: number, eventPosition: { readonly x: number; readonly y: number; readonly z: number }): EmissionCandidate => ({
   messageId: "deliberately-violating-message",
@@ -103,7 +126,7 @@ describe("causal state egress end-to-end", () => {
     }
   });
 
-  it("blocks ceil(exact)-1 and releases ceil(exact) through the real WebSocket transport", () => {
+  it("blocks ceil(exact)-1 and releases ceil(exact) through the egress transport boundary", () => {
     const eventPosition = { x: 1_234_567_890, y: 0, z: 0 };
     const earliest = independentEarliestTick(50_000, eventPosition);
     const writeText = vi.fn();
@@ -130,21 +153,43 @@ describe("causal state egress end-to-end", () => {
     expect(incrementCausalityFailure).toHaveBeenCalledOnce();
   });
 
-  it("uses arrivalRecorded's stored terminal position, never the disagreeing body resolver position", async () => {
-    // This is intentionally 3.3 light-seconds from HQ while the body resolver
-    // would report HQ. Using the resolver would leak the report immediately.
-    const terminalPositionMeters = { x: LIGHT_METERS_PER_SECOND * 3.3, y: 0, z: 0 };
-    const bodyResolver = vi.fn(() => HQ);
-    const arrival = report(1, 0, terminalPositionMeters, "arrivalRecorded");
+  it("uses an authoritative arrivalRecorded stored terminal position over a disagreeing event-position resolver", async () => {
+    // This dock is intentionally 3.3 light-seconds from HQ while the resolver
+    // supplied to the live loop reports HQ. The persisted arrival must retain
+    // the transit terminal position, or the scheduler would release it early.
+    const terminalPositionMeters = { x: Math.round(LIGHT_METERS_PER_SECOND * 3.3), y: 0, z: 0 };
+    const dock = {
+      positionMeters: terminalPositionMeters,
+      velocityMmPerSecond: { x: 0, y: 0, z: 0 }
+    };
+    const loop = await AuthoritativeSimLoop.create({
+      store: new InMemorySimulationEventStore(),
+      stream: { id: "arrival-position-regression", seed: 1, initialTime: simTimeMs(0) },
+      departureStateAt: (time) => ({ departureAtMs: time, ...dock }),
+      destinationStateAt: () => dock
+    });
+    const eventPositionAt = vi.fn(() => HQ);
+    await loop.applyPlanRevision({
+      destination: "mars",
+      nodes: [{
+        nodeId: "dock", executeAtMs: simTimeMs(1), kind: "decel",
+        burn: { burnDurationMs: burnDurationMs(1) },
+        deltaVMmPerSecond: { x: 0, y: 0, z: 0 }
+      }]
+    }, eventPositionAt);
+    await loop.advance(2, eventPositionAt);
+    const arrival = (await loop.persistedStream()).events.find(({ event }) => event.type === "arrivalRecorded");
+    if (arrival === undefined) throw new Error("Expected AuthoritativeSimLoop to persist arrivalRecorded.");
+    expect(arrival.eventPosition).toEqual(terminalPositionMeters);
+
     const received: EmittableMessage[] = [];
     const { scheduler } = wiredScheduler(received);
-    const earliest = independentEarliestTick(0, terminalPositionMeters);
+    const earliest = independentEarliestTick(arrival.eventTime, terminalPositionMeters);
+    const scheduled = scheduledArrival(arrival);
 
-    expect(await scheduler.run("hq-player", simTimeMs(earliest - 1), [arrival])).toMatchObject({ deferred: [expect.any(String)] });
+    expect(await scheduler.run("hq-player", simTimeMs(earliest - 1), [scheduled])).toMatchObject({ deferred: [expect.any(String)] });
     expect(received).toEqual([]);
-    expect(bodyResolver).not.toHaveBeenCalled();
-    expect(await scheduler.run("hq-player", simTimeMs(earliest), [arrival])).toMatchObject({ emitted: [expect.any(String)] });
-    expect(received[0]).toMatchObject({ eventPosition: terminalPositionMeters, stalenessMs: earliest });
-    expect(bodyResolver).not.toHaveBeenCalled();
+    expect(await scheduler.run("hq-player", simTimeMs(earliest), [scheduled])).toMatchObject({ emitted: [expect.any(String)] });
+    expect(received[0]).toMatchObject({ eventPosition: terminalPositionMeters, stalenessMs: earliest - arrival.eventTime });
   });
 });
