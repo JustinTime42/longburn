@@ -41,6 +41,15 @@ Two quantized schema extensions (both inside the 4qs pre-durability window):
   existing `burnDurationMs`. Direction and magnitude in one vector. Consistency between
   |Δv| and duration (via the ship's acceleration) is validated at the live command boundary
   only, with exact integer arithmetic; replay applies stored nodes as history.
+- **FlightPlan gains a `destination`** (T0 body id: earth | moon | mars). ADDENDUM
+  2026-08-07, Mayor gap-fill after the Forge's round-2 escalation (the spec required
+  `arrivalRecorded` to stamp the target body's state but named no durable owner of the
+  target); flagged for Overseer ratification at 1ls review. The destination is part of the
+  paper plan: replaceable by any PlanRevision (retargeting is editing paper — pillar 2),
+  validated at the live boundary (known body), durable for free because `commandIssued` and
+  `planRevisionApplied` already persist the plan. `arrivalRecorded` stamps the FINAL applied
+  plan's destination body. No plan → no destination → arrival cannot fire. Inferring a
+  target from burn geometry is forbidden (stored-facts doctrine).
 
 A new sim-core module (`src/sim/worldline.ts`) derives position deterministically:
 
