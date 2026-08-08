@@ -95,9 +95,10 @@ planned burn, the last instant a revision issued NOW could still arrive before i
   capture burn mid-route.
 - Planner output remains advisory (SO 16): the revision command carries only quantized nodes;
   the sim never re-runs a planner to reproduce state.
-- Fuel: a revision is validated at arrival against remaining propellant at the projected
-  execution states (rocket equation per node, mass-cargo module). Over-budget revisions get a
-  typed refusal (subsumes longburn-guc's finding: no caller-named fuel costs anywhere).
+- Fuel *(mechanism superseded — see amendment below)*: a revision is validated at arrival
+  against remaining propellant at the projected execution states (rocket equation per node,
+  mass-cargo module). Over-budget revisions get a typed refusal (subsumes longburn-guc's
+  finding: no caller-named fuel costs anywhere).
   **Boundary semantics (AMENDED 2026-08-08, longburn-7n6; decided by longburn-hvx):** the
   decision is the exact integer wall comparison — sufficient iff total quantized delta-v is
   **strictly less than** the viability wall; exactly-at-the-wall refuses. The old
