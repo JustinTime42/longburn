@@ -64,6 +64,13 @@ export const TIER0_SHIP: Readonly<ShipMassConfig> = Object.freeze({
   wetMassGrams: 1_000_000_000
 });
 
+/**
+ * The fixed Tier 0 ship acceleration in integer micrometres per second².
+ * This is the exact representation used at the committed-command boundary.
+ */
+export const TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 = 9_806_650n;
+const MICROSECONDS_PER_SECOND = 1_000_000n;
+
 export interface BurnParameters {
   readonly deltaVKmPerSecond: number;
   readonly burnDurationSeconds: number;
@@ -76,6 +83,32 @@ export interface BurnParameters {
 export interface QuantizedBurnParameters {
   readonly burnDurationMs: BurnDurationMs;
 }
+
+/**
+ * Refuses a vector which the fixed Tier 0 ship cannot accumulate during its
+ * committed duration. The squared comparison stays entirely in bigint space:
+ * no square root or planner floating point may decide a live command.
+ *
+ * A shorter vector is valid throttling. The duration remains the authoritative
+ * propellant commitment for the constant-acceleration model.
+ */
+export const assertTier0DeltaVConsistentWithBurn = (
+  deltaV: QuantizedDeltaV,
+  burn: QuantizedBurnParameters
+): void => {
+  const durationMs = BigInt(burnDurationMs(burn.burnDurationMs));
+  const x = BigInt(deltaV.x);
+  const y = BigInt(deltaV.y);
+  const z = BigInt(deltaV.z);
+  const squaredDeltaV = x * x + y * y + z * z;
+  const impulseNumerator = TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 * durationMs;
+  const squaredImpulseCeiling = impulseNumerator * impulseNumerator;
+  const squaredDeltaVScaled = squaredDeltaV * MICROSECONDS_PER_SECOND * MICROSECONDS_PER_SECOND;
+
+  if (squaredDeltaVScaled > squaredImpulseCeiling) {
+    throw new RangeError("Burn delta-v exceeds the fixed ship acceleration for its committed duration.");
+  }
+};
 
 export interface ViableCargo {
   readonly kind: "viable";

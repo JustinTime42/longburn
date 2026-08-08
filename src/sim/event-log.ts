@@ -1,5 +1,5 @@
 import { SimClock, simTimeMs, type SimTimeMs } from "./clock.js";
-import { burnDurationMs, projectPropellantForBurns, quantizedDeltaV, type QuantizedBurnParameters, type QuantizedDeltaV } from "./mass-cargo.js";
+import { assertTier0DeltaVConsistentWithBurn, burnDurationMs, projectPropellantForBurns, quantizedDeltaV, type QuantizedBurnParameters, type QuantizedDeltaV } from "./mass-cargo.js";
 import { SeededRng } from "./rng.js";
 import { assertInboundCausalityInvariant, type PositionMeters } from "./causality.js";
 
@@ -200,6 +200,16 @@ export const validateFlightPlanRevision = (
   replacedNodeIds: readonly string[] = []
 ): FlightPlan => {
   const flightPlan = validateRecordedFlightPlanRevision(plan, now, executedBurns, replacedNodeIds);
+  for (const node of flightPlan.nodes) {
+    try {
+      assertTier0DeltaVConsistentWithBurn(node.deltaVMmPerSecond, node.burn);
+    } catch (error: unknown) {
+      throw new PlanRevisionValidationError(
+        "invalid-plan",
+        error instanceof Error ? error.message : "A burn delta-v is inconsistent with its committed duration."
+      );
+    }
+  }
   const projectedPropellant = projectPropellantForBurns([
     ...executedBurns.map(({ node }) => node.burn),
     ...flightPlan.nodes.map(({ burn }) => burn)
