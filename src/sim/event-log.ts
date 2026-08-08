@@ -3,6 +3,23 @@ import { burnDurationMs, projectPropellantForBurns, quantizedDeltaV, type Quanti
 import { SeededRng } from "./rng.js";
 import { assertInboundCausalityInvariant, type PositionMeters } from "./causality.js";
 
+export type DestinationBody = "earth" | "moon" | "mars";
+
+/** Quantized initial condition, stamped at the live command boundary once. */
+export interface DepartureState {
+  readonly departureAtMs: SimTimeMs;
+  readonly positionMeters: PositionMeters;
+  readonly velocityMmPerSecond: QuantizedDeltaV;
+}
+
+/** A live-measured docking fact. Replay consumes this record without ephemerides. */
+export interface ArrivalState {
+  readonly arrivedAtMs: SimTimeMs;
+  readonly destination: DestinationBody;
+  readonly targetPositionMeters: PositionMeters;
+  readonly terminalPositionMeters: PositionMeters;
+}
+
 /** A view of executed history and elapsed virtual time, never stored by an event. */
 export type ShipPhase = "docked" | "accel" | "coast" | "flip" | "decel" | "arrived";
 export type BurnKind = "accel" | "correction" | "decel";
@@ -22,6 +39,8 @@ export interface BurnNode {
 
 /** The complete, replaceable set of burns which have not begun firing. */
 export interface FlightPlan {
+  /** The body the final planned burn is intended to reach. */
+  readonly destination?: DestinationBody;
   readonly nodes: readonly BurnNode[];
 }
 
@@ -36,6 +55,8 @@ export interface ShipState {
   /** Append-only burn history. A started burn is already irreversible. */
   readonly executedBurns: readonly ExecutedBurn[];
   readonly phase: ShipPhase;
+  readonly departureState?: DepartureState;
+  readonly arrivalState?: ArrivalState;
 }
 
 export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan" | "insufficient-propellant";
@@ -62,6 +83,8 @@ export const assertPlanRevisionRefusalReason = (reason: PlanRevisionRefusalReaso
 export type SimEvent =
   | { readonly type: "clockAdvanced"; readonly elapsedMs: number }
   | { readonly type: "randomValueRequested"; readonly upperExclusive: number }
+  | { readonly type: "departureRecorded"; readonly departureState: DepartureState }
+  | { readonly type: "arrivalRecorded"; readonly arrivalState: ArrivalState }
   /** Durable record of a command while its light signal is in flight. */
   | {
     readonly type: "commandIssued";
@@ -103,6 +126,10 @@ const assertNode = (node: BurnNode): BurnNode => {
 };
 
 const assertPlan = (plan: FlightPlan): FlightPlan => {
+  const destination = plan.destination ?? "earth";
+  if (destination !== "earth" && destination !== "moon" && destination !== "mars") {
+    throw new RangeError("Flight plans require a known destination body.");
+  }
   const nodes = plan.nodes.map(assertNode);
   for (let index = 1; index < nodes.length; index += 1) {
     const previous = nodes[index - 1]!;
@@ -117,7 +144,7 @@ const assertPlan = (plan: FlightPlan): FlightPlan => {
   if (new Set(nodes.map(({ nodeId }) => nodeId)).size !== nodes.length) {
     throw new RangeError("Flight-plan node IDs must be unique.");
   }
-  return { nodes };
+  return { destination, nodes };
 };
 
 /**
@@ -207,6 +234,8 @@ export class SimEventReducer {
   readonly #randomValues: number[] = [];
   #flightPlan: FlightPlan | undefined;
   #executedBurns: ExecutedBurn[] = [];
+  #departureState: DepartureState | undefined;
+  #arrivalState: ArrivalState | undefined;
 
   constructor(seed: number, initialTime: SimTimeMs = simTimeMs(0)) {
     this.#clock = SimClock.production(initialTime);
@@ -216,14 +245,17 @@ export class SimEventReducer {
   get time(): SimTimeMs { return this.#clock.now; }
 
   get state(): SimState {
-    if (this.#flightPlan === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues] };
+    if (this.#flightPlan === undefined && this.#departureState === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues] };
+    const flightPlan = this.#flightPlan ?? { destination: "earth" as const, nodes: [] };
     return {
       time: this.#clock.now,
       randomValues: [...this.#randomValues],
       ship: {
-        flightPlan: this.#flightPlan,
+        flightPlan,
         executedBurns: [...this.#executedBurns],
-        phase: derivedPhase(this.#flightPlan, this.#executedBurns)
+        phase: derivedPhase(flightPlan, this.#executedBurns),
+        ...(this.#departureState === undefined ? {} : { departureState: this.#departureState }),
+        ...(this.#arrivalState === undefined ? {} : { arrivalState: this.#arrivalState })
       }
     };
   }
@@ -235,6 +267,18 @@ export class SimEventReducer {
         return;
       case "randomValueRequested":
         this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
+        return;
+      case "departureRecorded":
+        if (this.#departureState !== undefined || event.departureState.departureAtMs !== this.#clock.now) {
+          throw new RangeError("A ship departure state is recorded exactly once at its current simulation time.");
+        }
+        this.#departureState = event.departureState;
+        return;
+      case "arrivalRecorded":
+        if (this.#arrivalState !== undefined || event.arrivalState.arrivedAtMs !== this.#clock.now) {
+          throw new RangeError("A ship arrival state is recorded exactly once at its current simulation time.");
+        }
+        this.#arrivalState = event.arrivalState;
         return;
       case "commandIssued":
         if (event.commandId.length === 0 || event.issuedAtMs !== this.#clock.now || event.arrivalAtMs < event.issuedAtMs) {
@@ -257,7 +301,7 @@ export class SimEventReducer {
         if (plannedNode === undefined || !sameBurnNode(plannedNode, node)) {
           throw new Error("A burn must start from the pending flight plan unchanged.");
         }
-        this.#flightPlan = { nodes: this.#flightPlan.nodes.filter(({ nodeId }) => nodeId !== node.nodeId) };
+        this.#flightPlan = { ...this.#flightPlan, nodes: this.#flightPlan.nodes.filter(({ nodeId }) => nodeId !== node.nodeId) };
         this.#executedBurns = [...this.#executedBurns, { node, startedAtMs: this.#clock.now }];
         return;
       }

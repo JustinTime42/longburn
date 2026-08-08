@@ -127,8 +127,8 @@ describe("event log replay", () => {
     const events: readonly SimEvent[] = [{ type: "planRevisionApplied", flightPlan: historicallyAcceptedPlan }];
     const persisted = { seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) };
 
-    expect(replaySegment(1, events).ship?.flightPlan).toEqual(historicallyAcceptedPlan);
-    expect(replayPersistedSegment(persisted).ship?.flightPlan).toEqual(historicallyAcceptedPlan);
+    expect(replaySegment(1, events).ship?.flightPlan).toEqual({ ...historicallyAcceptedPlan, destination: "earth" });
+    expect(replayPersistedSegment(persisted).ship?.flightPlan).toEqual({ ...historicallyAcceptedPlan, destination: "earth" });
   });
 
   it("rejects a revision scheduled inside a burn that is firing before append", async () => {

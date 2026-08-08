@@ -1,13 +1,7 @@
 import type { PositionMeters } from "./causality.js";
-import { simTimeMs, type SimTimeMs } from "./clock.js";
-import type { ExecutedBurn, FlightPlan } from "./event-log.js";
+import { simTimeMs } from "./clock.js";
+import type { DepartureState, ExecutedBurn, FlightPlan } from "./event-log.js";
 import { propagateKepler } from "./kepler.js";
-
-export interface DepartureState {
-  readonly departureAtMs: SimTimeMs;
-  readonly positionMeters: PositionMeters;
-  readonly velocityMmPerSecond: { readonly x: number; readonly y: number; readonly z: number };
-}
 
 export interface ShipWorldline {
   readonly departureState: DepartureState;
@@ -44,8 +38,9 @@ export const shipPositionAt = (worldline: ShipWorldline, atMs: number): Position
     state = propagateKepler(SOLAR_GRAVITATIONAL_PARAMETER_KM3_PER_SECOND2, state, (burn.startedAtMs - cursor) / 1_000);
     const until = Math.min(atMs, burn.endedAtMs ?? atMs);
     const seconds = (until - burn.startedAtMs) / 1_000;
+    const burnSeconds = burn.node.burn.burnDurationMs / 1_000;
     const delta = burn.node.deltaVMmPerSecond;
-    const acceleration = { x: delta.x / 1_000_000 / Math.max(seconds, Number.EPSILON), y: delta.y / 1_000_000 / Math.max(seconds, Number.EPSILON), z: delta.z / 1_000_000 / Math.max(seconds, Number.EPSILON) };
+    const acceleration = { x: delta.x / 1_000_000 / Math.max(burnSeconds, Number.EPSILON), y: delta.y / 1_000_000 / Math.max(burnSeconds, Number.EPSILON), z: delta.z / 1_000_000 / Math.max(burnSeconds, Number.EPSILON) };
     state = {
       positionKm: {
         x: state.positionKm.x + state.velocityKmPerSecond.x * seconds + 0.5 * acceleration.x * seconds * seconds,

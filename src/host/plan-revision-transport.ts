@@ -1,5 +1,7 @@
 import { earliestLegalEmissionTimeMs, type ObserverPositionAt, type PositionMeters } from "../sim/causality.js";
 import { simTimeMs, type SimTimeMs } from "../sim/clock.js";
+import { hqPositionAt } from "../sim/headquarters.js";
+import type { UtDaysSinceJ2000 } from "../sim/ephemerides.js";
 import type { FlightPlan } from "../sim/event-log.js";
 
 export interface InboundPlanRevisionLoop {
@@ -10,12 +12,13 @@ export interface InboundPlanRevisionLoop {
     hqPositionAt: (issuedAtMs: SimTimeMs) => PositionMeters,
     arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
   ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }>;
+  shipPositionAt?(timeMs: number): PositionMeters;
 }
 
 export interface PlanRevisionTransportOptions {
   readonly loop: InboundPlanRevisionLoop;
   /** Authoritative propagated ship worldline, not a client-supplied position. */
-  readonly shipPositionAt: ObserverPositionAt;
+  readonly shipPositionAt?: ObserverPositionAt;
   /** T0 HQ is Earth, evaluated in the same heliocentric frame at issue time. */
   readonly hqPositionAt: ObserverPositionAt;
 }
@@ -31,7 +34,9 @@ export class PlanRevisionTransport {
 
   constructor({ loop, shipPositionAt, hqPositionAt }: PlanRevisionTransportOptions) {
     this.#loop = loop;
-    this.#shipPositionAt = shipPositionAt;
+    const resolvedShipPositionAt = shipPositionAt ?? loop.shipPositionAt?.bind(loop);
+    if (resolvedShipPositionAt === undefined) throw new Error("Plan revision transport requires the loop-owned ship worldline.");
+    this.#shipPositionAt = resolvedShipPositionAt;
     this.#hqPositionAt = hqPositionAt;
   }
 
@@ -49,3 +54,15 @@ export class PlanRevisionTransport {
     );
   }
 }
+
+/**
+ * Production Tier 0 composition: both ends of the light cone use the real
+ * heliocentric resolvers, never test literals or a client-supplied position.
+ */
+export const createTier0PlanRevisionTransport = (
+  loop: InboundPlanRevisionLoop,
+  epochUtDaysSinceJ2000: UtDaysSinceJ2000
+): PlanRevisionTransport => new PlanRevisionTransport({
+  loop,
+  hqPositionAt: (time) => hqPositionAt(epochUtDaysSinceJ2000, simTimeMs(time))
+});
