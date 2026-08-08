@@ -89,13 +89,26 @@ describe("emitted message schema", () => {
     expect(refusedReason(outcome)).toBe("invalid-plan");
   });
 
+  it("emits a zero-staleness command echo through the causal gate", () => {
+    const echo = emit(buildEmittedMessage({
+      observerId: "player-1", event: storedEvent, class: "commandEcho", payload: { commandId: "cmd-1" },
+      emissionTimeMs: storedEvent.eventTime, observerPositionAt: () => storedEvent.eventPosition
+    }));
+
+    expect(echo).toMatchObject({
+      class: "commandEcho",
+      payload: { commandId: "cmd-1" },
+      stalenessMs: 0
+    });
+  });
+
   it("defensively rejects an unsafe-cast unconstructible class", () => {
     const invalidInput = {
       observerId: "player-1", event: storedEvent, class: "marketEvent", payload: {},
       emissionTimeMs: simTimeMs(1_000), observerPositionAt: () => ({ x: 0, y: 0, z: 0 })
     } as unknown as Parameters<typeof buildEmittedMessage>[0];
 
-    expect(() => buildEmittedMessage(invalidInput)).toThrow("Cannot build an emitted message");
+    expect(() => buildEmittedMessage(invalidInput)).toThrow("Cannot build an emitted message from class marketEvent");
   });
 
   it("fails closed on malformed provenance, NaN, stale metadata, and reserved classes", () => {
