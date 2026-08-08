@@ -11,7 +11,7 @@ import {
   requiredArrivalTimeMs,
   type PositionMeters
 } from "./causality.js";
-import type { EmissionCandidate, EmittedMessage } from "./emitted-message.js";
+import type { EmissionCandidate, EmittableMessage } from "./emitted-message.js";
 
 const ORIGIN: PositionMeters = { x: 0, y: 0, z: 0 };
 const stationaryAt = (position: PositionMeters) => () => position;
@@ -94,6 +94,28 @@ describe("causality invariant", () => {
     expect(send).not.toHaveBeenCalled();
     expect(recordIncident).toHaveBeenCalledOnce();
     expect(incrementCausalityFailure).toHaveBeenCalledOnce();
+  });
+
+  it("labels malformed envelope data without sending or confusing it for a position fault", () => {
+    const send = vi.fn();
+    const recordIncident = vi.fn();
+    const incrementCausalityFailure = vi.fn();
+    const gate = new CausalEmissionGate({ send, recordIncident, incrementCausalityFailure });
+    const observerPositionAt = stationaryAt({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
+    const emptyObserverId = emissionCandidate(0, 1_000, ORIGIN, observerPositionAt);
+    const badPayload = emissionCandidate(0, 1_000, ORIGIN, observerPositionAt);
+    const reservedClass = emissionCandidate(0, 1_000, ORIGIN, observerPositionAt);
+    Object.assign(emptyObserverId, { observerId: "" });
+    Object.assign(badPayload, { payload: { event: "not-a-catalog-event" } });
+    Object.assign(reservedClass, { class: "marketEvent" });
+
+    for (const malformed of [emptyObserverId, badPayload, reservedClass]) {
+      expect(gate.emit(malformed)).toEqual({ sent: false, reason: "invalid-envelope" });
+    }
+    expect(send).not.toHaveBeenCalled();
+    expect(recordIncident).toHaveBeenCalledTimes(3);
+    expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "invalid-envelope" }));
+    expect(incrementCausalityFailure).toHaveBeenCalledTimes(3);
   });
 
   it("fails closed and alerts when the worldline cannot converge", () => {
@@ -212,7 +234,7 @@ describe("causality invariant", () => {
       fc.property(
         fc.array(fc.integer({ min: 1, max: 20_000_000_000 }), { minLength: 1, maxLength: 40 }),
         (distances) => {
-          const sent: EmittedMessage[] = [];
+          const sent: EmittableMessage[] = [];
           const recordIncident = vi.fn();
           const incrementCausalityFailure = vi.fn();
           const gate = new CausalEmissionGate({

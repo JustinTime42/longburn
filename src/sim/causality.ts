@@ -1,5 +1,5 @@
 import type { SimTimeMs } from "./clock.js";
-import { validateEmittedMessage, type EmissionCandidate, type EmittedMessage } from "./emitted-message.js";
+import { validateEmittedMessage, type EmissionCandidate, type EmittableMessage } from "./emitted-message.js";
 
 /** Exact SI value, shared by every server-side causality check. */
 export const SPEED_OF_LIGHT_METERS_PER_SECOND = 299_792_458;
@@ -30,15 +30,12 @@ export interface CausalityProvenance {
   readonly observerPositionAt: ObserverPositionAt;
 }
 
-export interface OutboundEvent<T> extends CausalityProvenance {
-  readonly payload: T;
-}
-
-export type { EmittedMessage } from "./emitted-message.js";
+export type { EmittableMessage } from "./emitted-message.js";
 
 export type CausalityFailureReason = "invalid-provenance" | "invalid-position" | "light-cone-failure" | "early-emission";
 export type TransportFailureReason = "transport-failure";
-export type EmissionFailureReason = CausalityFailureReason | TransportFailureReason;
+export type EnvelopeFailureReason = "invalid-envelope";
+export type EmissionFailureReason = CausalityFailureReason | EnvelopeFailureReason | TransportFailureReason;
 
 /**
  * The incident-safe portion of outbound provenance. Payloads and receiver
@@ -214,7 +211,7 @@ export const assertInboundCausalityInvariant = (
 
 export interface CausalEmissionGateOptions {
   /** The sole raw outbound transport callback. No message reaches it unchecked. */
-  readonly send: (message: EmittedMessage) => void;
+  readonly send: (message: EmittableMessage) => void;
   /** Incident-grade sink, invoked for every blocked message. */
   readonly recordIncident: (incident: CausalityIncident) => void;
   /** Counter/alert hook, invoked even if incident recording itself fails. */
@@ -230,7 +227,7 @@ export type EmissionResult =
  * send callback. `test/causal-transport-fence.test.ts` enforces that boundary.
  */
 export class CausalEmissionGate {
-  readonly #send: (message: EmittedMessage) => void;
+  readonly #send: (message: EmittableMessage) => void;
   readonly #recordIncident: (incident: CausalityIncident) => void;
   readonly #incrementCausalityFailure: () => void;
 
@@ -241,7 +238,7 @@ export class CausalEmissionGate {
   }
 
   emit(event: EmissionCandidate): EmissionResult {
-    let message: EmittedMessage;
+    let message: EmittableMessage;
     try {
       assertCausalityInvariant({
         eventTime: event.eventTimeMs,
@@ -258,7 +255,7 @@ export class CausalEmissionGate {
     } catch (error: unknown) {
       const incident = error instanceof CausalityInvariantViolation
         ? error.incident
-        : { reason: "invalid-position" as const, provenance: incidentProvenance(event) };
+        : { reason: "invalid-envelope" as const, provenance: incidentProvenance(event) };
       try {
         this.#recordIncident(incident);
       } catch {
