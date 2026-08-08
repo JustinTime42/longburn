@@ -49,7 +49,7 @@ Two layers, both required:
 
 ## Acceptance (for the bead)
 
-- Emission gate exists and is the only outbound path; the fence is **mechanical, not prose** (r1 finding 5): an architecture/contract test or lint rule that goes red on any raw outbound path, defining the transport boundary `longburn-din.5` will build against. README guidance alone is not enforcement.
+- Emission gate exists and is the only outbound path; the fence is **mechanical, not prose** (r1 finding 5): `CausalStateSubscription` structurally exposes only gate-backed `emit`, while an architecture test scans `src/host` and rejects its raw `writeText`/`writeJson` calls outside `CausalEmissionGate` callbacks. The test asserts its scan is non-empty and feeds the same visitor a deliberate violation. Until a structural fence covers the broader surface, the fort-wide `causal-boundary/no-raw-outbound` ESLint tripwire also remains in force for direct `.send`, `.publish`, `.broadcast`, and `.write` calls outside the gate, with its own deliberate-violation fixture. These checks do not prove aliases, computed members, arbitrary writer names, or that future transports use `CausalStateEgress`; README guidance alone is not enforcement.
 - Runtime assertion fails closed with logging.
 - Property suite runs in CI in seconds using the virtual clock (a 40-day transit's message stream checked in ms).
 - One deliberately-violating test fixture proves the harness actually catches a leak (the /mcp-invariant lesson: a test that has never failed proves nothing).

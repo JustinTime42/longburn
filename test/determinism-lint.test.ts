@@ -26,4 +26,12 @@ describe("simulation determinism lint guard", () => {
     // the syntax guard; the remaining four expressions each add one error.
     expect(result?.errorCount).toBe(6);
   });
+
+  it("rejects the deliberate raw outbound fixture", async () => {
+    const eslint = new ESLint({ ignore: false });
+    const [result] = await eslint.lintFiles(["test/fixtures/sim/raw-outbound.ts"]);
+
+    expect(result?.errorCount).toBe(1);
+    expect(result?.messages[0]?.message).toBe("Outbound messages must pass through CausalEmissionGate.");
+  });
 });
