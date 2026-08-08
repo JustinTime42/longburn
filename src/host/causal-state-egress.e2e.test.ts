@@ -4,10 +4,10 @@ import { simTimeMs } from "../sim/clock.js";
 import { InMemoryDeliveryCursorStore } from "../sim/delivery-cursor.js";
 import { InMemorySimulationEventStore, type StoredSimEvent } from "../sim/event-store.js";
 import type { EmissionCandidate, EmittableMessage } from "../sim/emitted-message.js";
-import { EmissionScheduler, type ScheduledEmission } from "../sim/emission-scheduler.js";
 import { AuthoritativeSimLoop } from "../sim/loop.js";
 import { burnDurationMs } from "../sim/mass-cargo.js";
 import { CausalStateEgress } from "./causal-state-egress.js";
+import { CausalStateHost, type StoredEventForEmission } from "./causal-state-host.js";
 
 // Deliberately independent from ../sim/causality.ts. This is the physical
 // oracle for the stationary Tier 0 HQ used by this end-to-end composition.
@@ -26,40 +26,33 @@ const report = (
   eventTimeMs: number,
   eventPosition: { readonly x: number; readonly y: number; readonly z: number },
   event: "departureRecorded" | "arrivalRecorded" = "departureRecorded"
-): ScheduledEmission => ({
-  sourceGlobalPosition: globalPosition,
-  message: {
-    observerId: "hq-player",
-    event: {
-      streamId: "ship-1",
-      streamSequence: globalPosition,
-      globalPosition,
-      eventTime: simTimeMs(eventTimeMs),
-      eventPosition
-    },
-    class: "shipReport",
-    payload: event === "arrivalRecorded" ? { event, destination: "mars" } : { event },
-    observerPositionAt: () => HQ
+): StoredEventForEmission => ({
+  streamId: "ship-1",
+  event: {
+    streamSequence: globalPosition,
+    globalPosition,
+    eventTime: simTimeMs(eventTimeMs),
+    eventPosition,
+    event: event === "arrivalRecorded"
+      ? {
+          type: event,
+          arrivalState: {
+            arrivedAtMs: simTimeMs(eventTimeMs), destination: "mars", targetPositionMeters: eventPosition,
+            terminalPositionMeters: eventPosition, positionGapMeters: { x: 0, y: 0, z: 0 }, velocityGapMmPerSecond: { x: 0, y: 0, z: 0 }
+          }
+        }
+      : {
+          type: event,
+          departureState: { departureAtMs: simTimeMs(eventTimeMs), positionMeters: eventPosition, velocityMmPerSecond: { x: 0, y: 0, z: 0 } }
+        }
   }
 });
 
-const scheduledArrival = (arrival: StoredSimEvent): ScheduledEmission => {
+const storedArrival = (arrival: StoredSimEvent): StoredEventForEmission => {
   if (arrival.event.type !== "arrivalRecorded") throw new Error("Expected an authoritative arrival record.");
   return {
-    sourceGlobalPosition: arrival.globalPosition,
-    message: {
-      observerId: "hq-player",
-      event: {
-        streamId: "arrival-position-regression",
-        streamSequence: arrival.streamSequence,
-        globalPosition: arrival.globalPosition,
-        eventTime: arrival.eventTime,
-        eventPosition: arrival.eventPosition
-      },
-      class: "shipReport",
-      payload: { event: "arrivalRecorded", destination: arrival.event.arrivalState.destination },
-      observerPositionAt: () => HQ
-    }
+    streamId: "arrival-position-regression",
+    event: arrival
   };
 };
 
@@ -74,29 +67,17 @@ const candidate = (eventTimeMs: number, emissionTimeMs: number, eventPosition: {
   observerPositionAt: () => HQ
 });
 
-const wiredScheduler = (received: EmittableMessage[]) => {
+const wiredHost = (received: EmittableMessage[]) => {
   const recordIncident = vi.fn();
   const incrementCausalityFailure = vi.fn();
-  const egress = new CausalStateEgress({ recordIncident, incrementCausalityFailure });
-  const subscription = egress.subscribe("hq-player", {
-    writeText: (payload) => received.push(JSON.parse(payload) as EmittableMessage)
-  });
-  const scheduler = new EmissionScheduler({
+  const host = new CausalStateHost({
     cursors: new InMemoryDeliveryCursorStore(),
-    emit: async (emission) => {
-      const result = subscription.emit(emission);
-      // Scheduler input is bound to this observer before egress. Keep the
-      // impossible boundary refusal out of the scheduler's gate-result type.
-      if (!result.sent && result.reason === "observer-mismatch") {
-        throw new Error("Wired scheduler emitted for the wrong observer.");
-      }
-      return result;
-    },
-    recordIncident,
-    incrementCausalityFailure,
-    incrementBelowCursorSuppression: vi.fn()
+    observerId: "hq-player",
+    observerPositionAt: () => HQ,
+    socket: { writeText: (payload) => received.push(JSON.parse(payload) as EmittableMessage) },
+    recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression: vi.fn()
   });
-  return { scheduler, recordIncident, incrementCausalityFailure };
+  return { host, recordIncident, incrementCausalityFailure };
 };
 
 describe("causal state egress end-to-end", () => {
@@ -110,12 +91,12 @@ describe("causal state egress end-to-end", () => {
       report(4, 39 * DAY_MS, { x: 224_000_000_000, y: -4_000_000_000, z: 0 }, "arrivalRecorded")
     ];
     const received: EmittableMessage[] = [];
-    const { scheduler, recordIncident, incrementCausalityFailure } = wiredScheduler(received);
+    const { host, recordIncident, incrementCausalityFailure } = wiredHost(received);
 
-    const result = await scheduler.run("hq-player", simTimeMs(40 * DAY_MS), scenarios);
+    const result = await host.run(simTimeMs(40 * DAY_MS), scenarios);
 
     expect(result).toEqual({ emitted: scenarios.map((entry) =>
-      `observer:hq-player/stream:ship-1/event:${entry.sourceGlobalPosition}/class:shipReport`), deferred: [], blocked: [] });
+      `observer:hq-player/stream:ship-1/event:${entry.event.streamSequence}/class:shipReport`), deferred: [], blocked: [] });
     expect(received).toHaveLength(scenarios.length); // Liveness: the gate cannot pass by sending nothing.
     expect(recordIncident).not.toHaveBeenCalled();
     expect(incrementCausalityFailure).not.toHaveBeenCalled();
@@ -183,13 +164,13 @@ describe("causal state egress end-to-end", () => {
     expect(arrival.eventPosition).toEqual(terminalPositionMeters);
 
     const received: EmittableMessage[] = [];
-    const { scheduler } = wiredScheduler(received);
+    const { host } = wiredHost(received);
     const earliest = independentEarliestTick(arrival.eventTime, terminalPositionMeters);
-    const scheduled = scheduledArrival(arrival);
+    const stored = storedArrival(arrival);
 
-    expect(await scheduler.run("hq-player", simTimeMs(earliest - 1), [scheduled])).toMatchObject({ deferred: [expect.any(String)] });
+    expect(await host.run(simTimeMs(earliest - 1), [stored])).toMatchObject({ deferred: [expect.any(String)] });
     expect(received).toEqual([]);
-    expect(await scheduler.run("hq-player", simTimeMs(earliest), [scheduled])).toMatchObject({ emitted: [expect.any(String)] });
+    expect(await host.run(simTimeMs(earliest), [stored])).toMatchObject({ emitted: [expect.any(String)] });
     expect(received[0]).toMatchObject({ eventPosition: terminalPositionMeters, stalenessMs: earliest - arrival.eventTime });
   });
 });
