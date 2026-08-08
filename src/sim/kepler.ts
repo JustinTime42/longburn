@@ -33,8 +33,10 @@ export const KEPLER_REFINEMENT_ITERATIONS = 200;
 /** Relative residual allowed after the invariant Newton work has completed. */
 export const KEPLER_RESIDUAL_RELATIVE_TOLERANCE = 1e-11;
 
-const PARABOLIC_ALPHA_EPSILON = 1e-12;
-const ELEMENT_EPSILON = 1e-10;
+/** Dimensionless relative tolerance for alpha, scaled by the current radius. */
+const PARABOLIC_ALPHA_RELATIVE_EPSILON = 1e-12;
+/** Dimensionless relative tolerance for element singularities. */
+const ELEMENT_RELATIVE_EPSILON = 1e-10;
 const NEAR_PARABOLIC_ECCENTRICITY_DISTANCE = 1e-3;
 
 /** A typed refusal: fixed Newton work did not solve the universal Kepler equation. */
@@ -106,11 +108,12 @@ export const propagateKepler = (mu: number, initial: KeplerState, elapsedSeconds
   const rDotV = dot(initial.positionKm, initial.velocityKmPerSecond);
   const sqrtMu = Math.sqrt(mu);
   const alpha = 2 / r0 - v0Squared / mu;
+  const parabolicAlphaEpsilon = PARABOLIC_ALPHA_RELATIVE_EPSILON / r0;
   let chi: number;
 
-  if (alpha > PARABOLIC_ALPHA_EPSILON) {
+  if (alpha > parabolicAlphaEpsilon) {
     chi = sqrtMu * elapsedSeconds * alpha;
-  } else if (alpha < -PARABOLIC_ALPHA_EPSILON) {
+  } else if (alpha < -parabolicAlphaEpsilon) {
     const a = 1 / alpha;
     const sign = elapsedSeconds < 0 ? -1 : 1;
     const denominator = rDotV + sign * Math.sqrt(-mu * a) * (1 - r0 * alpha);
@@ -176,7 +179,8 @@ export const conicElements = (mu: number, state: KeplerState): ConicElements => 
   const velocitySquared = dot(state.velocityKmPerSecond, state.velocityKmPerSecond);
   const angularMomentum = cross(state.positionKm, state.velocityKmPerSecond);
   const angularMomentumMagnitude = magnitude(angularMomentum);
-  if (angularMomentumMagnitude <= ELEMENT_EPSILON) throw new RangeError("Conic elements are undefined for zero angular momentum.");
+  if (angularMomentumMagnitude === 0) throw new RangeError("Conic elements are undefined for zero angular momentum.");
+  const elementEpsilon = ELEMENT_RELATIVE_EPSILON * angularMomentumMagnitude;
   const node = { x: -angularMomentum.y, y: angularMomentum.x, z: 0 };
   const nodeMagnitude = magnitude(node);
   const eccentricityVector = subtract(
@@ -185,24 +189,25 @@ export const conicElements = (mu: number, state: KeplerState): ConicElements => 
   );
   const eccentricity = magnitude(eccentricityVector);
   const alpha = 2 / r - velocitySquared / mu;
-  const semiMajorAxisKm = Math.abs(alpha) <= PARABOLIC_ALPHA_EPSILON ? Number.POSITIVE_INFINITY : 1 / alpha;
+  const parabolicAlphaEpsilon = PARABOLIC_ALPHA_RELATIVE_EPSILON / r;
+  const semiMajorAxisKm = Math.abs(alpha) <= parabolicAlphaEpsilon ? Number.POSITIVE_INFINITY : 1 / alpha;
   const semiLatusRectumKm = (angularMomentumMagnitude * angularMomentumMagnitude) / mu;
   const inclinationRadians = Math.acos(clamp(angularMomentum.z / angularMomentumMagnitude, -1, 1));
-  const longitudeOfAscendingNodeRadians = nodeMagnitude <= ELEMENT_EPSILON ? 0 : normalizeAngle(Math.atan2(node.y, node.x));
+  const longitudeOfAscendingNodeRadians = nodeMagnitude <= elementEpsilon ? 0 : normalizeAngle(Math.atan2(node.y, node.x));
 
   let argumentOfPeriapsisRadians = 0;
-  if (eccentricity > ELEMENT_EPSILON && nodeMagnitude > ELEMENT_EPSILON) {
+  if (eccentricity > ELEMENT_RELATIVE_EPSILON && nodeMagnitude > elementEpsilon) {
     argumentOfPeriapsisRadians = Math.acos(clamp(dot(node, eccentricityVector) / (nodeMagnitude * eccentricity), -1, 1));
     if (eccentricityVector.z < 0) argumentOfPeriapsisRadians = 2 * Math.PI - argumentOfPeriapsisRadians;
-  } else if (eccentricity > ELEMENT_EPSILON) {
+  } else if (eccentricity > ELEMENT_RELATIVE_EPSILON) {
     argumentOfPeriapsisRadians = normalizeAngle(Math.atan2(inclinationRadians > Math.PI / 2 ? -eccentricityVector.y : eccentricityVector.y, eccentricityVector.x));
   }
 
   let trueAnomalyRadians: number;
-  if (eccentricity > ELEMENT_EPSILON) {
+  if (eccentricity > ELEMENT_RELATIVE_EPSILON) {
     trueAnomalyRadians = Math.acos(clamp(dot(eccentricityVector, state.positionKm) / (eccentricity * r), -1, 1));
     if (dot(state.positionKm, state.velocityKmPerSecond) < 0) trueAnomalyRadians = 2 * Math.PI - trueAnomalyRadians;
-  } else if (nodeMagnitude > ELEMENT_EPSILON) {
+  } else if (nodeMagnitude > elementEpsilon) {
     trueAnomalyRadians = Math.acos(clamp(dot(node, state.positionKm) / (nodeMagnitude * r), -1, 1));
     if (state.positionKm.z < 0) trueAnomalyRadians = 2 * Math.PI - trueAnomalyRadians;
   } else {
