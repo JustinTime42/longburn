@@ -110,29 +110,44 @@ describe("burn commitment quantization", () => {
 });
 
 describe("sequential propellant projection", () => {
-  it("accepts or refuses by the exact summed duration against the viability wall", () => {
+  it("refuses the same just-over-wall commitment independently of wet mass", () => {
     const ship = {
       exhaustVelocityKmPerSecond: 1,
-      accelerationKmPerSecond2: 1,
-      structuralMassFraction: 0.5,
-      wetMassGrams: 1_000_000
+      accelerationKmPerSecond2: 693.1471805599599,
+      structuralMassFraction: 0.49999999999999445
     };
 
-    // ln(2) is between 0.693 and 0.694. The multi-node case proves that the
-    // acceptance predicate uses the exact integer sum, not per-node rounding.
-    const belowWall = projectPropellantForBurns([
-      { burnDurationMs: burnDurationMs(1) },
-      { burnDurationMs: burnDurationMs(692) }
-    ], ship);
-    const aboveWall = projectPropellantForBurns([
-      { burnDurationMs: burnDurationMs(1) },
-      { burnDurationMs: burnDurationMs(693) }
-    ], ship);
+    // One millisecond is just over this ship's logarithmic wall. The former
+    // mass-scaled tolerance accepted it at 1 g but refused it at 1,000,000 g.
+    const burns = [{ burnDurationMs: burnDurationMs(1) }];
+    const gramShip = projectPropellantForBurns(burns, { ...ship, wetMassGrams: 1 });
+    const tonneShip = projectPropellantForBurns(burns, { ...ship, wetMassGrams: 1_000_000 });
+
+    expect(gramShip.kind).toBe("exhausted");
+    expect(tonneShip.kind).toBe("exhausted");
+    expect(gramShip.nodes[0]?.remainingPropellantGrams).toBeLessThan(0);
+    expect(tonneShip.nodes[0]?.remainingPropellantGrams).toBeLessThan(0);
+  });
+
+  it("straddles the authoritative Tier 0 ship's strict viability wall", () => {
+    const belowWall = projectPropellantForBurns([{ burnDurationMs: burnDurationMs(193_452_400) }]);
+    const aboveWall = projectPropellantForBurns([{ burnDurationMs: burnDurationMs(193_452_401) }]);
 
     expect(belowWall.kind).toBe("sufficient");
     expect(aboveWall.kind).toBe("exhausted");
-    expect(belowWall.nodes).toHaveLength(2);
-    expect(aboveWall.nodes).toHaveLength(2);
+    expect(belowWall.nodes[0]?.remainingPropellantGrams).toBeGreaterThan(0);
+    expect(aboveWall.nodes[0]?.remainingPropellantGrams).toBeLessThan(0);
+  });
+
+  it("accepts an empty committed-burn sequence", () => {
+    expect(projectPropellantForBurns([])).toEqual({ kind: "sufficient", nodes: [] });
+  });
+
+  it("refuses a total duration that cannot remain a safe integer", () => {
+    const largestDuration = { burnDurationMs: burnDurationMs(Number.MAX_SAFE_INTEGER) };
+
+    expect(() => projectPropellantForBurns([largestDuration, largestDuration]))
+      .toThrow("Total burn duration must be a non-negative safe integer in milliseconds.");
   });
 
   it("projects each node from the previous node's remaining wet mass", () => {
