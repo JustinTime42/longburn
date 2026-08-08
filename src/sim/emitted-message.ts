@@ -226,7 +226,8 @@ export const buildEmittedMessage = (input: BuildEmittedMessage): EmissionCandida
     case "simClock": return { ...base, class: input.class, payload: input.payload };
     default: {
       const unhandled: never = input;
-      throw new RangeError(`Cannot build an emitted message from ${String(unhandled)}.`);
+      const unhandledClass = (unhandled as { readonly class: unknown }).class;
+      throw new RangeError(`Cannot build an emitted message from class ${String(unhandledClass)}.`);
     }
   }
 };

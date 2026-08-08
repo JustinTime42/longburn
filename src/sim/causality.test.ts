@@ -96,6 +96,22 @@ describe("causality invariant", () => {
     expect(incrementCausalityFailure).toHaveBeenCalledOnce();
   });
 
+  it("labels an emission-time worldline position fault as invalid-position", () => {
+    const send = vi.fn();
+    const recordIncident = vi.fn();
+    const incrementCausalityFailure = vi.fn();
+    const gate = new CausalEmissionGate({ send, recordIncident, incrementCausalityFailure });
+    const result = gate.emit(emissionCandidate(0, 2_000, ORIGIN,
+      (timeMs) => timeMs === 2_000
+        ? { x: Number.NaN, y: 0, z: 0 }
+        : { x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 }));
+
+    expect(result).toEqual({ sent: false, reason: "invalid-position" });
+    expect(send).not.toHaveBeenCalled();
+    expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "invalid-position" }));
+    expect(incrementCausalityFailure).toHaveBeenCalledOnce();
+  });
+
   it("labels malformed envelope data without sending or confusing it for a position fault", () => {
     const send = vi.fn();
     const recordIncident = vi.fn();
