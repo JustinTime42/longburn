@@ -161,7 +161,7 @@ describe("event log replay", () => {
     expect(persisted.events).toHaveLength(2);
     expect(replayPersistedSegment(persisted).ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["first"]);
     expect(persisted.events.map(({ event }) => event.type === "planRevisionApplied" || event.type === "planRevisionRefused" ? event.commandId : undefined))
-      .toEqual(["command-1", "command-2"]);
+      .toEqual(["local-1", "local-2"]);
   });
 
   it("validates a refusal reason before it can enter the durable log", async () => {
