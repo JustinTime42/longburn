@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { simTimeMs } from "../sim/clock.js";
+import { InMemoryDeliveryCursorStore } from "../sim/delivery-cursor.js";
 import type { SimEvent } from "../sim/event-log.js";
-import type { StoredEventForEmission } from "./causal-state-host.js";
-import { projectStoredEvent } from "./causal-state-host.js";
+import type { EmittableMessage } from "../sim/emitted-message.js";
+import { CausalStateHost, type StoredEventForEmission, projectStoredEvent } from "./causal-state-host.js";
 
 const HQ = { x: 0, y: 0, z: 0 };
 const observerPositionAt = () => HQ;
@@ -43,7 +44,7 @@ describe("projectStoredEvent", () => {
     });
   });
 
-  it("projects durable command identities and rejects an ambiguous outcome", () => {
+  it("projects durable command identities and omits observer-local command echoes", () => {
     const applied = stored({
       type: "planRevisionApplied", commandId: "command-7", replacedNodeIds: [],
       flightPlan: { destination: "mars", nodes: [] }
@@ -52,7 +53,33 @@ describe("projectStoredEvent", () => {
       message: { class: "commandOutcomeReport", payload: { outcome: "applied", commandId: "command-7" } }
     });
 
-    const ambiguous = stored({ type: "planRevisionApplied", flightPlan: { destination: "mars", nodes: [] } });
-    expect(() => projectStoredEvent("player-1", observerPositionAt, ambiguous)).toThrow("durable command ID");
+    expect(projectStoredEvent("player-1", observerPositionAt, stored({
+      type: "commandIssued", commandId: "command-8", issuedAtMs: simTimeMs(12_000), arrivalAtMs: simTimeMs(12_000),
+      hqPosition: HQ, arrivalPosition: HQ, replacedNodeIds: [], flightPlan: { destination: "mars", nodes: [] }
+    }))).toBeUndefined();
+  });
+
+  it("blocks an unprojectable record without aborting a later delivery", async () => {
+    const received: EmittableMessage[] = [];
+    const recordIncident = vi.fn();
+    const incrementCausalityFailure = vi.fn();
+    const host = new CausalStateHost({
+      cursors: new InMemoryDeliveryCursorStore(), observerId: "player-1", observerPositionAt,
+      socket: { writeText: (payload) => received.push(JSON.parse(payload) as EmittableMessage) },
+      recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression: vi.fn()
+    });
+    const malformed = { ...stored({ type: "clockAdvanced", elapsedMs: 1 }), streamId: "" };
+    const deliverable = {
+      ...stored({ type: "departureRecorded", departureState: { departureAtMs: simTimeMs(12_000), positionMeters: HQ, velocityMmPerSecond: HQ } }),
+      event: { ...stored({ type: "departureRecorded", departureState: { departureAtMs: simTimeMs(12_000), positionMeters: HQ, velocityMmPerSecond: HQ } }).event, streamSequence: 5, globalPosition: 8, eventPosition: HQ,
+        event: { type: "departureRecorded" as const, departureState: { departureAtMs: simTimeMs(12_000), positionMeters: HQ, velocityMmPerSecond: HQ } } }
+    };
+
+    await expect(host.run(simTimeMs(12_001), [malformed, deliverable])).resolves.toMatchObject({
+      emitted: ["observer:player-1/stream:ship-1/event:5/class:shipReport"], blocked: ["position:7"]
+    });
+    expect(received).toHaveLength(1);
+    expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "invalid-envelope" }));
+    expect(incrementCausalityFailure).toHaveBeenCalledOnce();
   });
 });

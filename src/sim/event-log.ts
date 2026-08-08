@@ -101,8 +101,8 @@ export type SimEvent =
     readonly replacedNodeIds: readonly string[];
     readonly flightPlan: FlightPlan;
   }
-  | { readonly type: "planRevisionApplied"; readonly flightPlan: FlightPlan; readonly commandId?: string; readonly replacedNodeIds?: readonly string[] }
-  | { readonly type: "planRevisionRefused"; readonly flightPlan: FlightPlan; readonly reason: PlanRevisionRefusalReason; readonly commandId?: string }
+  | { readonly type: "planRevisionApplied"; readonly flightPlan: FlightPlan; readonly commandId: string; readonly replacedNodeIds?: readonly string[] }
+  | { readonly type: "planRevisionRefused"; readonly flightPlan: FlightPlan; readonly reason: PlanRevisionRefusalReason; readonly commandId: string }
   | { readonly type: "burnStarted"; readonly node: BurnNode }
   | { readonly type: "burnEnded"; readonly nodeId: string };
 
@@ -300,9 +300,11 @@ export class SimEventReducer {
         assertInboundCausalityInvariant(event.issuedAtMs, event.arrivalAtMs, event.hqPosition, event.arrivalPosition);
         return;
       case "planRevisionRefused":
+        if (event.commandId.length === 0) throw new RangeError("Plan revision outcomes require a non-empty command ID.");
         assertPlanRevisionRefusalReason(event.reason);
         return;
       case "planRevisionApplied": {
+        if (event.commandId.length === 0) throw new RangeError("Plan revision outcomes require a non-empty command ID.");
         this.#flightPlan = validateRecordedFlightPlanRevision(event.flightPlan, this.#clock.now, this.#executedBurns, event.replacedNodeIds);
         return;
       }

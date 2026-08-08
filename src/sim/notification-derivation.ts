@@ -98,10 +98,8 @@ export const deriveReportNotifications = (
     case "burnStarted":
       return [{ id: storedId(stored, "burnExecuted"), kind: "burnExecuted" as const, deliverAtMs: deliverAtMs(), sourceGlobalPosition: event.globalPosition, eventTimeMs: event.eventTime }];
     case "planRevisionApplied":
-      if (event.event.commandId === undefined) throw new RangeError("Revision notifications require a durable command ID.");
       return [{ id: storedId(stored, "revisionApplied"), kind: "revisionApplied" as const, commandId: event.event.commandId, deliverAtMs: deliverAtMs(), sourceGlobalPosition: event.globalPosition, eventTimeMs: event.eventTime }];
     case "planRevisionRefused":
-      if (event.event.commandId === undefined) throw new RangeError("Revision notifications require a durable command ID.");
       return [{ id: storedId(stored, "revisionRefused"), kind: "revisionRefused" as const, commandId: event.event.commandId, deliverAtMs: deliverAtMs(), sourceGlobalPosition: event.globalPosition, eventTimeMs: event.eventTime }];
     case "arrivalRecorded":
       return [{ id: storedId(stored, "arrival"), kind: "arrival" as const, destination: event.event.arrivalState.destination, deliverAtMs: deliverAtMs(), sourceGlobalPosition: event.globalPosition, eventTimeMs: event.eventTime }];
