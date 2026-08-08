@@ -81,8 +81,8 @@ export interface PostgresCursorQueryClient {
 interface CursorRow extends Record<string, unknown> {
   readonly observer_id: string;
   readonly low_watermark: number;
-  readonly global_position?: number;
-  readonly message_id?: string;
+  readonly global_position: number | null;
+  readonly message_id: string | null;
 }
 
 /** PostgreSQL leg; migrations are applied by deployment/CI, never the sim. */
@@ -105,51 +105,64 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
 
   async acknowledge(observerId: string, acknowledgement: DeliveryAcknowledgement): Promise<DeliveryCursor> {
     validAcknowledgement(acknowledgement);
-    const result = await this.#client.query<CursorRow>(
-      `WITH RECURSIVE inserted AS (
-         INSERT INTO delivery_acknowledgements (observer_id, global_position, message_id)
-         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING observer_id
-       ), ensured AS (
-         INSERT INTO delivery_cursors (observer_id, low_watermark)
-         SELECT $1, 0 WHERE EXISTS (SELECT 1 FROM inserted)
-         ON CONFLICT (observer_id) DO UPDATE SET low_watermark = delivery_cursors.low_watermark
-         RETURNING observer_id, low_watermark
-       ), acknowledged (global_position) AS (
-         SELECT global_position FROM delivery_acknowledgements WHERE observer_id = $1
-         UNION ALL SELECT $2 WHERE EXISTS (SELECT 1 FROM inserted)
-       ), contiguous (global_position) AS (
-         SELECT e.low_watermark + 1 FROM ensured e JOIN acknowledged a ON a.global_position = e.low_watermark + 1
-         UNION ALL
-         SELECT c.global_position + 1 FROM contiguous c JOIN acknowledged a ON a.global_position = c.global_position + 1
-       ), advanced AS (
-         UPDATE delivery_cursors c
-            SET low_watermark = COALESCE((SELECT MAX(global_position) FROM contiguous), c.low_watermark)
+    await this.#client.query("BEGIN");
+    try {
+      const inserted = await this.#client.query<{ readonly observer_id: string }>(
+        `INSERT INTO delivery_acknowledgements (observer_id, global_position, message_id)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING observer_id`,
+        [observerId, acknowledgement.globalPosition, acknowledgement.messageId]
+      );
+      if (inserted.rows.length === 0) throw new RangeError("Delivery message is already acknowledged.");
+
+      await this.#client.query(
+        `INSERT INTO delivery_cursors (observer_id, low_watermark)
+         VALUES ($1, 0) ON CONFLICT DO NOTHING`, [observerId]
+      );
+      const locked = await this.#client.query<CursorRow>(
+        `SELECT c.observer_id, c.low_watermark::double precision AS low_watermark,
+                a.global_position::double precision AS global_position, a.message_id
+           FROM delivery_cursors c
+           LEFT JOIN delivery_acknowledgements a ON a.observer_id = c.observer_id
           WHERE c.observer_id = $1
-            AND EXISTS (SELECT 1 FROM inserted)
-         RETURNING c.observer_id, c.low_watermark
-       ), compacted AS (
-         DELETE FROM delivery_acknowledgements a USING advanced c
-          WHERE a.observer_id = c.observer_id AND a.global_position <= c.low_watermark
-       )
-       SELECT c.observer_id, c.low_watermark::double precision AS low_watermark,
-              a.global_position::double precision AS global_position, a.message_id
-         FROM advanced c LEFT JOIN (
-           SELECT observer_id, global_position, message_id FROM delivery_acknowledgements
-           UNION ALL SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM inserted)
-         ) a ON a.observer_id = c.observer_id AND a.global_position > c.low_watermark
-        ORDER BY a.global_position`, [observerId, acknowledgement.globalPosition, acknowledgement.messageId]
-    );
-    if (result.rows.length === 0) throw new RangeError("Delivery message is already acknowledged.");
-    const cursor = deserializeCursor(result.rows);
-    if (!hasAcknowledged(cursor, acknowledgement)) throw new Error("Delivery acknowledgement persistence returned mismatched acknowledgement.");
-    return cursor;
+          ORDER BY a.global_position FOR UPDATE OF c`, [observerId]
+      );
+      const lockedCursor = locked.rows[0];
+      if (lockedCursor === undefined) throw new Error("Delivery cursor lock returned no cursor.");
+      if (acknowledgement.globalPosition <= lockedCursor.low_watermark) {
+        throw new RangeError("Delivery message is already acknowledged.");
+      }
+      const beforeCompaction = deserializeCursor(locked.rows);
+      await this.#client.query(
+        "UPDATE delivery_cursors SET low_watermark = $2 WHERE observer_id = $1",
+        [observerId, beforeCompaction.lowWatermark]
+      );
+      await this.#client.query(
+        "DELETE FROM delivery_acknowledgements WHERE observer_id = $1 AND global_position <= $2",
+        [observerId, beforeCompaction.lowWatermark]
+      );
+      const remainder = await this.#client.query<CursorRow>(
+        `SELECT c.observer_id, c.low_watermark::double precision AS low_watermark,
+                a.global_position::double precision AS global_position, a.message_id
+           FROM delivery_cursors c
+           LEFT JOIN delivery_acknowledgements a ON a.observer_id = c.observer_id
+          WHERE c.observer_id = $1
+          ORDER BY a.global_position`, [observerId]
+      );
+      const cursor = deserializeCursor(remainder.rows);
+      if (!hasAcknowledged(cursor, acknowledgement)) throw new Error("Delivery acknowledgement persistence returned mismatched acknowledgement.");
+      await this.#client.query("COMMIT");
+      return cursor;
+    } catch (error) {
+      await this.#client.query("ROLLBACK");
+      throw error;
+    }
   }
 }
 
 const deserializeCursor = (rows: readonly CursorRow[]): DeliveryCursor => {
   const first = rows[0];
   if (first === undefined) throw new RangeError("Delivery cursor query returned no rows.");
-  const delivered = rows.flatMap((row) => row.global_position === undefined || row.message_id === undefined
+  const delivered = rows.flatMap((row) => row.global_position === null || row.message_id === null
     ? [] : [{ globalPosition: row.global_position, messageId: row.message_id }]);
   return normalize(first.observer_id, first.low_watermark, delivered);
 };

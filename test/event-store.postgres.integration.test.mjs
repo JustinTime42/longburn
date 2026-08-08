@@ -5,6 +5,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { simTimeMs } from "../src/sim/clock.js";
+import { PostgresDeliveryCursorStore } from "../src/sim/delivery-cursor.js";
 import { PostgresSimulationEventStore } from "../src/sim/event-store.js";
 import { replayPersistedSegment } from "../src/sim/event-log.js";
 import { AuthoritativeSimLoop } from "../src/sim/loop.js";
@@ -116,6 +117,23 @@ const deserializeRows = (sql, stdout) => {
       events_no_truncate_trigger_present: fields[7] === "t",
       stream_sequence_unique_present: fields[8] === "t"
     });
+  } else if (sql.includes("AS delivery_cursors_present")) {
+    deserialize = (fields) => ({
+      delivery_cursors_present: fields[0] === "t",
+      delivery_acknowledgements_present: fields[1] === "t"
+    });
+  } else if (sql.includes("FROM delivery_cursors")) {
+    deserialize = (fields) => {
+      if (fields.length !== 4) {
+        throw new Error(`Expected 4 delivery cursor fields from psql, received ${fields.length}.`);
+      }
+      return {
+        observer_id: fields[0],
+        low_watermark: Number(fields[1]),
+        global_position: fields[2] === "" ? null : Number(fields[2]),
+        message_id: fields[3] === "" ? null : fields[3]
+      };
+    };
   } else {
     throw new Error("psql test client cannot deserialize an unrecognized query shape.");
   }
@@ -157,6 +175,28 @@ integrationDescribe(
           stream_sequence_unique_present: true
         }]
       });
+    });
+
+    it("persists acknowledgement ledgers with SQL NULL empty remainders", async () => {
+      await expect(psqlClient.query(`
+        SELECT
+          to_regclass('public.delivery_cursors') IS NOT NULL AS delivery_cursors_present,
+          to_regclass('public.delivery_acknowledgements') IS NOT NULL AS delivery_acknowledgements_present
+      `)).resolves.toEqual({
+        rows: [{ delivery_cursors_present: true, delivery_acknowledgements_present: true }]
+      });
+      const store = new PostgresDeliveryCursorStore(psqlClient);
+      const observerId = `delivery-${randomUUID()}`;
+      await expect(store.read(observerId)).resolves.toBeUndefined();
+      await expect(store.acknowledge(observerId, { globalPosition: 3, messageId: "message-3" })).resolves.toEqual({
+        observerId, lowWatermark: 0, delivered: [{ globalPosition: 3, messageId: "message-3" }]
+      });
+      await store.acknowledge(observerId, { globalPosition: 1, messageId: "message-1" });
+      await expect(store.acknowledge(observerId, { globalPosition: 2, messageId: "message-2" })).resolves.toEqual({
+        observerId, lowWatermark: 3, delivered: []
+      });
+      await expect(store.read(observerId)).resolves.toEqual({ observerId, lowWatermark: 3, delivered: [] });
+      await expect(store.acknowledge(observerId, { globalPosition: 3, messageId: "message-3" })).rejects.toThrow("already acknowledged");
     });
 
     it("enforces the two-key sequence and optimistic-concurrency contract", async () => {
