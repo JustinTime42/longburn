@@ -14,24 +14,38 @@ const isCausalGateSendCallback = (node: ts.CallExpression): boolean => {
   return ts.isNewExpression(gate) && ts.isIdentifier(gate.expression) && gate.expression.text === "CausalEmissionGate";
 };
 
+const violationsInSource = (fileName: string, source: string): string[] => {
+  const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.ES2024, true);
+  const violations: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+      rawWriterNames.has(node.expression.name.text) && !isCausalGateSendCallback(node)) {
+      violations.push(`${fileName}:${file.getLineAndCharacterOfPosition(node.getStart()).line + 1}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return violations;
+};
+
 describe("causal transport boundary", () => {
   it("permits raw server writes only in CausalEmissionGate send callbacks", () => {
     const violations: string[] = [];
-    for (const fileName of ts.sys.readDirectory("src/host", [".ts"])) {
+    const sourceFiles = ts.sys.readDirectory("src/host", [".ts"]);
+    expect(sourceFiles.length).toBeGreaterThan(0);
+
+    for (const fileName of sourceFiles) {
       const source = ts.sys.readFile(fileName);
       if (source === undefined) throw new Error(`Cannot read ${fileName}.`);
-      const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.ES2024, true);
-      const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
-          rawWriterNames.has(node.expression.name.text) && !isCausalGateSendCallback(node)) {
-          violations.push(`${fileName}:${file.getLineAndCharacterOfPosition(node.getStart()).line + 1}`);
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(file);
+      violations.push(...violationsInSource(fileName, source));
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it("rejects a raw host writer with the same AST visitor", () => {
+    expect(violationsInSource("deliberate-violation.ts", "socket.writeText(payload);"))
+      .toEqual(["deliberate-violation.ts:1"]);
   });
 
   it("does not expose a raw writer from the gate-backed subscription", () => {

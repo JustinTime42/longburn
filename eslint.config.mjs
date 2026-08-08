@@ -1,6 +1,37 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
+const rawOutboundNames = new Set(["send", "publish", "broadcast", "write"]);
+const causalBoundaryPlugin = {
+  rules: {
+    "no-raw-outbound": {
+      meta: {
+        type: "problem",
+        docs: { description: "Require CausalEmissionGate for every outbound message." },
+        schema: [],
+        messages: { rawOutbound: "Outbound messages must pass through CausalEmissionGate." }
+      },
+      create(context) {
+        const isGate = context.filename.endsWith("/src/sim/causality.ts");
+        return {
+          CallExpression(node) {
+            if (isGate) return;
+            const callee = node.callee;
+            const name = callee.type === "Identifier"
+              ? callee.name
+              : callee.type === "MemberExpression" || callee.type === "PrivateIdentifier"
+                ? callee.property?.name
+                : undefined;
+            if (rawOutboundNames.has(name)) {
+              context.report({ node, messageId: "rawOutbound" });
+            }
+          }
+        };
+      }
+    }
+  }
+};
+
 export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -52,6 +83,13 @@ export default tseslint.config(
           message: "Sim code must use SeededRng, never globalThis.Math randomness."
         }
       ]
+    }
+  },
+  {
+    files: ["src/**/*.ts", "test/fixtures/sim/**/*.ts"],
+    plugins: { "causal-boundary": causalBoundaryPlugin },
+    rules: {
+      "causal-boundary/no-raw-outbound": "error"
     }
   }
 );
