@@ -43,19 +43,19 @@ describe("EmissionScheduler", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("advances only after acknowledgement, so a restart redelivers but never skips", async () => {
+  it("acknowledges only after transport, so a restart redelivers but never skips", async () => {
     const cursors = new InMemoryDeliveryCursorStore();
     const firstAttempt = vi.fn(async () => ({ sent: false as const, reason: "transport-failure" as const }));
     const work = [scheduled(1), scheduled(3)];
     const failed = new EmissionScheduler({ cursors, emit: firstAttempt, recordIncident: () => {}, incrementCausalityFailure: () => {}, incrementBelowCursorSuppression: () => {} });
-    await expect(failed.run("hq-player", simTimeMs(1_000), work)).resolves.toMatchObject({ blocked: [expect.any(String)] });
+    await expect(failed.run("hq-player", simTimeMs(1_000), work)).resolves.toMatchObject({ blocked: [expect.any(String), expect.any(String)] });
     expect(await cursors.read("hq-player")).toBeUndefined();
 
     const redelivered: string[] = [];
     const restarted = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(redelivered)));
     await expect(restarted.run("hq-player", simTimeMs(1_000), work)).resolves.toMatchObject({ emitted: [expect.any(String), expect.any(String)] });
     expect(redelivered).toHaveLength(2);
-    expect(await cursors.read("hq-player")).toMatchObject({ globalPosition: 3 });
+    expect(await cursors.read("hq-player")).toMatchObject({ lowWatermark: 1, delivered: [{ globalPosition: 3, messageId: expect.any(String) }] });
     await restarted.run("hq-player", simTimeMs(1_000), work);
     expect(redelivered).toHaveLength(2);
   });
@@ -74,27 +74,40 @@ describe("EmissionScheduler", () => {
     expect(incrementCausalityFailure).toHaveBeenCalledOnce();
   });
 
-  it("counts below-cursor suppression so a late omitted report is observable", async () => {
+  it("counts acknowledged-message suppression so duplicate presentation is observable", async () => {
     const cursors = new InMemoryDeliveryCursorStore();
-    await cursors.advance({ observerId: "hq-player", globalPosition: 3, messageId: "message-3" });
+    await cursors.acknowledge("hq-player", { globalPosition: 3, messageId: "observer:hq-player/stream:sol/event:3/class:shipReport" });
     const emit = vi.fn(gateEmitter([]));
     const incrementBelowCursorSuppression = vi.fn();
     const scheduler = new EmissionScheduler({
       cursors, emit, recordIncident: () => {}, incrementCausalityFailure: () => {}, incrementBelowCursorSuppression
     });
 
-    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(1)])).resolves.toEqual({ emitted: [], deferred: [], blocked: [] });
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(3)])).resolves.toEqual({ emitted: [], deferred: [], blocked: [] });
     expect(emit).not.toHaveBeenCalled();
     expect(incrementBelowCursorSuppression).toHaveBeenCalledOnce();
   });
 
-  it("rejects out-of-order input before it can skip an earlier report", async () => {
-    const emit = vi.fn(gateEmitter([]));
+  it("delivers later-arriving events without head-of-line blocking and uses global position only for ties", async () => {
+    const sent: string[] = [];
+    const emit = vi.fn(gateEmitter(sent));
     const scheduler = new EmissionScheduler({
       cursors: new InMemoryDeliveryCursorStore(), emit, recordIncident: () => {}, incrementCausalityFailure: () => {}, incrementBelowCursorSuppression: () => {}
     });
 
-    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(3), scheduled(1)])).rejects.toThrow("strictly ascending");
-    expect(emit).not.toHaveBeenCalled();
+    const delayed = {
+      ...scheduled(1),
+      message: {
+        ...scheduled(1).message,
+        event: { ...scheduled(1).message.event, eventPosition: { x: SPEED_OF_LIGHT_METERS_PER_SECOND * 10, y: 0, z: 0 } }
+      }
+    };
+    const readyLater = scheduled(3);
+    const tiedHigher = scheduled(5);
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [tiedHigher, delayed, readyLater])).resolves.toMatchObject({
+      emitted: ["observer:hq-player/stream:sol/event:3/class:shipReport", "observer:hq-player/stream:sol/event:5/class:shipReport"],
+      deferred: ["observer:hq-player/stream:sol/event:1/class:shipReport"]
+    });
+    expect(sent).toEqual(["observer:hq-player/stream:sol/event:3/class:shipReport", "observer:hq-player/stream:sol/event:5/class:shipReport"]);
   });
 });
