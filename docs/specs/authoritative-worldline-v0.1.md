@@ -42,14 +42,16 @@ Two quantized schema extensions (both inside the 4qs pre-durability window):
   |Δv| and duration (via the ship's acceleration) is validated at the live command boundary
   only, with exact integer arithmetic; replay applies stored nodes as history.
 - **FlightPlan gains a `destination`** (T0 body id: earth | moon | mars). ADDENDUM
-  2026-08-07, Mayor gap-fill after the Forge's round-2 escalation (the spec required
-  `arrivalRecorded` to stamp the target body's state but named no durable owner of the
-  target); flagged for Overseer ratification at 1ls review. The destination is part of the
+  2026-08-07, Mayor gap-fill after the Forge's round-2 escalation; RATIFIED by the Overseer
+  2026-08-07 as a REQUIRED field (Warden 1ls r1 finding 2 sharpened the ratification: no
+  default anywhere — a silent `?? "earth"` on the replay path synthesizes a durable fact the
+  stored event never carried and is forbidden; the pre-durability window exists precisely so
+  the field can be required and existing fixtures updated). The destination is part of the
   paper plan: replaceable by any PlanRevision (retargeting is editing paper — pillar 2),
   validated at the live boundary (known body), durable for free because `commandIssued` and
   `planRevisionApplied` already persist the plan. `arrivalRecorded` stamps the FINAL applied
-  plan's destination body. No plan → no destination → arrival cannot fire. Inferring a
-  target from burn geometry is forbidden (stored-facts doctrine).
+  plan's destination body. Inferring a target from burn geometry is forbidden (stored-facts
+  doctrine).
 
 A new sim-core module (`src/sim/worldline.ts`) derives position deterministically:
 
@@ -95,15 +97,29 @@ versioning policy — no schema change, no migration. Heliocentric conics are th
 propagator patched conics reuse later; this spec is an installment on slingshots, not a
 detour from them.
 
-**Arrival, precommitted for T0**: when the final planned burn completes and the plan is
-empty, the loop appends an `arrivalRecorded` event stamping the quantized arrival state
-(live-computed: ship worldline terminal state, plus target-body state from the ephemerides
-adapter at that instant). From that event on, the ship's worldline is the target body's
-worldline (docked = co-moving with the body, as at departure). The gap between the
-propagated terminal position and the body's true position is bounded, live-measured,
-recorded in the event — and invisible to T0 play unless the plan was bad, which is the
-planner's job, not the worldline's. If the recorded gap is embarrassing in practice, that
-is planner feedback (or v2-propagator feedback), not a reason to hand-wave the arrival.
+**Arrival is a physical predicate, not a paperwork one** (AMENDED 2026-08-07, Overseer-
+approved, after Warden 1ls r1 finding 3: the original trigger — "final planned burn
+completes and the plan is empty" — is indistinguishable from the normal mid-transit state
+in which the player's next revision is still in flight, and fired arrival spuriously).
+When a burn ends and the plan is empty, the loop appends `arrivalRecorded` ONLY if the
+ship is physically there: terminal position within the capture radius of the plan's
+destination body AND relative velocity within the docking tolerance, both compared as
+quantized integers against the body's ephemerides state at that instant. T0 constants
+(Overseer may retune pre-durability): capture radius 1,000,000 km (1e9 m — inside both
+Earth's and Mars's spheres of influence), docking speed 100 m/s (1e5 mm/s — absorbs
+quantization and burn-model error; the planner nulls relative velocity by design).
+Otherwise the ship coasts on, plan empty, awaiting orders — the physically honest state.
+
+`arrivalRecorded` stamps the quantized arrival state (live-computed: ship worldline
+terminal state, plus target-body state from the ephemerides adapter at that instant) and
+the measured position/velocity gaps. From `arrivedAtMs` ON — and only from then —
+the ship's worldline is the target body's worldline (docked = co-moving with the body, as
+at departure); `shipPositionAt(t)` for t < arrivedAtMs remains the transit worldline (the
+resolver is a function of time alone). A plan applied after arrival whose nodes fire
+appends a NEW `departureRecorded` stamped from the body's state at the first burn — the
+worldline is piecewise: docked segments on body worldlines, transit segments from
+departure stamps. If the recorded arrival gap is embarrassing in practice, that is planner
+feedback (or v2-propagator feedback), not a reason to hand-wave the arrival.
 
 ## 3. Stamping doctrine (extends kg2's ruling to positions)
 
