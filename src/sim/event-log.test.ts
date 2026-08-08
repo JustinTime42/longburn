@@ -8,10 +8,10 @@ import { AuthoritativeSimLoop } from "./loop.js";
 import { burnDurationMs, projectPropellantForBurns, TIER0_SHIP } from "./mass-cargo.js";
 
 const node = (nodeId: string, executeAtMs: number, kind: "accel" | "correction" | "decel" = "accel", durationMs = 1) => ({
-  nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(durationMs) }
+  nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(durationMs) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 }
 });
 
-const plan = (...nodes: ReturnType<typeof node>[]): FlightPlan => ({ nodes });
+const plan = (...nodes: ReturnType<typeof node>[]): FlightPlan => ({ destination: "earth", nodes });
 
 const eventArbitrary = fc.oneof(
   fc.record({ type: fc.constant<"clockAdvanced">("clockAdvanced"), elapsedMs: fc.integer({ min: 0, max: 10_000 }) }),
@@ -35,7 +35,7 @@ describe("event log replay", () => {
     ];
     expect(replaySegment(1, events)).toMatchObject({
       time: 7,
-      ship: { phase: "arrived", flightPlan: { nodes: [] }, executedBurns: [
+      ship: { phase: "coast", flightPlan: { nodes: [] }, executedBurns: [
         { node: { nodeId: "outbound" }, startedAtMs: 2, endedAtMs: 3 },
         { node: { nodeId: "capture" }, startedAtMs: 6, endedAtMs: 7 }
       ] }
@@ -127,8 +127,14 @@ describe("event log replay", () => {
     const events: readonly SimEvent[] = [{ type: "planRevisionApplied", flightPlan: historicallyAcceptedPlan }];
     const persisted = { seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) };
 
-    expect(replaySegment(1, events).ship?.flightPlan).toEqual(historicallyAcceptedPlan);
-    expect(replayPersistedSegment(persisted).ship?.flightPlan).toEqual(historicallyAcceptedPlan);
+    expect(replaySegment(1, events).ship?.flightPlan).toEqual({ ...historicallyAcceptedPlan, destination: "earth" });
+    expect(replayPersistedSegment(persisted).ship?.flightPlan).toEqual({ ...historicallyAcceptedPlan, destination: "earth" });
+  });
+
+  it("rejects a recorded plan without a durable destination instead of inventing Earth", () => {
+    const missingDestination = { nodes: [] } as unknown as FlightPlan;
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: missingDestination }]))
+      .toThrow("known destination body");
   });
 
   it("rejects a revision scheduled inside a burn that is firing before append", async () => {

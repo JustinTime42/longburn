@@ -1,7 +1,26 @@
 import { SimClock, simTimeMs, type SimTimeMs } from "./clock.js";
-import { burnDurationMs, projectPropellantForBurns, type QuantizedBurnParameters } from "./mass-cargo.js";
+import { burnDurationMs, projectPropellantForBurns, quantizedDeltaV, type QuantizedBurnParameters, type QuantizedDeltaV } from "./mass-cargo.js";
 import { SeededRng } from "./rng.js";
 import { assertInboundCausalityInvariant, type PositionMeters } from "./causality.js";
+
+export type DestinationBody = "earth" | "moon" | "mars";
+
+/** Quantized initial condition, stamped at the live command boundary once. */
+export interface DepartureState {
+  readonly departureAtMs: SimTimeMs;
+  readonly positionMeters: PositionMeters;
+  readonly velocityMmPerSecond: QuantizedDeltaV;
+}
+
+/** A live-measured docking fact. Replay consumes this record without ephemerides. */
+export interface ArrivalState {
+  readonly arrivedAtMs: SimTimeMs;
+  readonly destination: DestinationBody;
+  readonly targetPositionMeters: PositionMeters;
+  readonly terminalPositionMeters: PositionMeters;
+  readonly positionGapMeters: PositionMeters;
+  readonly velocityGapMmPerSecond: QuantizedDeltaV;
+}
 
 /** A view of executed history and elapsed virtual time, never stored by an event. */
 export type ShipPhase = "docked" | "accel" | "coast" | "flip" | "decel" | "arrived";
@@ -16,10 +35,14 @@ export interface BurnNode {
   readonly executeAtMs: SimTimeMs;
   readonly kind: BurnKind;
   readonly burn: QuantizedBurnParameters;
+  /** Fixed, committed heliocentric delta-v direction and magnitude. */
+  readonly deltaVMmPerSecond: QuantizedDeltaV;
 }
 
 /** The complete, replaceable set of burns which have not begun firing. */
 export interface FlightPlan {
+  /** The body the final planned burn is intended to reach. */
+  readonly destination: DestinationBody;
   readonly nodes: readonly BurnNode[];
 }
 
@@ -34,6 +57,11 @@ export interface ShipState {
   /** Append-only burn history. A started burn is already irreversible. */
   readonly executedBurns: readonly ExecutedBurn[];
   readonly phase: ShipPhase;
+  readonly departureState?: DepartureState;
+  readonly arrivalState?: ArrivalState;
+  /** Ordered durable worldline boundaries, retained for time-indexed queries. */
+  readonly departureStates: readonly DepartureState[];
+  readonly arrivalStates: readonly ArrivalState[];
 }
 
 export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan" | "insufficient-propellant";
@@ -60,6 +88,8 @@ export const assertPlanRevisionRefusalReason = (reason: PlanRevisionRefusalReaso
 export type SimEvent =
   | { readonly type: "clockAdvanced"; readonly elapsedMs: number }
   | { readonly type: "randomValueRequested"; readonly upperExclusive: number }
+  | { readonly type: "departureRecorded"; readonly departureState: DepartureState }
+  | { readonly type: "arrivalRecorded"; readonly arrivalState: ArrivalState }
   /** Durable record of a command while its light signal is in flight. */
   | {
     readonly type: "commandIssued";
@@ -95,11 +125,16 @@ const assertNode = (node: BurnNode): BurnNode => {
     nodeId: node.nodeId,
     executeAtMs: simTimeMs(node.executeAtMs),
     kind: node.kind,
-    burn: assertBurn(node.burn)
+    burn: assertBurn(node.burn),
+    deltaVMmPerSecond: quantizedDeltaV(node.deltaVMmPerSecond)
   };
 };
 
 const assertPlan = (plan: FlightPlan): FlightPlan => {
+  const destination = plan.destination;
+  if (destination !== "earth" && destination !== "moon" && destination !== "mars") {
+    throw new RangeError("Flight plans require a known destination body.");
+  }
   const nodes = plan.nodes.map(assertNode);
   for (let index = 1; index < nodes.length; index += 1) {
     const previous = nodes[index - 1]!;
@@ -114,7 +149,7 @@ const assertPlan = (plan: FlightPlan): FlightPlan => {
   if (new Set(nodes.map(({ nodeId }) => nodeId)).size !== nodes.length) {
     throw new RangeError("Flight-plan node IDs must be unique.");
   }
-  return { nodes };
+  return { destination, nodes };
 };
 
 /**
@@ -182,7 +217,10 @@ const sameBurnNode = (left: BurnNode, right: BurnNode): boolean =>
   left.nodeId === right.nodeId
   && left.executeAtMs === right.executeAtMs
   && left.kind === right.kind
-  && left.burn.burnDurationMs === right.burn.burnDurationMs;
+  && left.burn.burnDurationMs === right.burn.burnDurationMs
+  && left.deltaVMmPerSecond.x === right.deltaVMmPerSecond.x
+  && left.deltaVMmPerSecond.y === right.deltaVMmPerSecond.y
+  && left.deltaVMmPerSecond.z === right.deltaVMmPerSecond.z;
 
 const derivedPhase = (flightPlan: FlightPlan, executedBurns: readonly ExecutedBurn[]): ShipPhase => {
   const active = executedBurns.at(-1);
@@ -190,7 +228,7 @@ const derivedPhase = (flightPlan: FlightPlan, executedBurns: readonly ExecutedBu
     return active.node.kind === "accel" ? "accel" : active.node.kind === "decel" ? "decel" : "flip";
   }
   if (executedBurns.length === 0) return "docked";
-  if (flightPlan.nodes.length === 0) return "arrived";
+  if (flightPlan.nodes.length === 0) return "coast";
   return executedBurns.at(-1)?.node.kind === "accel" ? "coast" : "flip";
 };
 
@@ -201,6 +239,10 @@ export class SimEventReducer {
   readonly #randomValues: number[] = [];
   #flightPlan: FlightPlan | undefined;
   #executedBurns: ExecutedBurn[] = [];
+  #departureState: DepartureState | undefined;
+  #arrivalState: ArrivalState | undefined;
+  #departureStates: DepartureState[] = [];
+  #arrivalStates: ArrivalState[] = [];
 
   constructor(seed: number, initialTime: SimTimeMs = simTimeMs(0)) {
     this.#clock = SimClock.production(initialTime);
@@ -210,14 +252,19 @@ export class SimEventReducer {
   get time(): SimTimeMs { return this.#clock.now; }
 
   get state(): SimState {
-    if (this.#flightPlan === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues] };
+    if (this.#flightPlan === undefined && this.#departureState === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues] };
+    const flightPlan = this.#flightPlan ?? { destination: "earth" as const, nodes: [] };
     return {
       time: this.#clock.now,
       randomValues: [...this.#randomValues],
       ship: {
-        flightPlan: this.#flightPlan,
+        flightPlan,
         executedBurns: [...this.#executedBurns],
-        phase: derivedPhase(this.#flightPlan, this.#executedBurns)
+        phase: derivedPhase(flightPlan, this.#executedBurns),
+        ...(this.#departureState === undefined ? {} : { departureState: this.#departureState }),
+        ...(this.#arrivalState === undefined ? {} : { arrivalState: this.#arrivalState }),
+        departureStates: [...this.#departureStates],
+        arrivalStates: [...this.#arrivalStates]
       }
     };
   }
@@ -229,6 +276,22 @@ export class SimEventReducer {
         return;
       case "randomValueRequested":
         this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
+        return;
+      case "departureRecorded":
+        if (event.departureState.departureAtMs !== this.#clock.now ||
+          (this.#departureState !== undefined && (this.#arrivalState === undefined || this.#arrivalState.arrivedAtMs < this.#departureState.departureAtMs))) {
+          throw new RangeError("A ship departure state is recorded at the current time only when initially leaving or leaving a docked body.");
+        }
+        this.#departureState = event.departureState;
+        this.#departureStates.push(event.departureState);
+        return;
+      case "arrivalRecorded":
+        if (event.arrivalState.arrivedAtMs !== this.#clock.now || this.#departureState === undefined ||
+          (this.#arrivalState !== undefined && this.#arrivalState.arrivedAtMs >= this.#departureState.departureAtMs)) {
+          throw new RangeError("A ship arrival state is recorded once for each departure at its current simulation time.");
+        }
+        this.#arrivalState = event.arrivalState;
+        this.#arrivalStates.push(event.arrivalState);
         return;
       case "commandIssued":
         if (event.commandId.length === 0 || event.issuedAtMs !== this.#clock.now || event.arrivalAtMs < event.issuedAtMs) {
@@ -251,7 +314,7 @@ export class SimEventReducer {
         if (plannedNode === undefined || !sameBurnNode(plannedNode, node)) {
           throw new Error("A burn must start from the pending flight plan unchanged.");
         }
-        this.#flightPlan = { nodes: this.#flightPlan.nodes.filter(({ nodeId }) => nodeId !== node.nodeId) };
+        this.#flightPlan = { ...this.#flightPlan, nodes: this.#flightPlan.nodes.filter(({ nodeId }) => nodeId !== node.nodeId) };
         this.#executedBurns = [...this.#executedBurns, { node, startedAtMs: this.#clock.now }];
         return;
       }

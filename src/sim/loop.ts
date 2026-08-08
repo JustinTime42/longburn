@@ -1,9 +1,36 @@
 import { simTimeMs, type SimTimeMs } from "./clock.js";
 import type { PositionMeters } from "./causality.js";
 import type { PersistedSimulationStream, SimulationEventStore, SimulationStream, StreamSequenceConflict, StoredSimEvent } from "./event-store.js";
-import { assertPlanRevisionRefusalReason, type FlightPlan, type PlanRevisionRefusalReason, PlanRevisionValidationError, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
+import { assertPlanRevisionRefusalReason, type ArrivalState, type DepartureState, type DestinationBody, type FlightPlan, type PlanRevisionRefusalReason, PlanRevisionValidationError, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
+import type { QuantizedDeltaV } from "./mass-cargo.js";
+import { shipPositionAt, shipWorldlineStateAt } from "./worldline.js";
 
-export interface AuthoritativeSimLoopOptions { readonly stream: SimulationStream; readonly store: SimulationEventStore; }
+export interface AuthoritativeSimLoopOptions {
+  readonly stream: SimulationStream;
+  readonly store: SimulationEventStore;
+  /** Live-only boundary; its result is immediately persisted as departureRecorded. */
+  readonly departureStateAt?: (time: SimTimeMs) => DepartureState;
+  /** Live-only body resolver used to persist arrival and repeat-departure facts, never during replay. */
+  readonly destinationStateAt?: (destination: DestinationBody, time: SimTimeMs) => TargetBodyState;
+}
+
+export interface TargetBodyState {
+  readonly positionMeters: PositionMeters;
+  readonly velocityMmPerSecond: QuantizedDeltaV;
+}
+
+export const TIER0_ARRIVAL_CAPTURE_RADIUS_METERS = 1_000_000_000;
+export const TIER0_DOCKING_SPEED_MM_PER_SECOND = 100_000;
+
+const subtractPosition = (left: PositionMeters, right: PositionMeters): PositionMeters => ({
+  x: left.x - right.x, y: left.y - right.y, z: left.z - right.z
+});
+
+const subtractVelocity = (left: QuantizedDeltaV, right: QuantizedDeltaV): QuantizedDeltaV => ({
+  x: left.x === right.x ? 0 : left.x - right.x,
+  y: left.y === right.y ? 0 : left.y - right.y,
+  z: left.z === right.z ? 0 : left.z - right.z
+});
 
 export class AuthoritativeSimLoopConflictError extends Error {
   readonly expectedStreamSequence: number;
@@ -21,6 +48,8 @@ export class AuthoritativeSimLoop {
   readonly #reducer: SimEventReducer;
   readonly #store: SimulationEventStore;
   readonly #streamId: string;
+  readonly #departureStateAt: ((time: SimTimeMs) => DepartureState) | undefined;
+  readonly #destinationStateAt: ((destination: DestinationBody, time: SimTimeMs) => TargetBodyState) | undefined;
   #streamSequence = 0;
   #writer: Promise<void> = Promise.resolve();
   #inboundPlanRevisions: {
@@ -32,10 +61,12 @@ export class AuthoritativeSimLoop {
     readonly replacedNodeIds: ReadonlySet<string>;
   }[] = [];
 
-  private constructor({ stream, store }: AuthoritativeSimLoopOptions) {
+  private constructor({ stream, store, departureStateAt, destinationStateAt }: AuthoritativeSimLoopOptions) {
     this.#reducer = new SimEventReducer(stream.seed, stream.initialTime);
     this.#store = store;
     this.#streamId = stream.id;
+    this.#departureStateAt = departureStateAt;
+    this.#destinationStateAt = destinationStateAt;
   }
 
   static async create(options: AuthoritativeSimLoopOptions): Promise<AuthoritativeSimLoop> {
@@ -43,9 +74,13 @@ export class AuthoritativeSimLoop {
     return new AuthoritativeSimLoop(options);
   }
 
-  static async resume(store: SimulationEventStore, streamId: string): Promise<AuthoritativeSimLoop> {
+  static async resume(
+    store: SimulationEventStore,
+    streamId: string,
+    liveResolvers: Pick<AuthoritativeSimLoopOptions, "departureStateAt" | "destinationStateAt"> = {}
+  ): Promise<AuthoritativeSimLoop> {
     const persisted = await store.readStream(streamId);
-    const loop = new AuthoritativeSimLoop({ stream: persisted, store });
+    const loop = new AuthoritativeSimLoop({ stream: persisted, store, ...liveResolvers });
     for (const record of persisted.events) {
       loop.#assertRecordTime(record);
       loop.#reducer.apply(record.event);
@@ -70,15 +105,28 @@ export class AuthoritativeSimLoop {
 
   get state(): SimState { return this.#reducer.state; }
 
+  /** The production ship resolver. It is unavailable until departure is stamped. */
+  shipPositionAt(time: number): PositionMeters {
+    const ship = this.#reducer.state.ship;
+    const departure = [...(ship?.departureStates ?? [])].reverse().find(({ departureAtMs }) => departureAtMs <= time);
+    if (departure === undefined) throw new Error("Ship position is unavailable before its departure state is recorded.");
+    const arrival = [...(ship?.arrivalStates ?? [])].reverse().find(({ arrivedAtMs }) => arrivedAtMs <= time && arrivedAtMs >= departure.departureAtMs);
+    if (arrival !== undefined && this.#destinationStateAt !== undefined) {
+      return this.#destinationStateAt(arrival.destination, simTimeMs(time)).positionMeters;
+    }
+    return shipPositionAt({ departureState: departure, executedBurns: ship!.executedBurns.filter(({ startedAtMs }) => startedAtMs >= departure.departureAtMs), flightPlan: ship!.flightPlan }, time);
+  }
+
   async advance(elapsedMs: number, eventPosition: () => PositionMeters): Promise<SimTimeMs> {
     return this.#serialize(() => this.#advance(elapsedMs, eventPosition));
   }
 
   async applyPlanRevision(flightPlan: FlightPlan, eventPosition: () => PositionMeters): Promise<void> {
     return this.#serialize(async () => {
+      await this.#recordDepartureIfNeeded(eventPosition);
       const validatedPlan = validateFlightPlanRevision(flightPlan, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? []);
       const event: SimEvent = { type: "planRevisionApplied", flightPlan: validatedPlan };
-      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
+      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPosition) });
       this.#reducer.apply(event);
       await this.#advanceDueBurns(eventPosition);
     });
@@ -92,11 +140,13 @@ export class AuthoritativeSimLoop {
   async scheduleInboundPlanRevision(
     flightPlan: FlightPlan,
     arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
-    hqPosition: PositionMeters,
+    hqPositionAt: (issuedAtMs: SimTimeMs) => PositionMeters,
     arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
   ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }> {
     return this.#serialize(async () => {
       const issuedAtMs = this.#reducer.time;
+      const hqPosition = hqPositionAt(issuedAtMs);
+      await this.#recordDepartureIfNeeded(() => hqPosition);
       const arrivalAtMs = simTimeMs(arrivalTimeForIssue(issuedAtMs));
       if (arrivalAtMs < issuedAtMs) throw new RangeError("Inbound plan-revision arrival cannot precede its issue time.");
       const commandId = `command-${this.#streamSequence + 1}`;
@@ -112,7 +162,7 @@ export class AuthoritativeSimLoop {
         commandId, flightPlan, arrivalAtMs, arrivalPosition, replacedNodeIds: new Set(replacedNodeIds)
       });
       this.#inboundPlanRevisions.sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
-      await this.#advanceDueWork(() => arrivalPosition);
+      await this.#advanceDueWork(arrivalPositionAt);
       return { issuedAtMs, arrivalAtMs };
     });
   }
@@ -147,7 +197,8 @@ export class AuthoritativeSimLoop {
       const remaining = this.#remainingToNextBoundary();
       const step = remaining === undefined ? targetTime - this.#reducer.time : Math.min(targetTime - this.#reducer.time, remaining);
       const event: SimEvent = { type: "clockAdvanced", elapsedMs: step };
-      await this.#append({ event, eventTime: simTimeMs(this.#reducer.time + step), eventPosition: eventPosition() });
+      const eventTime = simTimeMs(this.#reducer.time + step);
+      await this.#append({ event, eventTime, eventPosition: this.#eventPositionAt(eventTime, eventPosition) });
       this.#reducer.apply(event);
     }
     await this.#advanceDueWork(eventPosition);
@@ -183,8 +234,8 @@ export class AuthoritativeSimLoop {
   }
 
   /** Burns win equal timestamps: only a revision that arrived before a burn can supersede it. */
-  async #advanceDueWork(eventPosition: () => PositionMeters): Promise<void> {
-    await this.#advanceDueBurns(eventPosition);
+  async #advanceDueWork(eventPositionAt: (time: SimTimeMs) => PositionMeters): Promise<void> {
+    await this.#advanceDueBurns(eventPositionAt);
     while (this.#inboundPlanRevisions[0]?.arrivalAtMs === this.#reducer.time) {
       const revision = this.#inboundPlanRevisions.shift()!;
       try {
@@ -192,29 +243,97 @@ export class AuthoritativeSimLoop {
           revision.flightPlan, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? [], [...revision.replacedNodeIds]
         );
         const event: SimEvent = { type: "planRevisionApplied", commandId: revision.commandId, replacedNodeIds: [...revision.replacedNodeIds], flightPlan: validatedPlan };
-        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: revision.arrivalPosition });
+        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPositionAt) });
         this.#reducer.apply(event);
       } catch (error: unknown) {
         if (!(error instanceof PlanRevisionValidationError)) throw error;
         // Arrival-time validation is authoritative. Refusals preserve opaque command payloads for disputes.
         const event: SimEvent = { type: "planRevisionRefused", commandId: revision.commandId, flightPlan: revision.flightPlan, reason: error.reason };
-        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: revision.arrivalPosition });
+        await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPositionAt) });
         this.#reducer.apply(event);
       }
-      await this.#advanceDueBurns(eventPosition);
+      await this.#advanceDueBurns(eventPositionAt);
     }
   }
 
-  async #advanceDueBurns(eventPosition: () => PositionMeters): Promise<void> {
+  async #advanceDueBurns(eventPositionAt: (time: SimTimeMs) => PositionMeters): Promise<void> {
     while (this.#remainingToNextBurnBoundary() === 0) {
       const ship = this.#reducer.state.ship!;
       const active = ship.executedBurns.at(-1);
+      if ((active === undefined || active.endedAtMs !== undefined) && this.#isDocked(ship)) await this.#recordDepartureFromDock();
       const event: SimEvent = active !== undefined && active.endedAtMs === undefined
         ? { type: "burnEnded", nodeId: active.node.nodeId }
         : { type: "burnStarted", node: ship.flightPlan.nodes[0]! };
-      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
+      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPositionAt) });
       this.#reducer.apply(event);
+      if (event.type === "burnEnded") await this.#recordArrivalIfComplete(eventPositionAt);
     }
+  }
+
+  async #recordDepartureIfNeeded(fallbackPosition: () => PositionMeters): Promise<void> {
+    if (this.#reducer.state.ship?.departureState !== undefined || this.#departureStateAt === undefined) return;
+    const departureState = this.#departureStateAt(this.#reducer.time);
+    const event: SimEvent = { type: "departureRecorded", departureState };
+    await this.#append({ event, eventTime: this.#reducer.time, eventPosition: fallbackPosition() });
+    this.#reducer.apply(event);
+  }
+
+  async #recordArrivalIfComplete(eventPositionAt: (time: SimTimeMs) => PositionMeters): Promise<void> {
+    const ship = this.#reducer.state.ship;
+    if (ship === undefined || this.#isDocked(ship) || ship.flightPlan.nodes.length !== 0 || this.#destinationStateAt === undefined) return;
+    const destination = ship.flightPlan.destination;
+    const terminalPositionMeters = ship.departureState === undefined ? eventPositionAt(this.#reducer.time) : this.shipPositionAt(this.#reducer.time);
+    const target = this.#destinationStateAt(destination, this.#reducer.time);
+    const terminalVelocity = this.#velocityAt(this.#reducer.time);
+    const positionGapMeters = subtractPosition(terminalPositionMeters, target.positionMeters);
+    const velocityGapMmPerSecond = subtractVelocity(terminalVelocity, target.velocityMmPerSecond);
+    if (Math.hypot(positionGapMeters.x, positionGapMeters.y, positionGapMeters.z) > TIER0_ARRIVAL_CAPTURE_RADIUS_METERS ||
+      Math.hypot(velocityGapMmPerSecond.x, velocityGapMmPerSecond.y, velocityGapMmPerSecond.z) > TIER0_DOCKING_SPEED_MM_PER_SECOND) return;
+    const arrivalState: ArrivalState = {
+      arrivedAtMs: this.#reducer.time,
+      destination,
+      terminalPositionMeters,
+      targetPositionMeters: target.positionMeters,
+      positionGapMeters,
+      velocityGapMmPerSecond
+    };
+    const event: SimEvent = { type: "arrivalRecorded", arrivalState };
+    await this.#append({ event, eventTime: this.#reducer.time, eventPosition: terminalPositionMeters });
+    this.#reducer.apply(event);
+  }
+
+  #eventPositionAt(time: SimTimeMs, fallback: (time: SimTimeMs) => PositionMeters): PositionMeters {
+    return this.#reducer.state.ship?.departureState === undefined ? fallback(time) : this.shipPositionAt(time);
+  }
+
+  #isDocked(ship: NonNullable<SimState["ship"]>): boolean {
+    const arrival = ship.arrivalStates.at(-1);
+    const departure = ship.departureStates.at(-1);
+    return arrival !== undefined && departure !== undefined && arrival.arrivedAtMs >= departure.departureAtMs;
+  }
+
+  async #recordDepartureFromDock(): Promise<void> {
+    const ship = this.#reducer.state.ship;
+    if (ship === undefined || !this.#isDocked(ship) || this.#destinationStateAt === undefined) return;
+    const arrival = ship.arrivalStates.at(-1)!;
+    const body = this.#destinationStateAt(arrival.destination, this.#reducer.time);
+    const departureState: DepartureState = { departureAtMs: this.#reducer.time, positionMeters: body.positionMeters, velocityMmPerSecond: body.velocityMmPerSecond };
+    const event: SimEvent = { type: "departureRecorded", departureState };
+    await this.#append({ event, eventTime: this.#reducer.time, eventPosition: body.positionMeters });
+    this.#reducer.apply(event);
+  }
+
+  #velocityAt(time: SimTimeMs): QuantizedDeltaV {
+    const ship = this.#reducer.state.ship;
+    const departure = [...(ship?.departureStates ?? [])].reverse().find(({ departureAtMs }) => departureAtMs <= time);
+    if (departure === undefined) throw new Error("Ship velocity is unavailable before its departure state is recorded.");
+    const arrival = [...(ship?.arrivalStates ?? [])].reverse().find(({ arrivedAtMs }) => arrivedAtMs <= time && arrivedAtMs >= departure.departureAtMs);
+    if (arrival !== undefined && this.#destinationStateAt !== undefined) return this.#destinationStateAt(arrival.destination, time).velocityMmPerSecond;
+    return shipWorldlineStateAt({
+      departureState: departure,
+      executedBurns: ship!.executedBurns.filter(({ startedAtMs }) => startedAtMs >= departure.departureAtMs),
+      flightPlan: ship!.flightPlan
+    }, time).velocityMmPerSecond;
   }
 
   #serialize<Result>(operation: () => Promise<Result>): Promise<Result> {

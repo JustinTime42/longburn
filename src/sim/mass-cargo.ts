@@ -12,6 +12,27 @@ export const BURN_DURATION_QUANTUM_MILLISECONDS = 1;
 /** A quantized burn duration carried in authoritative simulation state. */
 export type BurnDurationMs = number & { readonly __burnDurationMs: unique symbol };
 
+/** Integer velocity component carried across the planner/simulation boundary. */
+export type VelocityMillimetersPerSecond = number & { readonly __velocityMillimetersPerSecond: unique symbol };
+
+export const velocityMillimetersPerSecond = (value: number): VelocityMillimetersPerSecond => {
+  if (!Number.isSafeInteger(value)) throw new RangeError("Velocity must be a safe integer in millimetres per second.");
+  return value as VelocityMillimetersPerSecond;
+};
+
+/** Quantized Cartesian delta-v. Direction is authoritative, never planner-only. */
+export interface QuantizedDeltaV {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+export const quantizedDeltaV = (value: { readonly x: number; readonly y: number; readonly z: number }): QuantizedDeltaV => ({
+  x: velocityMillimetersPerSecond(value.x),
+  y: velocityMillimetersPerSecond(value.y),
+  z: velocityMillimetersPerSecond(value.z)
+});
+
 export const burnDurationMs = (value: number): BurnDurationMs => {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError("Burn duration must be a non-negative safe integer in milliseconds.");
