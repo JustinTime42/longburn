@@ -78,6 +78,14 @@ const createPsqlSession = () => {
     const parameterizedSql = sql.replace(/\$(\d+)/g, (_match, index) => (
       values[Number(index) - 1] == null ? "NULL" : `:'p${index}'`
     ));
+    // The previous one-shot `psql --file=-` client executed its final query at
+    // EOF, so adapter SQL deliberately does not need trailing semicolons. A
+    // persistent session has no EOF between queries, so terminate each command
+    // before the marker. Without this, psql buffers every SELECT and the marker
+    // makes the harness deserialize an empty result set.
+    const executableSql = parameterizedSql.trimEnd().endsWith(";")
+      ? parameterizedSql
+      : `${parameterizedSql.trimEnd()};`;
     const variableCommands = values.flatMap((value, index) => (
       value == null ? [] : [`\\set p${index + 1} '${String(value).replaceAll("'", "''")}'`]
     ));
@@ -85,7 +93,7 @@ const createPsqlSession = () => {
     const marker = `__LONGBURN_PSQL_${randomUUID()}__`;
     const output = await new Promise((resolve, reject) => {
       pending = { marker, resolve, reject };
-      child.stdin.write(`${variableCommands.join("\n")}\n${parameterizedSql}\n\\echo ${marker}\n`);
+      child.stdin.write(`${variableCommands.join("\n")}\n${executableSql}\n\\echo ${marker}\n`);
     });
     return { rows: deserializeRows(sql, output) };
   };
