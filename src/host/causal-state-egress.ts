@@ -20,9 +20,14 @@ export type CausalEgressHooks = Pick<
   "recordIncident" | "incrementCausalityFailure"
 >;
 
+/** A refusal made by the egress boundary before a candidate reaches its gate. */
+export type CausalStateEgressEmissionResult =
+  | EmissionResult
+  | { readonly sent: false; readonly reason: "observer-mismatch" };
+
 /** A live subscription has no raw socket capability, only the causal gate. */
 export interface CausalStateSubscription {
-  emit(candidate: EmissionCandidate): EmissionResult;
+  emit(candidate: EmissionCandidate): CausalStateEgressEmissionResult;
 }
 
 /**
@@ -37,12 +42,17 @@ export class CausalStateEgress {
     this.#hooks = hooks;
   }
 
-  subscribe(socket: WebSocketStateConnection): CausalStateSubscription {
+  subscribe(observerId: string, socket: WebSocketStateConnection): CausalStateSubscription {
+    if (observerId.length === 0) throw new RangeError("Subscriptions require a non-empty observer ID.");
     const gate = new CausalEmissionGate({
       ...this.#hooks,
       send: (message) => socket.writeText(JSON.stringify(message))
     });
-    return { emit: (candidate) => gate.emit(candidate) };
+    return {
+      emit: (candidate) => candidate.observerId === observerId
+        ? gate.emit(candidate)
+        : { sent: false, reason: "observer-mismatch" }
+    };
   }
 
   snapshot(response: RestSnapshotResponse, candidate: EmissionCandidate): EmissionResult {
