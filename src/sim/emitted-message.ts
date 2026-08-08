@@ -73,6 +73,9 @@ export type EmittedMessage = {
 
 export type EmittableMessageClass = Exclude<EmittedMessageClass, "marketEvent" | "bodyEphemerides" | "liveShipPosition">;
 
+/** The four catalog classes that Tier 0 can construct and send. */
+export type EmittableMessage = Extract<EmittedMessage, { readonly class: EmittableMessageClass }>;
+
 export type EmissionCandidate = {
   readonly [C in EmittableMessageClass]: Omit<Extract<EmittedMessage, { readonly class: C }>, "observerPosition" | "stalenessMs"> & {
     readonly observerPositionAt: ObserverPositionAt;
@@ -91,12 +94,12 @@ export interface StoredEmissionEvent {
 
 export type BuildEmittedMessage = {
   readonly [C in EmittableMessageClass]: {
-  readonly observerId: string;
-  readonly event: StoredEmissionEvent;
-  readonly class: C;
-  readonly payload: EmittedMessagePayloads[C];
-  readonly emissionTimeMs: SimTimeMs;
-  readonly observerPositionAt: ObserverPositionAt;
+    readonly observerId: string;
+    readonly event: StoredEmissionEvent;
+    readonly class: C;
+    readonly payload: EmittedMessagePayloads[C];
+    readonly emissionTimeMs: SimTimeMs;
+    readonly observerPositionAt: ObserverPositionAt;
   };
 }[EmittableMessageClass];
 
@@ -163,7 +166,7 @@ export const emittedMessageId = (
 };
 
 /** Runtime boundary for decoded or unsafe-cast envelope data. */
-export const validateEmittedMessage = (message: unknown): EmittedMessage => {
+export const validateEmittedMessage = (message: unknown): EmittableMessage => {
   if (typeof message !== "object" || message === null) throw new RangeError("An emitted message must be an object.");
   const candidate = message as Partial<EmittedMessage>;
   const messageClass = candidate.class;
@@ -208,9 +211,6 @@ export const validateEmittedMessage = (message: unknown): EmittedMessage => {
 
 /** Creates gate input by copying provenance from a stored event, never a resolver. */
 export const buildEmittedMessage = (input: BuildEmittedMessage): EmissionCandidate => {
-  if ((input.class === "commandEcho" || input.class === "simClock") && input.emissionTimeMs !== input.event.eventTime) {
-    throw new RangeError(`${input.class} is observer-local and must have zero staleness.`);
-  }
   const base = {
     messageId: emittedMessageId(input.observerId, input.event, input.class),
     observerId: input.observerId,
@@ -224,6 +224,10 @@ export const buildEmittedMessage = (input: BuildEmittedMessage): EmissionCandida
     case "commandOutcomeReport": return { ...base, class: input.class, payload: input.payload };
     case "commandEcho": return { ...base, class: input.class, payload: input.payload };
     case "simClock": return { ...base, class: input.class, payload: input.payload };
+    default: {
+      const unhandled: never = input;
+      throw new RangeError(`Cannot build an emitted message from ${String(unhandled)}.`);
+    }
   }
 };
 

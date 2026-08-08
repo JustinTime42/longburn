@@ -62,7 +62,7 @@ describe("emitted message schema", () => {
     expect(emit(retry).stalenessMs).toBe(1);
   });
 
-  it("permits all current payload classes and keeps observer-local classes at zero lag", () => {
+  it("leaves observer-local timing validation to the gate choke point", () => {
     expect(() => buildEmittedMessage({
       observerId: "player-1", event: storedEvent, class: "shipReport", payload: { event: "burnStarted", nodeId: "burn-1" },
       emissionTimeMs: simTimeMs(1_001), observerPositionAt: () => ({ x: 0, y: 0, z: 0 })
@@ -72,10 +72,14 @@ describe("emitted message schema", () => {
       payload: { outcome: "refused", commandId: "cmd-1", reason: "invalid-plan" },
       emissionTimeMs: simTimeMs(1_001), observerPositionAt: () => storedEvent.eventPosition
     })).not.toThrow();
-    expect(() => buildEmittedMessage({
+    const invalidTiming = buildEmittedMessage({
       observerId: "player-1", event: storedEvent, class: "commandEcho", payload: { commandId: "cmd-1" },
       emissionTimeMs: simTimeMs(1_001), observerPositionAt: () => ({ x: 0, y: 0, z: 0 })
-    })).toThrow("zero staleness");
+    });
+    const sent: unknown[] = [];
+    const gate = new CausalEmissionGate({ send: (message) => sent.push(message), recordIncident: () => {}, incrementCausalityFailure: () => {} });
+    expect(gate.emit(invalidTiming)).toEqual({ sent: false, reason: "invalid-envelope" });
+    expect(sent).toHaveLength(0);
 
     const outcome = emit(buildEmittedMessage({
       observerId: "player-1", event: storedEvent, class: "commandOutcomeReport",
@@ -83,6 +87,15 @@ describe("emitted message schema", () => {
       emissionTimeMs: simTimeMs(1_001), observerPositionAt: () => ({ x: 0, y: 0, z: 0 })
     }));
     expect(refusedReason(outcome)).toBe("invalid-plan");
+  });
+
+  it("defensively rejects an unsafe-cast unconstructible class", () => {
+    const invalidInput = {
+      observerId: "player-1", event: storedEvent, class: "marketEvent", payload: {},
+      emissionTimeMs: simTimeMs(1_000), observerPositionAt: () => ({ x: 0, y: 0, z: 0 })
+    } as unknown as Parameters<typeof buildEmittedMessage>[0];
+
+    expect(() => buildEmittedMessage(invalidInput)).toThrow("Cannot build an emitted message");
   });
 
   it("fails closed on malformed provenance, NaN, stale metadata, and reserved classes", () => {
