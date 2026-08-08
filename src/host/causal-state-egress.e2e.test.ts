@@ -30,10 +30,10 @@ const movingObserverEarliestTick = (
   const xSquared = eventPosition.x ** 2 + eventPosition.z ** 2;
   const yOffset = eventPosition.y - velocityMetersPerSecond * elapsedSecondsAtEvent;
   const cSquared = LIGHT_METERS_PER_SECOND ** 2;
-  const a = cSquared - velocityMetersPerSecond ** 2;
-  const b = -2 * velocityMetersPerSecond * yOffset;
-  const c = -(xSquared + yOffset ** 2);
-  const elapsedSeconds = (-b + Math.sqrt(b ** 2 - 4 * a * c)) / (2 * a);
+  const quadraticA = cSquared - velocityMetersPerSecond ** 2;
+  const quadraticB = 2 * velocityMetersPerSecond * yOffset;
+  const quadraticC = -(xSquared + yOffset ** 2);
+  const elapsedSeconds = (-quadraticB + Math.sqrt(quadraticB ** 2 - 4 * quadraticA * quadraticC)) / (2 * quadraticA);
   return eventTimeMs + Math.ceil(elapsedSeconds * 1_000);
 };
 
@@ -131,12 +131,12 @@ describe("causal state egress end-to-end", () => {
   it("delivers a near event while the same composed pass defers a farther event", async () => {
     const received: EmittableMessage[] = [];
     const { host } = wiredHost(received);
-    const near = report(1, 10_000, { x: LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
-    const far = report(2, 10_000, { x: LIGHT_METERS_PER_SECOND * 3, y: 0, z: 0 });
+    const near = report(2, 10_000, { x: LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
+    const far = report(1, 10_000, { x: LIGHT_METERS_PER_SECOND * 3, y: 0, z: 0 });
 
     await expect(host.run(simTimeMs(11_000), [near, far])).resolves.toMatchObject({
-      emitted: ["observer:hq-player/stream:ship-1/event:1/class:shipReport"],
-      deferred: ["observer:hq-player/stream:ship-1/event:2/class:shipReport"], blocked: []
+      emitted: ["observer:hq-player/stream:ship-1/event:2/class:shipReport"],
+      deferred: ["observer:hq-player/stream:ship-1/event:1/class:shipReport"], blocked: []
     });
     expect(received).toHaveLength(1);
     expect(received[0]?.eventPosition).toEqual(near.event.eventPosition);
@@ -148,8 +148,9 @@ describe("causal state egress end-to-end", () => {
     // Earth moves about 0.07 light-seconds over this Mars light time.
     const velocityMetersPerSecond = (0.07 * LIGHT_METERS_PER_SECOND) / marsLightTimeSeconds;
     const observerPositionAt = (timeMs: number) => ({ x: 0, y: velocityMetersPerSecond * (timeMs / 1_000), z: 0 });
-    const movingReport = report(1, 1_000, { x: marsDistanceMeters, y: 0, z: 0 });
+    const movingReport = report(1, 1_000, { x: 0, y: -marsDistanceMeters, z: 0 });
     const earliest = movingObserverEarliestTick(movingReport.event.eventTime, movingReport.event.eventPosition, velocityMetersPerSecond);
+    expect(earliest).not.toBe(independentEarliestTick(movingReport.event.eventTime, movingReport.event.eventPosition));
     const received: EmittableMessage[] = [];
     const { host } = wiredHost(received, observerPositionAt);
 

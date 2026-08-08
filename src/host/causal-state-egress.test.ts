@@ -18,11 +18,15 @@ const candidate = (emissionTimeMs: number, observerId = "player-1"): EmissionCan
 describe("causal state egress", () => {
   it("releases WebSocket subscription state only through CausalEmissionGate", () => {
     const writeText = vi.fn();
-    const egress = new CausalStateEgress({ recordIncident: vi.fn(), incrementCausalityFailure: vi.fn() });
+    const recordIncident = vi.fn();
+    const incrementCausalityFailure = vi.fn();
+    const egress = new CausalStateEgress({ recordIncident, incrementCausalityFailure });
     const subscription = egress.subscribe("player-1", { writeText });
 
     expect(subscription.emit(candidate(999))).toEqual({ sent: false, reason: "early-emission" });
     expect(writeText).not.toHaveBeenCalled();
+    expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "early-emission" }));
+    expect(incrementCausalityFailure).toHaveBeenCalledOnce();
     expect(subscription.emit(candidate(1_000))).toEqual({ sent: true });
     expect(JSON.parse(writeText.mock.calls[0]?.[0] ?? "{}")).toMatchObject({
       messageId: "message-1", observerId: "player-1", stalenessMs: 1_000
