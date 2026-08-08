@@ -18,11 +18,14 @@ Every outbound state update passes through `CausalEmissionGate`. It accepts the 
 
 The authoritative loop persists each event before applying it locally. Writers sharing one loop instance are serialized by that instance; conflicts between loop instances remain terminal wherever the instances live, including two instances in one process. `SimulationEventStore` is the narrow durability boundary: `InMemorySimulationEventStore` is the deterministic reference used by property tests, while `PostgresSimulationEventStore` uses the [base append-only migration](db/migrations/0001_simulation_event_store.sql) and [per-stream sequence migration](db/migrations/0002_simulation_event_stream_sequence.sql). Each stream stores its RNG seed, ordered events, sim event time, and event position, preserving causality provenance for the future emission gate. Every stored event has two keys: `streamSequence` is contiguous and one-based within a stream for replay and stream resume; `globalPosition` is the globally monotone physical subscription order and can have gaps. `append` optionally accepts the current `streamSequence` and reports a typed conflict rather than appending when it is stale. PostgreSQL's unique `(stream_id, stream_sequence)` constraint arbitrates concurrent assignments; the adapter retries a constraint race from a fresh statement snapshot.
 
+`EmissionScheduler` takes an explicit sim-time tick, constructs each envelope from its stored event position, and delays light-lagged reports until the causal solver's earliest legal tick. `DeliveryCursorStore` persists only post-acknowledgement, per-observer watermarks for those light-lagged classes. A crash after transport acknowledgement and before the cursor write produces an idempotent redelivery; a failed transport never advances the cursor. Observer-local command echoes and clock messages are live-only and are reconstructed from durable command history by the reconnect snapshot path, never resent stale. The production cursor adapter uses [migration 0003](db/migrations/0003_delivery_cursors.sql).
+
 Apply migrations in order with stop-on-error enabled. Migration 0002 contains its own transaction so a failed backfill cannot leave the append-only update trigger disabled:
 
 ```bash
 psql -v ON_ERROR_STOP=1 --dbname 'postgresql://user:password@host:5432/database' --file db/migrations/0001_simulation_event_store.sql
 psql -v ON_ERROR_STOP=1 --dbname 'postgresql://user:password@host:5432/database' --file db/migrations/0002_simulation_event_stream_sequence.sql
+psql -v ON_ERROR_STOP=1 --dbname 'postgresql://user:password@host:5432/database' --file db/migrations/0003_delivery_cursors.sql
 ```
 
 The real PostgreSQL adapter suite is gated by `LONGBURN_TEST_DATABASE_URL`, so the Forge sandbox skips it with an explicit reason. A CI/host job with a migrated database runs it through the host `psql` executable:
