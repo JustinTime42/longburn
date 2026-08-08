@@ -73,6 +73,11 @@ export const projectStoredEvent = (
       case "clockAdvanced":
       case "randomValueRequested":
         return undefined;
+      default: {
+        const unhandled: never = stored.event.event;
+        const unhandledType = (unhandled as { readonly type: unknown }).type;
+        throw new RangeError(`Cannot project stored event ${String(unhandledType)}.`);
+      }
     }
   })();
   return message === undefined ? undefined : { sourceGlobalPosition: stored.event.globalPosition, message };
