@@ -8,7 +8,7 @@ import { AuthoritativeSimLoop } from "./loop.js";
 import { burnDurationMs, projectPropellantForBurns, TIER0_SHIP } from "./mass-cargo.js";
 
 const node = (nodeId: string, executeAtMs: number, kind: "accel" | "correction" | "decel" = "accel", durationMs = 1) => ({
-  nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(durationMs) }
+  nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(durationMs) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 }
 });
 
 const plan = (...nodes: ReturnType<typeof node>[]): FlightPlan => ({ nodes });

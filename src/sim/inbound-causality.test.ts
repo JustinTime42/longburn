@@ -11,7 +11,7 @@ import { burnDurationMs, dequantizeBurnParameters, quantizeBurnParameters } from
 
 const node = (nodeId: string, executeAtMs: number, durationMs = 1) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind: "accel" as const,
-  burn: { burnDurationMs: burnDurationMs(durationMs) }
+  burn: { burnDurationMs: burnDurationMs(durationMs) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 }
 });
 
 describe("inbound causality invariant", () => {
@@ -69,7 +69,7 @@ describe("inbound causality invariant", () => {
         const replacement = { nodes: [node("replacement", arrivalAtMs + 2)] };
         await loop.applyPlanRevision({ nodes: [node("old", burnAtMs)] }, () => shipPosition);
         await loop.advance(issueDelayMs, () => shipPosition);
-        const transport = new PlanRevisionTransport({ loop, shipPositionAt: () => shipPosition });
+        const transport = new PlanRevisionTransport({ loop, shipPositionAt: () => shipPosition, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
         await transport.issue(replacement);
         await loop.advance(lightSeconds * 1_000 + 2, () => shipPosition);
 

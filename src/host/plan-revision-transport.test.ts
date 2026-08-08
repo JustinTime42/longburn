@@ -12,7 +12,7 @@ import { PlanRevisionTransport } from "./plan-revision-transport.js";
 const position = () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
 const node = (nodeId: string, executeAtMs: number) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind: "accel" as const,
-  burn: { burnDurationMs: burnDurationMs(1) }
+  burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 }
 });
 
 const expectUnchangedExecutedHistory = (
@@ -36,10 +36,22 @@ const setup = async (id: string) => {
   const loop = await AuthoritativeSimLoop.create({
     store: new InMemorySimulationEventStore(), stream: { id, seed: 1, initialTime: simTimeMs(0) }
   });
-  return { loop, transport: new PlanRevisionTransport({ loop, shipPositionAt: position }) };
+  return { loop, transport: new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) }) };
 };
 
 describe("PlanRevision command transport", () => {
+  it("stores the resolver evaluated at each due event's own time", async () => {
+    const { loop, transport } = await setup("own-time-envelope");
+    await loop.applyPlanRevision({ nodes: [node("due-now", 0)] }, position);
+    await transport.issue({ nodes: [node("later", 2_000)] });
+
+    const persisted = await loop.persistedStream();
+    const burnStarted = persisted.events.find(({ event }) => event.type === "burnStarted");
+    const command = persisted.events.find(({ event }) => event.type === "commandIssued");
+    expect(burnStarted).toMatchObject({ eventTime: 0, eventPosition: position() });
+    expect(command).toMatchObject({ eventTime: 0, eventPosition: { x: 0, y: 0, z: 0 } });
+  });
+
   it("uses the fixed Earth-HQ light-time solve and applies at the exact arrival boundary", async () => {
     const { loop, transport } = await setup("arrival-boundary");
     const issued = await transport.issue({ nodes: [node("arrival-burn", 2_000)] });
@@ -86,7 +98,7 @@ describe("PlanRevision command transport", () => {
     const loop = await AuthoritativeSimLoop.create({
       store, stream: { id: "interleaved-rejection", seed: 1, initialTime: simTimeMs(0) }
     });
-    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
     await loop.applyPlanRevision({ nodes: [node("racing-burn", 1_000)] }, position);
     await transport.issue({ nodes: [node("replacement", 2_000)] });
     blockNextAppend = true;
@@ -145,7 +157,7 @@ describe("PlanRevision command transport", () => {
     const loop = await AuthoritativeSimLoop.create({
       store, stream: { id: "resume-inbound", seed: 1, initialTime: simTimeMs(0) }
     });
-    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
     await transport.issue({ nodes: [node("after-restart", 2_000)] });
 
     const resumed = await AuthoritativeSimLoop.resume(store, "resume-inbound");
@@ -165,7 +177,7 @@ describe("PlanRevision command transport", () => {
     const loop = await AuthoritativeSimLoop.create({
       store, stream: { id: "resume-replacement", seed: 1, initialTime: simTimeMs(0) }
     });
-    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
     await loop.applyPlanRevision({ nodes: [node("old", 3_000)] }, position);
     await transport.issue({ nodes: [node("replacement", 4_000)] });
 
@@ -185,7 +197,7 @@ describe("PlanRevision command transport", () => {
       store, stream: { id: "resume-refusal", seed: 1, initialTime: simTimeMs(0) }
     });
     const transport = new PlanRevisionTransport({
-      loop, shipPositionAt: () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND * 2, y: 0, z: 0 })
+      loop, shipPositionAt: () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND * 2, y: 0, z: 0 }), hqPositionAt: () => ({ x: 0, y: 0, z: 0 })
     });
     await loop.applyPlanRevision({ nodes: [node("old", 1_000)] }, position);
     await transport.issue({ nodes: [node("replacement", 3_000)] });
@@ -220,7 +232,7 @@ describe("PlanRevision command transport", () => {
     const loop = await AuthoritativeSimLoop.create({
       store, stream: { id: "issue-during-advance", seed: 1, initialTime: simTimeMs(0) }
     });
-    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+    const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
     const tick = loop.advance(1_000, position);
     await appendBlocked;
     const issued = transport.issue({ nodes: [node("post-tick", 3_000)] });
@@ -238,7 +250,7 @@ describe("PlanRevision command transport", () => {
         const loop = await AuthoritativeSimLoop.create({
           store, stream: { id: `immutability-${durations.join("-")}`, seed: 1, initialTime: simTimeMs(0) }
         });
-        const transport = new PlanRevisionTransport({ loop, shipPositionAt: position });
+        const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
         await loop.applyPlanRevision({ nodes: [node("executed", 1)] }, position);
         await loop.advance(1, position);
         let history = loop.state.ship?.executedBurns ?? [];

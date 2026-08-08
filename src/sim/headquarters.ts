@@ -1,8 +1,12 @@
 import type { PositionMeters } from "./causality.js";
+import type { SimTimeMs } from "./clock.js";
+import { ephemeridesAt, type UtDaysSinceJ2000 } from "./ephemerides.js";
 
 /**
- * PLACEHOLDER: this is the heliocentric-frame origin (the Sun), not Earth.
- * It must be replaced with Earth-at-epoch when command transport is wired to
- * the ephemerides frame. Relocation remains a deliberately future-tier concern.
+ * HQ is fixed at Earth for Tier 0. The ephemerides adapter is consulted only
+ * at this live boundary; the resulting position is persisted on the command.
  */
-export const T0_EARTH_HQ_POSITION_METERS: PositionMeters = Object.freeze({ x: 0, y: 0, z: 0 });
+export const hqPositionAt = (epochUtDaysSinceJ2000: UtDaysSinceJ2000, time: SimTimeMs): PositionMeters => {
+  const positionKm = ephemeridesAt(epochUtDaysSinceJ2000, time).earth.positionKm;
+  return Object.freeze({ x: Math.round(positionKm.x * 1_000), y: Math.round(positionKm.y * 1_000), z: Math.round(positionKm.z * 1_000) });
+};

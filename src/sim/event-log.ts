@@ -1,5 +1,5 @@
 import { SimClock, simTimeMs, type SimTimeMs } from "./clock.js";
-import { burnDurationMs, projectPropellantForBurns, type QuantizedBurnParameters } from "./mass-cargo.js";
+import { burnDurationMs, projectPropellantForBurns, quantizedDeltaV, type QuantizedBurnParameters, type QuantizedDeltaV } from "./mass-cargo.js";
 import { SeededRng } from "./rng.js";
 import { assertInboundCausalityInvariant, type PositionMeters } from "./causality.js";
 
@@ -16,6 +16,8 @@ export interface BurnNode {
   readonly executeAtMs: SimTimeMs;
   readonly kind: BurnKind;
   readonly burn: QuantizedBurnParameters;
+  /** Fixed, committed heliocentric delta-v direction and magnitude. */
+  readonly deltaVMmPerSecond: QuantizedDeltaV;
 }
 
 /** The complete, replaceable set of burns which have not begun firing. */
@@ -95,7 +97,8 @@ const assertNode = (node: BurnNode): BurnNode => {
     nodeId: node.nodeId,
     executeAtMs: simTimeMs(node.executeAtMs),
     kind: node.kind,
-    burn: assertBurn(node.burn)
+    burn: assertBurn(node.burn),
+    deltaVMmPerSecond: quantizedDeltaV(node.deltaVMmPerSecond)
   };
 };
 
@@ -182,7 +185,10 @@ const sameBurnNode = (left: BurnNode, right: BurnNode): boolean =>
   left.nodeId === right.nodeId
   && left.executeAtMs === right.executeAtMs
   && left.kind === right.kind
-  && left.burn.burnDurationMs === right.burn.burnDurationMs;
+  && left.burn.burnDurationMs === right.burn.burnDurationMs
+  && left.deltaVMmPerSecond.x === right.deltaVMmPerSecond.x
+  && left.deltaVMmPerSecond.y === right.deltaVMmPerSecond.y
+  && left.deltaVMmPerSecond.z === right.deltaVMmPerSecond.z;
 
 const derivedPhase = (flightPlan: FlightPlan, executedBurns: readonly ExecutedBurn[]): ShipPhase => {
   const active = executedBurns.at(-1);
