@@ -38,7 +38,15 @@ EmittedMessage {
 - **Delivery is idempotent (settled, 3n9 f3):** `messageId` + a per-observer monotone
   emission cursor; retries re-enter the gate and re-validate, so a duplicate can only
   leave at a legal tick. No three-state result; `sent:false` plus redelivery is the model.
-- Per-observer ordering: monotone by `emissionTimeMs`; ties break by log order.
+- **Delivery-guarantee split (ADDENDUM 2026-08-08, Mayor answer to the Forge's din.5.2
+  escalation; flagged for Overseer ratification at din.5.2 review):** the durable no-skip
+  cursor guarantee covers the LIGHT-LAGGED classes (2.1, 2.2, 2.4) — a lost report has no
+  other path to the player. Observer-local classes (2.3 commandEcho, 2.5 simClock) are
+  live-delivery-only and excluded from the cursor: after a crash they are RECONSTRUCTED by
+  the snapshot path (row H1's reconnect = snapshot-then-buffered-deltas, rebuilt from the
+  durable log — `commandIssued` is the truth, the echo is its projection), never re-emitted
+  with a violated zero-staleness envelope and never silently lost. The cursor advances
+  after transport acknowledgment: at-least-once, with duplicates that re-enter the gate.
 
 ## 2. The catalog
 
