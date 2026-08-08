@@ -11,12 +11,18 @@ import {
   massRatioForDeltaV,
   projectPropellantForBurns,
   quantizeBurnParameters,
+  TIER0_ACCELERATION_MICROMETERS_PER_SECOND2,
   TIER0_SHIP,
   viabilityWallDeltaV,
   type QuantizedBurnParameters
 } from "./mass-cargo.js";
 
 describe("mass and cargo", () => {
+  it("pins the float economy acceleration to the bigint command-boundary acceleration", () => {
+    expect(BigInt(TIER0_SHIP.accelerationKmPerSecond2 * 1_000_000_000))
+      .toBe(TIER0_ACCELERATION_MICROMETERS_PER_SECOND2);
+  });
+
   it("uses the exact constant-acceleration burn relation", () => {
     expect(deltaVForBurn(0.009_806_65, 86_400)).toBeCloseTo(847.29456, 10);
     expect(() => deltaVForBurn(0, 1)).toThrow(RangeError);
