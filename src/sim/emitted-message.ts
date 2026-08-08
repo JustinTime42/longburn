@@ -1,5 +1,5 @@
 import { simTimeMs, type SimTimeMs } from "./clock.js";
-import type { PositionMeters } from "./causality.js";
+import type { ObserverPositionAt, PositionMeters } from "./causality.js";
 import type { PlanRevisionRefusalReason } from "./event-log.js";
 
 /** The catalog's seven classes. The last three have no T0 message payload yet. */
@@ -43,11 +43,11 @@ export interface EmittedMessagePayloads {
   readonly liveShipPosition: never;
 }
 
-export interface EmittedMessage<C extends EmittedMessageClass = EmittedMessageClass> {
+interface EmittedMessageBase {
   /** Stable idempotence key; emission time is deliberately not part of it. */
   readonly messageId: string;
-  readonly class: C;
-  readonly payload: EmittedMessagePayloads[C];
+  /** Authoritative recipient identity, used by per-observer delivery cursors. */
+  readonly observerId: string;
   /** Youngest constituent stored event's virtual-clock time. */
   readonly eventTimeMs: SimTimeMs;
   /** Gate release time, supplied by the later scheduler/gate integration. */
@@ -60,22 +60,45 @@ export interface EmittedMessage<C extends EmittedMessageClass = EmittedMessageCl
   readonly stalenessMs: number;
 }
 
+/**
+ * A real discriminated union: narrowing `class` also narrows `payload`.
+ * Reserved catalog classes retain `never` payloads, so T0 cannot construct one.
+ */
+export type EmittedMessage = {
+  readonly [C in EmittedMessageClass]: EmittedMessageBase & {
+    readonly class: C;
+    readonly payload: EmittedMessagePayloads[C];
+  };
+}[EmittedMessageClass];
+
+export type EmittableMessageClass = Exclude<EmittedMessageClass, "marketEvent" | "bodyEphemerides" | "liveShipPosition">;
+
+export type EmissionCandidate = {
+  readonly [C in EmittableMessageClass]: Omit<Extract<EmittedMessage, { readonly class: C }>, "observerPosition" | "stalenessMs"> & {
+    readonly observerPositionAt: ObserverPositionAt;
+  };
+}[EmittableMessageClass];
+
 /** Minimal persisted-event shape needed to construct an emitted envelope. */
 export interface StoredEmissionEvent {
   readonly streamId: string;
   readonly streamSequence: number;
+  /** Global physical log order, used to break equal virtual-clock times. */
+  readonly globalPosition: number;
   readonly eventTime: SimTimeMs;
   readonly eventPosition: PositionMeters;
 }
 
-export interface BuildEmittedMessage<C extends Exclude<EmittedMessageClass, "marketEvent" | "bodyEphemerides" | "liveShipPosition">> {
+export type BuildEmittedMessage = {
+  readonly [C in EmittableMessageClass]: {
   readonly observerId: string;
   readonly event: StoredEmissionEvent;
   readonly class: C;
   readonly payload: EmittedMessagePayloads[C];
   readonly emissionTimeMs: SimTimeMs;
-  readonly observerPosition: PositionMeters;
-}
+  readonly observerPositionAt: ObserverPositionAt;
+  };
+}[EmittableMessageClass];
 
 const isNonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const isSimTime = (value: unknown): value is SimTimeMs => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -89,32 +112,39 @@ const copiedPosition = (position: unknown): PositionMeters => {
   return { x, y, z };
 };
 
-const assertPayload = (messageClass: EmittedMessageClass, payload: unknown): void => {
-  if (messageClass === "shipReport") {
-    if (typeof payload !== "object" || payload === null) throw new RangeError("Ship reports require a payload.");
-    const report = payload as Partial<ShipReportPayload>;
-    if ((report.event === "burnStarted" || report.event === "burnEnded") && isNonEmptyString(report.nodeId)) return;
-    if (report.event === "arrivalRecorded" && (report.destination === "earth" || report.destination === "moon" || report.destination === "mars")) return;
-    if (report.event === "departureRecorded") return;
-    throw new RangeError("Ship reports require a catalog event payload.");
+const objectPayload = (payload: unknown, message: string): Record<string, unknown> => {
+  if (typeof payload !== "object" || payload === null) throw new RangeError(message);
+  return payload as Record<string, unknown>;
+};
+
+const shipReportPayload = (payload: unknown): ShipReportPayload => {
+  const report = objectPayload(payload, "Ship reports require a payload.");
+  if ((report.event === "burnStarted" || report.event === "burnEnded") && isNonEmptyString(report.nodeId)) return { event: report.event, nodeId: report.nodeId };
+  if (report.event === "arrivalRecorded" && (report.destination === "earth" || report.destination === "moon" || report.destination === "mars")) return { event: report.event, destination: report.destination };
+  if (report.event === "departureRecorded") return { event: report.event };
+  throw new RangeError("Ship reports require a catalog event payload.");
+};
+
+const commandOutcomePayload = (payload: unknown): CommandOutcomeReportPayload => {
+  const outcome = objectPayload(payload, "Command outcome reports require a payload.");
+  if (outcome.outcome === "applied" && isNonEmptyString(outcome.commandId)) return { outcome: outcome.outcome, commandId: outcome.commandId };
+  if (outcome.outcome === "refused" && isNonEmptyString(outcome.commandId) &&
+    (outcome.reason === "executed-burn-conflict" || outcome.reason === "invalid-plan" || outcome.reason === "insufficient-propellant")) {
+    return { outcome: outcome.outcome, commandId: outcome.commandId, reason: outcome.reason };
   }
-  if (messageClass === "commandOutcomeReport") {
-    if (typeof payload !== "object" || payload === null) throw new RangeError("Command outcome reports require a payload.");
-    const outcome = payload as Partial<CommandOutcomeReportPayload>;
-    if (outcome.outcome === "applied" && isNonEmptyString(outcome.commandId)) return;
-    if (outcome.outcome === "refused" && isNonEmptyString(outcome.commandId) &&
-      (outcome.reason === "executed-burn-conflict" || outcome.reason === "invalid-plan" || outcome.reason === "insufficient-propellant")) return;
-    throw new RangeError("Command outcome reports require a catalog outcome payload.");
-  }
-  if (messageClass === "commandEcho") {
-    if (typeof payload === "object" && payload !== null && isNonEmptyString((payload as CommandEchoPayload).commandId)) return;
-    throw new RangeError("Command echoes require a command ID.");
-  }
-  if (messageClass === "simClock") {
-    if (typeof payload === "object" && payload !== null && isSimTime((payload as SimClockPayload).currentTimeMs)) return;
-    throw new RangeError("Sim-clock messages require a safe-integer current time.");
-  }
-  throw new RangeError(`${messageClass} is not an emitted T0 message class.`);
+  throw new RangeError("Command outcome reports require a catalog outcome payload.");
+};
+
+const commandEchoPayload = (payload: unknown): CommandEchoPayload => {
+  const echo = objectPayload(payload, "Command echoes require a command ID.");
+  if (!isNonEmptyString(echo.commandId)) throw new RangeError("Command echoes require a command ID.");
+  return { commandId: echo.commandId };
+};
+
+const simClockPayload = (payload: unknown): SimClockPayload => {
+  const clock = objectPayload(payload, "Sim-clock messages require a safe-integer current time.");
+  if (!isSimTime(clock.currentTimeMs)) throw new RangeError("Sim-clock messages require a safe-integer current time.");
+  return { currentTimeMs: simTimeMs(clock.currentTimeMs) };
 };
 
 /**
@@ -141,51 +171,67 @@ export const validateEmittedMessage = (message: unknown): EmittedMessage => {
     messageClass !== "marketEvent" && messageClass !== "simClock" && messageClass !== "bodyEphemerides" && messageClass !== "liveShipPosition") {
     throw new RangeError("Emitted messages require a known catalog class.");
   }
-  if (!isNonEmptyString(candidate.messageId)) throw new RangeError("Emitted messages require a message ID.");
+  if (!isNonEmptyString(candidate.messageId) || !isNonEmptyString(candidate.observerId)) throw new RangeError("Emitted messages require message and observer IDs.");
   if (!isSimTime(candidate.eventTimeMs) || !isSimTime(candidate.emissionTimeMs) || candidate.emissionTimeMs < candidate.eventTimeMs) {
     throw new RangeError("Message provenance times must be non-negative safe-integer sim milliseconds.");
   }
   if (!Number.isSafeInteger(candidate.stalenessMs) || candidate.stalenessMs !== candidate.emissionTimeMs - candidate.eventTimeMs) {
     throw new RangeError("Message staleness must be the server-computed provenance difference.");
   }
-  assertPayload(messageClass, candidate.payload);
   if ((messageClass === "commandEcho" || messageClass === "simClock") && candidate.emissionTimeMs !== candidate.eventTimeMs) {
     throw new RangeError(`${messageClass} is observer-local and must have zero staleness.`);
   }
-  if (messageClass === "simClock" && (candidate.payload as SimClockPayload).currentTimeMs !== candidate.eventTimeMs) {
-    throw new RangeError("Sim-clock payload time must equal its provenance event time.");
-  }
-  return {
+  const base = {
     messageId: candidate.messageId,
-    class: messageClass,
-    payload: candidate.payload as never,
+    observerId: candidate.observerId,
     eventTimeMs: simTimeMs(candidate.eventTimeMs),
     emissionTimeMs: simTimeMs(candidate.emissionTimeMs),
     eventPosition: copiedPosition(candidate.eventPosition),
     observerPosition: copiedPosition(candidate.observerPosition),
     stalenessMs: candidate.stalenessMs
   };
+  switch (messageClass) {
+    case "shipReport": return { ...base, class: messageClass, payload: shipReportPayload(candidate.payload) };
+    case "commandOutcomeReport": return { ...base, class: messageClass, payload: commandOutcomePayload(candidate.payload) };
+    case "commandEcho": return { ...base, class: messageClass, payload: commandEchoPayload(candidate.payload) };
+    case "simClock": {
+      const payload = simClockPayload(candidate.payload);
+      if (payload.currentTimeMs !== candidate.eventTimeMs) throw new RangeError("Sim-clock payload time must equal its provenance event time.");
+      return { ...base, class: messageClass, payload };
+    }
+    case "marketEvent":
+    case "bodyEphemerides":
+    case "liveShipPosition":
+      throw new RangeError(`${messageClass} is not an emitted T0 message class.`);
+  }
 };
 
-/** Creates an envelope by copying provenance from a stored event, never a resolver. */
-export const buildEmittedMessage = <C extends Exclude<EmittedMessageClass, "marketEvent" | "bodyEphemerides" | "liveShipPosition">>(
-  input: BuildEmittedMessage<C>
-): EmittedMessage<C> => validateEmittedMessage({
-  messageId: emittedMessageId(input.observerId, input.event, input.class),
-  class: input.class,
-  payload: input.payload,
-  eventTimeMs: input.event.eventTime,
-  emissionTimeMs: input.emissionTimeMs,
-  eventPosition: copiedPosition(input.event.eventPosition),
-  observerPosition: copiedPosition(input.observerPosition),
-  stalenessMs: input.emissionTimeMs - input.event.eventTime
-}) as EmittedMessage<C>;
+/** Creates gate input by copying provenance from a stored event, never a resolver. */
+export const buildEmittedMessage = (input: BuildEmittedMessage): EmissionCandidate => {
+  if ((input.class === "commandEcho" || input.class === "simClock") && input.emissionTimeMs !== input.event.eventTime) {
+    throw new RangeError(`${input.class} is observer-local and must have zero staleness.`);
+  }
+  const base = {
+    messageId: emittedMessageId(input.observerId, input.event, input.class),
+    observerId: input.observerId,
+    eventTimeMs: input.event.eventTime,
+    emissionTimeMs: input.emissionTimeMs,
+    eventPosition: copiedPosition(input.event.eventPosition),
+    observerPositionAt: input.observerPositionAt
+  };
+  switch (input.class) {
+    case "shipReport": return { ...base, class: input.class, payload: input.payload };
+    case "commandOutcomeReport": return { ...base, class: input.class, payload: input.payload };
+    case "commandEcho": return { ...base, class: input.class, payload: input.payload };
+    case "simClock": return { ...base, class: input.class, payload: input.payload };
+  }
+};
 
 /** Selects aggregate provenance from its youngest stored event, with log order breaking ties. */
 export const youngestStoredEmissionEvent = (events: readonly StoredEmissionEvent[]): StoredEmissionEvent => {
   if (events.length === 0) throw new RangeError("An aggregate requires at least one stored event.");
   return events.reduce((youngest, event) =>
-    event.eventTime > youngest.eventTime || (event.eventTime === youngest.eventTime && event.streamSequence > youngest.streamSequence)
+    event.eventTime > youngest.eventTime || (event.eventTime === youngest.eventTime && event.globalPosition > youngest.globalPosition)
       ? event
       : youngest
   );
