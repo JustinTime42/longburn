@@ -1,23 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { InMemoryDeliveryCursorStore, PostgresDeliveryCursorStore, type PostgresCursorQueryClient } from "./delivery-cursor.js";
+import { hasAcknowledged, InMemoryDeliveryCursorStore, PostgresDeliveryCursorStore, type PostgresCursorQueryClient, type PostgresCursorSession } from "./delivery-cursor.js";
 
-const cursor = (globalPosition: number, messageId = `message-${globalPosition}`) => ({ observerId: "hq-player", globalPosition, messageId });
+const acknowledgement = (globalPosition: number, messageId = `message-${globalPosition}`) => ({ globalPosition, messageId });
 
 const assertCursorContract = (makeStore: () => import("./delivery-cursor.js").DeliveryCursorStore): void => {
-  it("starts empty, persists copies, and rejects non-monotone acknowledgements", async () => {
+  it("starts empty, preserves sparse delivered messages, and compacts a contiguous prefix", async () => {
     const store = makeStore();
     expect(await store.read("hq-player")).toBeUndefined();
-    await store.advance(cursor(10));
-    const observed = await store.read("hq-player");
-    expect(observed).toEqual(cursor(10));
-    if (observed === undefined) throw new Error("Expected persisted cursor.");
-    (observed as { messageId: string }).messageId = "mutated";
-    expect(await store.read("hq-player")).toEqual(cursor(10));
-    await expect(store.advance(cursor(10))).rejects.toThrow("monotonically");
-    await expect(store.advance(cursor(9))).rejects.toThrow("monotonically");
-    await store.advance(cursor(14));
-    expect(await store.read("hq-player")).toEqual(cursor(14));
+    await store.acknowledge("hq-player", acknowledgement(3));
+    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 0, delivered: [acknowledgement(3)] });
+    await store.acknowledge("hq-player", acknowledgement(1));
+    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 1, delivered: [acknowledgement(3)] });
+    await store.acknowledge("hq-player", acknowledgement(2));
+    const compacted = await store.read("hq-player");
+    expect(compacted).toEqual({ observerId: "hq-player", lowWatermark: 3, delivered: [] });
+    expect(hasAcknowledged(compacted, acknowledgement(3))).toBe(true);
+    await expect(store.acknowledge("hq-player", acknowledgement(3))).rejects.toThrow("already acknowledged");
   });
 };
 
@@ -25,45 +24,105 @@ describe("InMemoryDeliveryCursorStore", () => {
   assertCursorContract(() => new InMemoryDeliveryCursorStore());
 });
 
-describe("PostgresDeliveryCursorStore", () => {
-  assertCursorContract(() => {
-    const rows = new Map<string, { observer_id: string; global_position: number; message_id: string }>();
-    const client: PostgresCursorQueryClient = {
-      query: <Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) => {
-        const observerId = values?.[0] as string;
-        if (sql.startsWith("SELECT")) {
-          const row = rows.get(observerId);
-          return Promise.resolve({ rows: (row === undefined ? [] : [row]) as unknown as readonly Row[] });
-        }
-        const globalPosition = values?.[1] as number;
-        const messageId = values?.[2] as string;
-        const previous = rows.get(observerId);
-        if (previous !== undefined && previous.global_position >= globalPosition) return Promise.resolve({ rows: [] });
-        const row = { observer_id: observerId, global_position: globalPosition, message_id: messageId };
-        rows.set(observerId, row);
-        return Promise.resolve({ rows: [row] as unknown as readonly Row[] });
-      }
-    };
-    return new PostgresDeliveryCursorStore(client);
+const postgresCursorDouble = (): {
+  readonly client: PostgresCursorQueryClient;
+  readonly calls: { sql: string; values: readonly unknown[] | undefined }[];
+  readonly transactions: { committed: boolean }[];
+} => {
+  type StoredAcknowledgement = { readonly globalPosition: number; readonly messageId: string };
+  type State = { cursors: Map<string, number>; acknowledgements: Map<string, StoredAcknowledgement[]> };
+  const copyState = (state: State): State => ({
+    cursors: new Map(state.cursors),
+    acknowledgements: new Map([...state.acknowledgements].map(([observerId, acknowledgements]) => [observerId, acknowledgements.map((acknowledgement) => ({ ...acknowledgement }))]))
   });
-
-  it("uses a compare-and-advance upsert and rejects stale acknowledgement", async () => {
-    const calls: { sql: string; values: readonly unknown[] | undefined }[] = [];
-    const client: PostgresCursorQueryClient = {
-      query: <Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) => {
-        calls.push({ sql, values });
-        if (sql.startsWith("SELECT")) return Promise.resolve({ rows: [] as readonly Row[] });
-        const rows = calls.length === 1
-          ? [{ observer_id: "hq-player", global_position: 10, message_id: "message-10" }]
-          : [];
-        return Promise.resolve({ rows: rows as unknown as readonly Row[] });
+  let committed: State = { cursors: new Map(), acknowledgements: new Map() };
+  let transaction: State | undefined;
+  const calls: { sql: string; values: readonly unknown[] | undefined }[] = [];
+  const transactions: { committed: boolean }[] = [];
+  const result = <Row extends Record<string, unknown>>(rows: readonly Record<string, unknown>[]): { readonly rows: readonly Row[] } => ({
+    rows: rows as readonly Row[]
+  });
+  const state = (): State => transaction ?? committed;
+  const cursorRows = (observerId: string): Record<string, unknown>[] => {
+    const lowWatermark = state().cursors.get(observerId);
+    if (lowWatermark === undefined) return [];
+    const acknowledgements = state().acknowledgements.get(observerId) ?? [];
+    return acknowledgements.length === 0
+      ? [{ observer_id: observerId, low_watermark: lowWatermark, global_position: null, message_id: null }]
+      : acknowledgements.sort((a, b) => a.globalPosition - b.globalPosition).map((acknowledgement) => ({
+        observer_id: observerId,
+        low_watermark: lowWatermark,
+        global_position: acknowledgement.globalPosition,
+        message_id: acknowledgement.messageId
+      }));
+  };
+  const query: PostgresCursorSession["query"] = async <Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) => {
+      calls.push({ sql, values });
+      const observerId = values?.[0];
+      if (typeof observerId !== "string") throw new Error("Expected observer ID.");
+      if (sql.includes("INSERT INTO delivery_acknowledgements")) {
+        const globalPosition = values?.[1];
+        const messageId = values?.[2];
+        if (typeof globalPosition !== "number" || typeof messageId !== "string") throw new Error("Expected acknowledgement values.");
+        const acknowledgements = state().acknowledgements.get(observerId) ?? [];
+        if (acknowledgements.some((acknowledgement) => acknowledgement.globalPosition === globalPosition || acknowledgement.messageId === messageId)) {
+          return result<Row>([]);
+        }
+        state().acknowledgements.set(observerId, [...acknowledgements, { globalPosition, messageId }]);
+        return result<Row>([{ observer_id: observerId }]);
       }
-    };
-    const store = new PostgresDeliveryCursorStore(client);
-    await store.advance(cursor(10));
-    await expect(store.advance(cursor(10))).rejects.toThrow("monotonically");
-    expect(calls[0]?.sql).toContain("ON CONFLICT (observer_id) DO UPDATE");
-    expect(calls[0]?.sql).toContain("global_position < EXCLUDED.global_position");
-    expect(calls[0]?.values).toEqual(["hq-player", 10, "message-10"]);
+      if (sql.includes("INSERT INTO delivery_cursors")) {
+        state().cursors.set(observerId, state().cursors.get(observerId) ?? 0);
+        return result<Row>([]);
+      }
+      if (sql.startsWith("UPDATE delivery_cursors")) {
+        const lowWatermark = values?.[1];
+        if (typeof lowWatermark !== "number") throw new Error("Expected low watermark.");
+        state().cursors.set(observerId, lowWatermark);
+        return result<Row>([]);
+      }
+      if (sql.startsWith("DELETE FROM delivery_acknowledgements")) {
+        const lowWatermark = values?.[1];
+        if (typeof lowWatermark !== "number") throw new Error("Expected low watermark.");
+        state().acknowledgements.set(observerId, (state().acknowledgements.get(observerId) ?? []).filter(
+          (acknowledgement) => acknowledgement.globalPosition > lowWatermark
+        ));
+        return result<Row>([]);
+      }
+      if (sql.includes("FROM delivery_cursors")) return result<Row>(cursorRows(observerId));
+      throw new Error(`Unexpected SQL: ${sql}`);
+  };
+  const client: PostgresCursorQueryClient = {
+    query,
+    async withTransaction<Result>(callback: (session: PostgresCursorSession) => Promise<Result>): Promise<Result> {
+      if (transaction !== undefined) throw new Error("Nested cursor transactions are unsupported.");
+      transaction = copyState(committed);
+      const record = { committed: false };
+      transactions.push(record);
+      try {
+        const value = await callback({ query });
+        committed = transaction;
+        record.committed = true;
+        return value;
+      } finally {
+        transaction = undefined;
+      }
+    }
+  };
+  return { client, calls, transactions };
+};
+
+describe("PostgresDeliveryCursorStore", () => {
+  assertCursorContract(() => new PostgresDeliveryCursorStore(postgresCursorDouble().client));
+
+  it("acknowledges through one transaction-bound session and rolls back duplicates", async () => {
+    const database = postgresCursorDouble();
+    const store = new PostgresDeliveryCursorStore(database.client);
+    await store.acknowledge("hq-player", acknowledgement(1));
+    await expect(store.acknowledge("hq-player", acknowledgement(1))).rejects.toThrow("already acknowledged");
+    expect(database.calls.some(({ sql }) => sql.includes("FOR UPDATE OF c"))).toBe(true);
+    expect(database.calls.some(({ sql }) => sql.startsWith("DELETE FROM delivery_acknowledgements"))).toBe(true);
+    expect(database.transactions).toEqual([{ committed: true }, { committed: false }]);
+    expect(database.calls.some(({ sql }) => sql.includes("WITH RECURSIVE"))).toBe(false);
   });
 });

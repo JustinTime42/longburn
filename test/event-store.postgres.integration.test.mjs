@@ -5,6 +5,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { simTimeMs } from "../src/sim/clock.js";
+import { PostgresDeliveryCursorStore } from "../src/sim/delivery-cursor.js";
 import { PostgresSimulationEventStore } from "../src/sim/event-store.js";
 import { replayPersistedSegment } from "../src/sim/event-log.js";
 import { AuthoritativeSimLoop } from "../src/sim/loop.js";
@@ -15,25 +16,18 @@ const integrationDescribe = databaseUrl === undefined || databaseUrl.length === 
 // returned field while remaining valid for psql's one-byte separator option.
 const FIELD_SEPARATOR = "|";
 
-const runPsql = (arguments_, sql) => new Promise((resolve, reject) => {
-  const child = spawn("psql", arguments_, { stdio: ["pipe", "pipe", "pipe"] });
-  let stdout = "";
-  let stderr = "";
-
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  child.on("error", reject);
-  child.on("close", (exitCode) => {
-    if (exitCode === 0) {
-      resolve(stdout);
-      return;
-    }
-    reject(new Error(stderr.trim() || `psql exited with status ${exitCode}`));
-  });
-  child.stdin.end(sql);
-});
+const sanitizePsqlError = (error) => {
+  // Do not expose a database URL (which may embed credentials) in test logs.
+  const stderr = error instanceof Error ? error.message.trim() : "";
+  const sanitized = new Error(`psql query failed: ${stderr || "unknown error"}`);
+  if (stderr.includes('duplicate key value violates unique constraint "simulation_events_stream_sequence_unique"')) {
+    Object.assign(sanitized, {
+      code: "23505",
+      constraint: "simulation_events_stream_sequence_unique"
+    });
+  }
+  return sanitized;
+};
 
 /**
  * The production adapter deliberately has no mandated PostgreSQL package.
@@ -41,41 +35,106 @@ const runPsql = (arguments_, sql) => new Promise((resolve, reject) => {
  * database, and translates the adapter's positional parameters to psql's
  * safely quoted variables.
  */
-const psqlClient = {
-  async query(sql, values = []) {
+const createPsqlSession = () => {
+  const child = spawn("psql", [
+    "--no-psqlrc",
+    "--quiet",
+    "--tuples-only",
+    "--no-align",
+    `--field-separator=${FIELD_SEPARATOR}`,
+    "-v", "ON_ERROR_STOP=1",
+    "--dbname", databaseUrl
+  ], { stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let closed = false;
+  let pending;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+    if (pending === undefined) return;
+    const markerIndex = stdout.indexOf(pending.marker);
+    if (markerIndex === -1) return;
+    const completed = pending;
+    const queryOutput = stdout.slice(0, markerIndex);
+    stdout = stdout.slice(markerIndex + completed.marker.length).replace(/^\r?\n/, "");
+    pending = undefined;
+    completed.resolve(queryOutput);
+  });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const rejectPending = (error) => {
+    if (pending !== undefined) {
+      pending.reject(error);
+      pending = undefined;
+    }
+  };
+  child.on("error", rejectPending);
+  child.on("close", (exitCode) => {
+    closed = true;
+    if (exitCode !== 0) rejectPending(new Error(stderr.trim() || `psql exited with status ${exitCode}`));
+  });
+  const query = async (sql, values = []) => {
     const parameterizedSql = sql.replace(/\$(\d+)/g, (_match, index) => (
       values[Number(index) - 1] == null ? "NULL" : `:'p${index}'`
     ));
-    const variables = values.flatMap((value, index) => (
-      value == null ? [] : ["-v", `p${index + 1}=${String(value)}`]
+    // The previous one-shot `psql --file=-` client executed its final query at
+    // EOF, so adapter SQL deliberately does not need trailing semicolons. A
+    // persistent session has no EOF between queries, so terminate each command
+    // before the marker. Without this, psql buffers every SELECT and the marker
+    // makes the harness deserialize an empty result set.
+    const executableSql = parameterizedSql.trimEnd().endsWith(";")
+      ? parameterizedSql
+      : `${parameterizedSql.trimEnd()};`;
+    const variableCommands = values.flatMap((value, index) => (
+      value == null ? [] : [`\\set p${index + 1} '${String(value).replaceAll("'", "''")}'`]
     ));
-    let stdout;
-    try {
-      stdout = await runPsql([
-        "--no-psqlrc",
-        "--quiet",
-        "--tuples-only",
-        "--no-align",
-        `--field-separator=${FIELD_SEPARATOR}`,
-        "-v", "ON_ERROR_STOP=1",
-        "--dbname", databaseUrl,
-        ...variables,
-        "--file=-"
-      ], parameterizedSql);
-    } catch (error) {
-      // Do not expose a database URL (which may embed credentials) in test logs.
-      const stderr = error instanceof Error ? error.message.trim() : "";
-      const sanitized = new Error(`psql query failed: ${stderr || "unknown error"}`);
-      if (stderr.includes('duplicate key value violates unique constraint "simulation_events_stream_sequence_unique"')) {
-        Object.assign(sanitized, {
-          code: "23505",
-          constraint: "simulation_events_stream_sequence_unique"
-        });
-      }
-      throw sanitized;
+    if (closed || pending !== undefined) throw new Error("psql session is unavailable for this query.");
+    const marker = `__LONGBURN_PSQL_${randomUUID()}__`;
+    const output = await new Promise((resolve, reject) => {
+      pending = { marker, resolve, reject };
+      child.stdin.write(`${variableCommands.join("\n")}\n${executableSql}\n\\echo ${marker}\n`);
+    });
+    return { rows: deserializeRows(sql, output) };
+  };
+  return {
+    query,
+    async close() {
+      if (closed) return;
+      closed = true;
+      child.stdin.end("\\q\n");
     }
+  };
+};
 
-    return { rows: deserializeRows(sql, stdout) };
+const psqlClient = {
+  async query(sql, values = []) {
+    const session = createPsqlSession();
+    try {
+      return await session.query(sql, values);
+    } catch (error) {
+      throw sanitizePsqlError(error);
+    } finally {
+      await session.close();
+    }
+  },
+  async withTransaction(callback) {
+    const session = createPsqlSession();
+    try {
+      await session.query("BEGIN");
+      const result = await callback(session);
+      await session.query("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        await session.query("ROLLBACK");
+      } catch {
+        // The original error is the useful transaction failure.
+      }
+      throw error;
+    } finally {
+      await session.close();
+    }
   }
 };
 
@@ -116,6 +175,30 @@ const deserializeRows = (sql, stdout) => {
       events_no_truncate_trigger_present: fields[7] === "t",
       stream_sequence_unique_present: fields[8] === "t"
     });
+  } else if (sql.includes("AS delivery_cursors_present")) {
+    deserialize = (fields) => ({
+      delivery_cursors_present: fields[0] === "t",
+      delivery_acknowledgements_present: fields[1] === "t"
+    });
+  } else if (sql.includes("INSERT INTO delivery_acknowledgements")) {
+    deserialize = (fields) => {
+      if (fields.length !== 1) {
+        throw new Error(`Expected acknowledgement insert to return one field, received ${fields.length}.`);
+      }
+      return { observer_id: fields[0] };
+    };
+  } else if (sql.includes("FROM delivery_cursors")) {
+    deserialize = (fields) => {
+      if (fields.length !== 4) {
+        throw new Error(`Expected 4 delivery cursor fields from psql, received ${fields.length}.`);
+      }
+      return {
+        observer_id: fields[0],
+        low_watermark: Number(fields[1]),
+        global_position: fields[2] === "" ? null : Number(fields[2]),
+        message_id: fields[3] === "" ? null : fields[3]
+      };
+    };
   } else {
     throw new Error("psql test client cannot deserialize an unrecognized query shape.");
   }
@@ -157,6 +240,28 @@ integrationDescribe(
           stream_sequence_unique_present: true
         }]
       });
+    });
+
+    it("persists acknowledgement ledgers with SQL NULL empty remainders", async () => {
+      await expect(psqlClient.query(`
+        SELECT
+          to_regclass('public.delivery_cursors') IS NOT NULL AS delivery_cursors_present,
+          to_regclass('public.delivery_acknowledgements') IS NOT NULL AS delivery_acknowledgements_present
+      `)).resolves.toEqual({
+        rows: [{ delivery_cursors_present: true, delivery_acknowledgements_present: true }]
+      });
+      const store = new PostgresDeliveryCursorStore(psqlClient);
+      const observerId = `delivery-${randomUUID()}`;
+      await expect(store.read(observerId)).resolves.toBeUndefined();
+      await expect(store.acknowledge(observerId, { globalPosition: 3, messageId: "message-3" })).resolves.toEqual({
+        observerId, lowWatermark: 0, delivered: [{ globalPosition: 3, messageId: "message-3" }]
+      });
+      await store.acknowledge(observerId, { globalPosition: 1, messageId: "message-1" });
+      await expect(store.acknowledge(observerId, { globalPosition: 2, messageId: "message-2" })).resolves.toEqual({
+        observerId, lowWatermark: 3, delivered: []
+      });
+      await expect(store.read(observerId)).resolves.toEqual({ observerId, lowWatermark: 3, delivered: [] });
+      await expect(store.acknowledge(observerId, { globalPosition: 3, messageId: "message-3" })).rejects.toThrow("already acknowledged");
     });
 
     it("enforces the two-key sequence and optimistic-concurrency contract", async () => {

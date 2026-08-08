@@ -1,6 +1,6 @@
 import { CausalityInvariantViolation, earliestLegalEmissionTimeMs, type CausalityIncident, type EmissionResult } from "./causality.js";
 import type { SimTimeMs } from "./clock.js";
-import type { DeliveryCursorStore } from "./delivery-cursor.js";
+import { hasAcknowledged, type DeliveryAcknowledgement, type DeliveryCursorStore } from "./delivery-cursor.js";
 import { buildEmittedMessage, type BuildEmittedMessage, type EmissionCandidate } from "./emitted-message.js";
 
 export type LightLaggedMessageClass = "shipReport" | "commandOutcomeReport" | "marketEvent";
@@ -16,7 +16,7 @@ export interface ScheduledEmission {
 
 /**
  * Dependencies for one scheduler writer. The host must serialize `run` calls
- * per observer; cursor compare-and-advance is conflict detection, not a lock.
+ * per observer; acknowledgement persistence is not a transport lock.
  */
 export interface EmissionSchedulerOptions {
   readonly cursors: DeliveryCursorStore;
@@ -25,11 +25,7 @@ export interface EmissionSchedulerOptions {
   /** Scheduler-side failures happen before the gate, but are equally closed. */
   readonly recordIncident: (incident: CausalityIncident) => void;
   readonly incrementCausalityFailure: () => void;
-  /**
-   * Records every light-lagged emission suppressed by an existing delivery
-   * cursor. This is a delivery-integrity counter, not a causality failure:
-   * increments expose a caller that presented already-acknowledged work.
-   */
+  /** Records every light-lagged emission suppressed by an acknowledgement. */
   readonly incrementBelowCursorSuppression: () => void;
 }
 
@@ -51,8 +47,8 @@ const validSourcePosition = (emission: ScheduledEmission): void => {
  * never a wall clock. Cursor writes happen only after emit acknowledges.
  *
  * A caller must serialize `run` calls for each observer. Concurrent calls can
- * both emit before either observes the other's cursor advance; the Postgres
- * cursor detects the losing advance, but does not make emission single-writer.
+ * both emit before either observes the other's acknowledgement, so persistence
+ * cannot make transport single-writer.
  */
 export class EmissionScheduler {
   readonly #cursors: DeliveryCursorStore;
@@ -73,22 +69,17 @@ export class EmissionScheduler {
    * Runs one serialized delivery pass for an observer.
    *
    * The caller must supply every unacknowledged light-lagged emission for the
-   * observer on every pass, in strictly ascending sourceGlobalPosition order.
-   * The scheduler cannot infer an omitted event because global positions may
-   * legitimately have gaps. A later presentation below the cursor is counted
-   * by incrementBelowCursorSuppression so that such a precondition violation
-   * cannot remain indistinguishable from ordinary duplicate suppression.
+   * observer on every pass. Presentation order is not a delivery dependency:
+   * each event is independently released at its own earliest legal tick. When
+   * two are first releasable on the same tick, globalPosition breaks the tie.
+   * Re-presenting an acknowledged message increments the delivery-integrity
+   * counter so duplicate suppression remains structured and observable.
    */
   async run(observerId: string, now: SimTimeMs, scheduled: readonly ScheduledEmission[]): Promise<SchedulerRunResult> {
     const lightLaggedPositions = new Set<number>();
-    let previousSourceGlobalPosition: number | undefined;
     for (const emission of scheduled) {
       validSourcePosition(emission);
       if (emission.message.observerId !== observerId) throw new RangeError("Scheduled emission observer does not match scheduler observer.");
-      if (previousSourceGlobalPosition !== undefined && emission.sourceGlobalPosition <= previousSourceGlobalPosition) {
-        throw new RangeError("Scheduled emissions must be strictly ascending by source global position.");
-      }
-      previousSourceGlobalPosition = emission.sourceGlobalPosition;
       if (isLightLaggedMessageClass(emission.message.class)) {
         if (lightLaggedPositions.has(emission.sourceGlobalPosition)) {
           throw new RangeError("One stored event cannot advance a delivery cursor more than once.");
@@ -96,53 +87,57 @@ export class EmissionScheduler {
         lightLaggedPositions.add(emission.sourceGlobalPosition);
       }
     }
-    const cursor = await this.#cursors.read(observerId);
+    let cursor = await this.#cursors.read(observerId);
     const emitted: string[] = [];
     const deferred: string[] = [];
     const blocked: string[] = [];
 
-    for (const emission of scheduled) {
+    const prepared = scheduled.map((emission) => {
+      let candidate: EmissionCandidate | undefined;
+      let earliest: number | undefined;
+      let incident: CausalityIncident | undefined;
+      try {
+        candidate = buildEmittedMessage({ ...emission.message, emissionTimeMs: now } as BuildEmittedMessage);
+        earliest = isLightLaggedMessageClass(emission.message.class)
+          ? earliestLegalEmissionTimeMs({ eventTime: candidate.eventTimeMs, emissionTime: candidate.emissionTimeMs, eventPosition: candidate.eventPosition, observerPositionAt: candidate.observerPositionAt })
+          : candidate.eventTimeMs;
+      } catch (error: unknown) {
+        incident = error instanceof CausalityInvariantViolation
+          ? error.incident
+          : { reason: "invalid-position" as const, provenance: { eventTime: emission.message.event.eventTime, eventPosition: emission.message.event.eventPosition } };
+      }
+      return { emission, candidate, earliest, incident };
+    }).sort((left, right) => (left.earliest ?? Number.POSITIVE_INFINITY) - (right.earliest ?? Number.POSITIVE_INFINITY) ||
+      left.emission.sourceGlobalPosition - right.emission.sourceGlobalPosition);
+
+    for (const { emission, candidate, earliest, incident } of prepared) {
       const local = !isLightLaggedMessageClass(emission.message.class);
-      if (!local && cursor !== undefined && emission.sourceGlobalPosition <= cursor.globalPosition) {
+      const acknowledgement: DeliveryAcknowledgement = { globalPosition: emission.sourceGlobalPosition, messageId: candidate?.messageId ?? `position:${emission.sourceGlobalPosition}` };
+      if (!local && hasAcknowledged(cursor, acknowledgement)) {
         this.#incrementBelowCursorSuppression();
         continue;
       }
-      let candidate: EmissionCandidate;
-      let earliest: number;
-      try {
-        candidate = buildEmittedMessage({ ...emission.message, emissionTimeMs: now } as BuildEmittedMessage);
-        earliest = earliestLegalEmissionTimeMs({
-          eventTime: candidate.eventTimeMs,
-          emissionTime: candidate.emissionTimeMs,
-          eventPosition: candidate.eventPosition,
-          observerPositionAt: candidate.observerPositionAt
-        });
-      } catch (error: unknown) {
-        const incident = error instanceof CausalityInvariantViolation
-          ? error.incident
-          : { reason: "invalid-position" as const, provenance: { eventTime: emission.message.event.eventTime, eventPosition: emission.message.event.eventPosition } };
+      if (incident !== undefined) {
         try { this.#recordIncident(incident); } catch { /* closed even if reporting fails */ }
         try { this.#incrementCausalityFailure(); } catch { /* closed even if alerting fails */ }
         blocked.push(`position:${emission.sourceGlobalPosition}`);
-        if (!local) break;
         continue;
       }
+      if (candidate === undefined || earliest === undefined) throw new Error("Prepared scheduler entry is incomplete.");
       // Observer-local messages are live-only: a missed zero-staleness echo is
       // rebuilt by H1 snapshot, never resent stale by this scheduler.
       if (local ? now !== candidate.eventTimeMs : now < earliest) {
         deferred.push(candidate.messageId);
-        if (!local) break;
         continue;
       }
       const result = await this.#emit(candidate);
       if (!result.sent) {
         blocked.push(candidate.messageId);
-        if (!local) break;
         continue;
       }
       emitted.push(candidate.messageId);
       if (!local) {
-        await this.#cursors.advance({ observerId, globalPosition: emission.sourceGlobalPosition, messageId: candidate.messageId });
+        cursor = await this.#cursors.acknowledge(observerId, acknowledgement);
       }
     }
     return { emitted, deferred, blocked };
