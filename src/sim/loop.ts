@@ -127,7 +127,9 @@ export class AuthoritativeSimLoop {
       const validatedPlan = validateFlightPlanRevision(flightPlan, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? []);
       const event: SimEvent = {
         type: "planRevisionApplied",
-        commandId: `command-${this.#streamSequence + 1}`,
+        // Local outcomes share the durable command-ID namespace with inbound commands.
+        // Keep their origin prefix distinct: resume() removes pending commands by ID.
+        commandId: `local-${this.#streamSequence + 1}`,
         flightPlan: validatedPlan
       };
       await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPosition) });
@@ -176,7 +178,9 @@ export class AuthoritativeSimLoop {
     return this.#serialize(async () => {
       const event: SimEvent = {
         type: "planRevisionRefused",
-        commandId: `command-${this.#streamSequence + 1}`,
+        // Local outcomes share the durable command-ID namespace with inbound commands.
+        // Keep their origin prefix distinct: resume() removes pending commands by ID.
+        commandId: `local-${this.#streamSequence + 1}`,
         flightPlan,
         reason: assertPlanRevisionRefusalReason(reason)
       };

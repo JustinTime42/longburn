@@ -172,6 +172,35 @@ describe("PlanRevision command transport", () => {
     expect(resumed.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["after-restart"]);
   });
 
+  it("retains an inbound command across resume when a local revision has a matching sequence", async () => {
+    const store = new InMemorySimulationEventStore();
+    await store.createStream({ id: "resume-mixed-origins", seed: 1, initialTime: simTimeMs(0) });
+    await store.append("resume-mixed-origins", {
+      // This is caller-supplied at the HTTP boundary. Its numeric suffix must
+      // not make it interchangeable with a local outcome at stream sequence 2.
+      event: {
+        type: "commandIssued", commandId: "command-2", issuedAtMs: simTimeMs(0), arrivalAtMs: simTimeMs(1_000),
+        hqPosition: { x: 0, y: 0, z: 0 }, arrivalPosition: position(), replacedNodeIds: [],
+        flightPlan: { destination: "earth", nodes: [node("inbound", 2_000)] }
+      },
+      eventTime: simTimeMs(0), eventPosition: { x: 0, y: 0, z: 0 }
+    });
+
+    const resumed = await AuthoritativeSimLoop.resume(store, "resume-mixed-origins");
+    await resumed.applyPlanRevision({ destination: "earth", nodes: [node("local", 3_000)] }, position);
+    expect((await resumed.persistedStream()).events.at(-1)?.event).toMatchObject({
+      type: "planRevisionApplied", commandId: "local-2"
+    });
+
+    const resumedAgain = await AuthoritativeSimLoop.resume(store, "resume-mixed-origins");
+    await resumedAgain.advance(1_000, position);
+
+    expect(resumedAgain.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["inbound"]);
+    expect((await resumedAgain.persistedStream()).events.at(-1)?.event).toMatchObject({
+      type: "planRevisionApplied", commandId: "command-2"
+    });
+  });
+
   it("preserves a non-empty replacement set across restart and stops at the rebuilt command boundary", async () => {
     const store = new InMemorySimulationEventStore();
     const loop = await AuthoritativeSimLoop.create({
