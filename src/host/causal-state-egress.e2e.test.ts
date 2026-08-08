@@ -3,14 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { simTimeMs } from "../sim/clock.js";
 import { InMemoryDeliveryCursorStore } from "../sim/delivery-cursor.js";
 import { InMemorySimulationEventStore, type StoredSimEvent } from "../sim/event-store.js";
-import type { EmissionCandidate, EmittableMessage } from "../sim/emitted-message.js";
+import { validateEmittedMessage, type EmittableMessage } from "../sim/emitted-message.js";
 import { AuthoritativeSimLoop } from "../sim/loop.js";
 import { burnDurationMs } from "../sim/mass-cargo.js";
-import { CausalStateEgress } from "./causal-state-egress.js";
 import { CausalStateHost, type StoredEventForEmission } from "./causal-state-host.js";
 
-// Deliberately independent from ../sim/causality.ts. This is the physical
-// oracle for the stationary Tier 0 HQ used by this end-to-end composition.
+// Deliberately independent from ../sim/causality.ts. These are physical
+// oracles for the end-to-end composition.
 const LIGHT_METERS_PER_SECOND = 299_792_458;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const HQ = { x: 0, y: 0, z: 0 };
@@ -20,6 +19,23 @@ const distanceFromHq = (position: { readonly x: number; readonly y: number; read
 
 const independentEarliestTick = (eventTimeMs: number, eventPosition: { readonly x: number; readonly y: number; readonly z: number }): number =>
   eventTimeMs + Math.ceil((distanceFromHq(eventPosition) / LIGHT_METERS_PER_SECOND) * 1_000);
+
+/** Exact arrival for a receiver moving at constant velocity from the origin. */
+const movingObserverEarliestTick = (
+  eventTimeMs: number,
+  eventPosition: { readonly x: number; readonly y: number; readonly z: number },
+  velocityMetersPerSecond: number
+): number => {
+  const elapsedSecondsAtEvent = eventTimeMs / 1_000;
+  const xSquared = eventPosition.x ** 2 + eventPosition.z ** 2;
+  const yOffset = eventPosition.y - velocityMetersPerSecond * elapsedSecondsAtEvent;
+  const cSquared = LIGHT_METERS_PER_SECOND ** 2;
+  const a = cSquared - velocityMetersPerSecond ** 2;
+  const b = -2 * velocityMetersPerSecond * yOffset;
+  const c = -(xSquared + yOffset ** 2);
+  const elapsedSeconds = (-b + Math.sqrt(b ** 2 - 4 * a * c)) / (2 * a);
+  return eventTimeMs + Math.ceil(elapsedSeconds * 1_000);
+};
 
 const report = (
   globalPosition: number,
@@ -56,36 +72,25 @@ const storedArrival = (arrival: StoredSimEvent): StoredEventForEmission => {
   };
 };
 
-const candidate = (eventTimeMs: number, emissionTimeMs: number, eventPosition: { readonly x: number; readonly y: number; readonly z: number }): EmissionCandidate => ({
-  messageId: "deliberately-violating-message",
-  observerId: "hq-player",
-  class: "shipReport",
-  payload: { event: "departureRecorded" },
-  eventTimeMs: simTimeMs(eventTimeMs),
-  emissionTimeMs: simTimeMs(emissionTimeMs),
-  eventPosition,
-  observerPositionAt: () => HQ
-});
-
-const wiredHost = (received: EmittableMessage[]) => {
+const wiredHost = (received: EmittableMessage[], observerPositionAt: (timeMs: number) => { readonly x: number; readonly y: number; readonly z: number } = () => HQ) => {
   const recordIncident = vi.fn();
   const incrementCausalityFailure = vi.fn();
   const host = new CausalStateHost({
     cursors: new InMemoryDeliveryCursorStore(),
     observerId: "hq-player",
-    observerPositionAt: () => HQ,
-    socket: { writeText: (payload) => received.push(JSON.parse(payload) as EmittableMessage) },
+    observerPositionAt,
+    socket: { writeText: (payload) => received.push(validateEmittedMessage(JSON.parse(payload))) },
     recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression: vi.fn()
   });
   return { host, recordIncident, incrementCausalityFailure };
 };
 
 describe("causal state egress end-to-end", () => {
-  it("delivers the complete seeded 40-day transit stream at HQ with causal provenance and authoritative staleness", async () => {
+  it("tick-steps the complete seeded 40-day transit stream at HQ with causal provenance and authoritative staleness", async () => {
     // Earth, Moon, a point mid-transit, and Mars. The values are seeded test
     // data, not ephemeris queries, so the virtual-clock run is reproducible.
     const scenarios = [
-      report(1, 0, { x: 0, y: 0, z: 0 }),
+      report(1, 1_000, { x: 0, y: 0, z: 0 }),
       report(2, 4 * DAY_MS, { x: 384_400_000, y: 0, z: 0 }),
       report(3, 20 * DAY_MS, { x: 72_000_000_000, y: 9_000_000_000, z: 0 }),
       report(4, 39 * DAY_MS, { x: 224_000_000_000, y: -4_000_000_000, z: 0 }, "arrivalRecorded")
@@ -93,10 +98,13 @@ describe("causal state egress end-to-end", () => {
     const received: EmittableMessage[] = [];
     const { host, recordIncident, incrementCausalityFailure } = wiredHost(received);
 
-    const result = await host.run(simTimeMs(40 * DAY_MS), scenarios);
-
-    expect(result).toEqual({ emitted: scenarios.map((entry) =>
-      `observer:hq-player/stream:ship-1/event:${entry.event.streamSequence}/class:shipReport`), deferred: [], blocked: [] });
+    for (const [index, scenario] of scenarios.entries()) {
+      const earliest = independentEarliestTick(scenario.event.eventTime, scenario.event.eventPosition);
+      const messageId = `observer:hq-player/stream:ship-1/event:${scenario.event.streamSequence}/class:shipReport`;
+      expect(await host.run(simTimeMs(earliest - 1), scenarios)).toMatchObject({ emitted: [], deferred: expect.arrayContaining([messageId]), blocked: [] });
+      expect(await host.run(simTimeMs(earliest), scenarios)).toMatchObject({ emitted: [messageId], blocked: [] });
+      expect(received).toHaveLength(index + 1);
+    }
     expect(received).toHaveLength(scenarios.length); // Liveness: the gate cannot pass by sending nothing.
     expect(recordIncident).not.toHaveBeenCalled();
     expect(incrementCausalityFailure).not.toHaveBeenCalled();
@@ -107,31 +115,47 @@ describe("causal state egress end-to-end", () => {
     }
   });
 
-  it("blocks ceil(exact)-1 and releases ceil(exact) through the egress transport boundary", () => {
+  it("blocks ceil(exact)-1 and releases ceil(exact) through the scheduler-to-egress transport boundary", async () => {
     const eventPosition = { x: 1_234_567_890, y: 0, z: 0 };
     const earliest = independentEarliestTick(50_000, eventPosition);
-    const writeText = vi.fn();
-    const egress = new CausalStateEgress({ recordIncident: vi.fn(), incrementCausalityFailure: vi.fn() });
-    const subscription = egress.subscribe("hq-player", { writeText });
+    const received: EmittableMessage[] = [];
+    const { host } = wiredHost(received);
+    const boundary = report(1, 50_000, eventPosition);
 
-    expect(subscription.emit(candidate(50_000, earliest - 1, eventPosition))).toEqual({ sent: false, reason: "early-emission" });
-    expect(writeText).not.toHaveBeenCalled();
-    expect(subscription.emit(candidate(50_000, earliest, eventPosition))).toEqual({ sent: true });
-    expect(writeText).toHaveBeenCalledOnce();
+    await expect(host.run(simTimeMs(earliest - 1), [boundary])).resolves.toMatchObject({ emitted: [], deferred: [expect.any(String)], blocked: [] });
+    expect(received).toEqual([]);
+    await expect(host.run(simTimeMs(earliest), [boundary])).resolves.toMatchObject({ emitted: [expect.any(String)], deferred: [], blocked: [] });
+    expect(received).toHaveLength(1);
   });
 
-  it("proves the real transport fixture fails closed for a deliberately early message", () => {
-    const writeText = vi.fn();
-    const recordIncident = vi.fn();
-    const incrementCausalityFailure = vi.fn();
-    const egress = new CausalStateEgress({ recordIncident, incrementCausalityFailure });
-    const subscription = egress.subscribe("hq-player", { writeText });
-    const eventPosition = { x: LIGHT_METERS_PER_SECOND * 3, y: 0, z: 0 };
+  it("delivers a near event while the same composed pass defers a farther event", async () => {
+    const received: EmittableMessage[] = [];
+    const { host } = wiredHost(received);
+    const near = report(1, 10_000, { x: LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
+    const far = report(2, 10_000, { x: LIGHT_METERS_PER_SECOND * 3, y: 0, z: 0 });
 
-    expect(subscription.emit(candidate(0, 2_999, eventPosition))).toEqual({ sent: false, reason: "early-emission" });
-    expect(writeText).not.toHaveBeenCalled();
-    expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "early-emission" }));
-    expect(incrementCausalityFailure).toHaveBeenCalledOnce();
+    await expect(host.run(simTimeMs(11_000), [near, far])).resolves.toMatchObject({
+      emitted: ["observer:hq-player/stream:ship-1/event:1/class:shipReport"],
+      deferred: ["observer:hq-player/stream:ship-1/event:2/class:shipReport"], blocked: []
+    });
+    expect(received).toHaveLength(1);
+    expect(received[0]?.eventPosition).toEqual(near.event.eventPosition);
+  });
+
+  it("uses a moving observer worldline at the independent retarded-time boundary", async () => {
+    const marsDistanceMeters = 224_000_000_000;
+    const marsLightTimeSeconds = marsDistanceMeters / LIGHT_METERS_PER_SECOND;
+    // Earth moves about 0.07 light-seconds over this Mars light time.
+    const velocityMetersPerSecond = (0.07 * LIGHT_METERS_PER_SECOND) / marsLightTimeSeconds;
+    const observerPositionAt = (timeMs: number) => ({ x: 0, y: velocityMetersPerSecond * (timeMs / 1_000), z: 0 });
+    const movingReport = report(1, 1_000, { x: marsDistanceMeters, y: 0, z: 0 });
+    const earliest = movingObserverEarliestTick(movingReport.event.eventTime, movingReport.event.eventPosition, velocityMetersPerSecond);
+    const received: EmittableMessage[] = [];
+    const { host } = wiredHost(received, observerPositionAt);
+
+    await expect(host.run(simTimeMs(earliest - 1), [movingReport])).resolves.toMatchObject({ emitted: [], deferred: [expect.any(String)], blocked: [] });
+    await expect(host.run(simTimeMs(earliest), [movingReport])).resolves.toMatchObject({ emitted: [expect.any(String)], blocked: [] });
+    expect(received[0]?.observerPosition).toEqual(observerPositionAt(earliest));
   });
 
   it("uses an authoritative arrivalRecorded stored terminal position over a disagreeing event-position resolver", async () => {
