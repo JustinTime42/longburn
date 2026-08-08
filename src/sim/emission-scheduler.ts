@@ -14,6 +14,10 @@ export interface ScheduledEmission {
   readonly message: Omit<BuildEmittedMessage, "emissionTimeMs">;
 }
 
+/**
+ * Dependencies for one scheduler writer. The host must serialize `run` calls
+ * per observer; cursor compare-and-advance is conflict detection, not a lock.
+ */
 export interface EmissionSchedulerOptions {
   readonly cursors: DeliveryCursorStore;
   /** E3 supplies the causal gate plus real transport acknowledgement here. */
@@ -21,6 +25,12 @@ export interface EmissionSchedulerOptions {
   /** Scheduler-side failures happen before the gate, but are equally closed. */
   readonly recordIncident: (incident: CausalityIncident) => void;
   readonly incrementCausalityFailure: () => void;
+  /**
+   * Records every light-lagged emission suppressed by an existing delivery
+   * cursor. This is a delivery-integrity counter, not a causality failure:
+   * increments expose a caller that presented already-acknowledged work.
+   */
+  readonly incrementBelowCursorSuppression: () => void;
 }
 
 export interface SchedulerRunResult {
@@ -39,26 +49,46 @@ const validSourcePosition = (emission: ScheduledEmission): void => {
 /**
  * Per-observer scheduler. It deliberately accepts simulation time as input,
  * never a wall clock. Cursor writes happen only after emit acknowledges.
+ *
+ * A caller must serialize `run` calls for each observer. Concurrent calls can
+ * both emit before either observes the other's cursor advance; the Postgres
+ * cursor detects the losing advance, but does not make emission single-writer.
  */
 export class EmissionScheduler {
   readonly #cursors: DeliveryCursorStore;
   readonly #emit: (candidate: EmissionCandidate) => Promise<EmissionResult>;
   readonly #recordIncident: (incident: CausalityIncident) => void;
   readonly #incrementCausalityFailure: () => void;
+  readonly #incrementBelowCursorSuppression: () => void;
 
-  constructor({ cursors, emit, recordIncident, incrementCausalityFailure }: EmissionSchedulerOptions) {
+  constructor({ cursors, emit, recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression }: EmissionSchedulerOptions) {
     this.#cursors = cursors;
     this.#emit = emit;
     this.#recordIncident = recordIncident;
     this.#incrementCausalityFailure = incrementCausalityFailure;
+    this.#incrementBelowCursorSuppression = incrementBelowCursorSuppression;
   }
 
+  /**
+   * Runs one serialized delivery pass for an observer.
+   *
+   * The caller must supply every unacknowledged light-lagged emission for the
+   * observer on every pass, in strictly ascending sourceGlobalPosition order.
+   * The scheduler cannot infer an omitted event because global positions may
+   * legitimately have gaps. A later presentation below the cursor is counted
+   * by incrementBelowCursorSuppression so that such a precondition violation
+   * cannot remain indistinguishable from ordinary duplicate suppression.
+   */
   async run(observerId: string, now: SimTimeMs, scheduled: readonly ScheduledEmission[]): Promise<SchedulerRunResult> {
-    const ordered = [...scheduled].sort((left, right) => left.sourceGlobalPosition - right.sourceGlobalPosition);
     const lightLaggedPositions = new Set<number>();
-    for (const emission of ordered) {
+    let previousSourceGlobalPosition: number | undefined;
+    for (const emission of scheduled) {
       validSourcePosition(emission);
       if (emission.message.observerId !== observerId) throw new RangeError("Scheduled emission observer does not match scheduler observer.");
+      if (previousSourceGlobalPosition !== undefined && emission.sourceGlobalPosition <= previousSourceGlobalPosition) {
+        throw new RangeError("Scheduled emissions must be strictly ascending by source global position.");
+      }
+      previousSourceGlobalPosition = emission.sourceGlobalPosition;
       if (isLightLaggedMessageClass(emission.message.class)) {
         if (lightLaggedPositions.has(emission.sourceGlobalPosition)) {
           throw new RangeError("One stored event cannot advance a delivery cursor more than once.");
@@ -71,9 +101,12 @@ export class EmissionScheduler {
     const deferred: string[] = [];
     const blocked: string[] = [];
 
-    for (const emission of ordered) {
+    for (const emission of scheduled) {
       const local = !isLightLaggedMessageClass(emission.message.class);
-      if (!local && cursor !== undefined && emission.sourceGlobalPosition <= cursor.globalPosition) continue;
+      if (!local && cursor !== undefined && emission.sourceGlobalPosition <= cursor.globalPosition) {
+        this.#incrementBelowCursorSuppression();
+        continue;
+      }
       let candidate: EmissionCandidate;
       let earliest: number;
       try {
