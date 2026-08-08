@@ -77,6 +77,12 @@ EmittedMessage {
 - **2.2** is the flight-plan spec's ruling made mechanical: validity is judged at the ship
   at arrival; the applied/refused notice travels back at c. The player learns their
   revision's fate one light-round-trip after issuing, never sooner.
+  - **Command-ID shape (ADDED 2026-08-08, longburn-xo9b; Warden xo9b f2):** outcome
+    reports whose `commandId` begins with the reserved prefix `local-` correlate to no
+    2.3 echo the client will ever hold — they are locally-originated (bootstrap/system)
+    revisions, not player commands, and a client must tolerate and may ignore them.
+    Player-issued inbound commands use the `command-` namespace. The `local-` namespace
+    is reserved: no external caller may supply an ID in it (enforcement: longburn-5bhv).
 - **2.3**: issuing a command is something the player did at HQ; echoing it is staleness 0.
   The echo is the client's authority for "what I have asked for."
 - **2.6 — stated so nobody "lags" the planets:** planetary positions are deterministic
