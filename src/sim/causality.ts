@@ -246,7 +246,12 @@ export class CausalEmissionGate {
         eventPosition: event.eventPosition,
         observerPositionAt: event.observerPositionAt
       });
-      const observerPosition = validatedPosition(event.observerPositionAt(event.emissionTimeMs));
+      let observerPosition: PositionMeters;
+      try {
+        observerPosition = validatedPosition(event.observerPositionAt(event.emissionTimeMs));
+      } catch {
+        throw failure("invalid-position", event);
+      }
       message = validateEmittedMessage({
         ...event,
         observerPosition,

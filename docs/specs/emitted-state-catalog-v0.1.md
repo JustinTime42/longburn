@@ -38,7 +38,15 @@ EmittedMessage {
 - **Delivery is idempotent (settled, 3n9 f3):** `messageId` + a per-observer monotone
   emission cursor; retries re-enter the gate and re-validate, so a duplicate can only
   leave at a legal tick. No three-state result; `sent:false` plus redelivery is the model.
-- Per-observer ordering: monotone by `emissionTimeMs`; ties break by log order.
+- **Delivery-guarantee split (ADDENDUM 2026-08-08, Mayor answer to the Forge's din.5.2
+  escalation; flagged for Overseer ratification at din.5.2 review):** the durable no-skip
+  cursor guarantee covers the LIGHT-LAGGED classes (2.1, 2.2, 2.4) — a lost report has no
+  other path to the player. Observer-local classes (2.3 commandEcho, 2.5 simClock) are
+  live-delivery-only and excluded from the cursor: after a crash they are RECONSTRUCTED by
+  the snapshot path (row H1's reconnect = snapshot-then-buffered-deltas, rebuilt from the
+  durable log — `commandIssued` is the truth, the echo is its projection), never re-emitted
+  with a violated zero-staleness envelope and never silently lost. The cursor advances
+  after transport acknowledgment: at-least-once, with duplicates that re-enter the gate.
 
 ## 2. The catalog
 
@@ -88,7 +96,7 @@ never excuses.
 |---|---|
 | `invalid-provenance` | A time failed validation (non-negative safe-integer sim ms) before comparison — includes NaN and malformed decodes |
 | `invalid-position` | A position was non-finite or otherwise unusable, wherever sampled (event, arrival iterates, or emission time — Warden cav f1) |
-| `light-cone-failure` | The arrival-time solve failed to converge inside its hard iteration cap, or errored |
+| `light-cone-failure` | The arrival-time solve failed to converge inside its hard iteration cap. (A solve that *errors* on a non-finite arrival sample reports `invalid-position` — the bad sample is the cause; clarified 2026-08-08, Warden w35 f4, so the two rows no longer claim the same event) |
 | `early-emission` | The invariant itself would be violated: emission before the earliest legal tick |
 | `invalid-envelope` | The EmittedMessage failed schema validation (bad payload, empty observerId, reserved class) |
 | `transport-failure` | The transport layer reported failure after the gate released the message; the message may already be on the wire — retries re-enter the gate and are legal duplicates (idempotent delivery, §1) |
