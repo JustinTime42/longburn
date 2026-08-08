@@ -47,6 +47,16 @@ EmittedMessage {
   durable log — `commandIssued` is the truth, the echo is its projection), never re-emitted
   with a violated zero-staleness envelope and never silently lost. The cursor advances
   after transport acknowledgment: at-least-once, with duplicates that re-enter the gate.
+- **Per-observer ordering (restored 2026-08-08, Warden din.5.2 f8 — the addendum edit had
+  displaced this bullet without saying so):** light-lagged delivery is ordered and gated
+  strictly by `globalPosition` — a single scalar watermark with head-of-line blocking. An
+  earlier-logged report whose light has not yet arrived delays a later-logged report whose
+  light already has (a near-Earth report can wait behind an older Mars report). This
+  SUPERSEDES the earlier "monotone by emissionTimeMs, ties by log order" rule: the
+  watermark is conservative (later, never earlier — SO 12 intact), makes the no-skip
+  cursor a single comparable scalar, and the head-of-line cost at T0 (one ship, one
+  observer) is nil. Revisit if multi-source lag spreads ever make the blocking
+  player-visible — that revisit is a design decision, not a bug fix.
 
 ## 2. The catalog
 
