@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { conicElements, isNearParabolic, KEPLER_REFINEMENT_ITERATIONS, KEPLER_RESIDUAL_RELATIVE_TOLERANCE, KeplerPropagationConvergenceError, propagateKepler, stateFromConicElements, stumpffC2C3, type KeplerState } from "./kepler.js";
 
 const EARTH_MU = 398_600.4418;
+const SUN_MU = 132_712_440_018;
 
 const magnitude = (value: { readonly x: number; readonly y: number; readonly z: number }): number => Math.sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
 const difference = (left: { readonly x: number; readonly y: number; readonly z: number }, right: { readonly x: number; readonly y: number; readonly z: number }) => magnitude({ x: left.x - right.x, y: left.y - right.y, z: left.z - right.z });
@@ -95,6 +96,40 @@ describe("kepler core", () => {
     const reconstructed = stateFromConicElements(EARTH_MU, conicElements(EARTH_MU, initial));
     expect(difference(reconstructed.positionKm, initial.positionKm)).toBeLessThan(1e-8);
     expect(difference(reconstructed.velocityKmPerSecond, initial.velocityKmPerSecond)).toBeLessThan(1e-11);
+  });
+
+  it("classifies near-parabolic heliocentric elements relative to the current radius", () => {
+    const periapsisKm = 149_597_870.7;
+    const eccentricity = 0.9999;
+    const semiMajorAxisKm = periapsisKm / (1 - eccentricity);
+    const state = stateFromConicElements(SUN_MU, {
+      semiMajorAxisKm,
+      semiLatusRectumKm: periapsisKm * (1 + eccentricity),
+      eccentricity,
+      inclinationRadians: 0,
+      longitudeOfAscendingNodeRadians: 0,
+      argumentOfPeriapsisRadians: 0,
+      trueAnomalyRadians: 0
+    });
+
+    const recovered = conicElements(SUN_MU, state).semiMajorAxisKm;
+    expect(Number.isFinite(recovered)).toBe(true);
+    expect(recovered).toBeGreaterThan(1e12);
+  });
+
+  it("uses angular-momentum-relative equatorial conventions at heliocentric scale", () => {
+    const radiusKm = 149_597_870.7;
+    const state = stateFromConicElements(SUN_MU, {
+      semiMajorAxisKm: radiusKm,
+      semiLatusRectumKm: radiusKm,
+      eccentricity: 0,
+      inclinationRadians: 1e-11,
+      longitudeOfAscendingNodeRadians: 0.8,
+      argumentOfPeriapsisRadians: 0,
+      trueAnomalyRadians: 0.4
+    });
+
+    expect(conicElements(SUN_MU, state).longitudeOfAscendingNodeRadians).toBe(0);
   });
 
   it("matches Vallado Example 2-4 after 2,400 seconds", () => {
