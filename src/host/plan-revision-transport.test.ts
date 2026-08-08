@@ -10,6 +10,7 @@ import { burnDurationMs } from "../sim/mass-cargo.js";
 import { PlanRevisionTransport } from "./plan-revision-transport.js";
 
 const position = () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
+const timeVaryingPosition = (timeMs = 0) => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: timeMs, z: 0 });
 const node = (nodeId: string, executeAtMs: number) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind: "accel" as const,
   burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 1, y: 0, z: 0 }
@@ -32,23 +33,23 @@ const expectUnchangedExecutedHistory = (
   }
 };
 
-const setup = async (id: string) => {
+const setup = async (id: string, shipPositionAt = position) => {
   const loop = await AuthoritativeSimLoop.create({
     store: new InMemorySimulationEventStore(), stream: { id, seed: 1, initialTime: simTimeMs(0) }
   });
-  return { loop, transport: new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) }) };
+  return { loop, transport: new PlanRevisionTransport({ loop, shipPositionAt, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) }) };
 };
 
 describe("PlanRevision command transport", () => {
   it("stores the resolver evaluated at each due event's own time", async () => {
-    const { loop, transport } = await setup("own-time-envelope");
-    await loop.applyPlanRevision({ destination: "earth", nodes: [node("due-now", 0)] }, position);
+    const { loop, transport } = await setup("own-time-envelope", timeVaryingPosition);
+    await loop.applyPlanRevision({ destination: "earth", nodes: [node("due-now", 0)] }, timeVaryingPosition);
     await transport.issue({ destination: "earth", nodes: [node("later", 2_000)] });
 
     const persisted = await loop.persistedStream();
     const burnStarted = persisted.events.find(({ event }) => event.type === "burnStarted");
     const command = persisted.events.find(({ event }) => event.type === "commandIssued");
-    expect(burnStarted).toMatchObject({ eventTime: 0, eventPosition: position() });
+    expect(burnStarted).toMatchObject({ eventTime: 0, eventPosition: timeVaryingPosition(0) });
     expect(command).toMatchObject({ eventTime: 0, eventPosition: { x: 0, y: 0, z: 0 } });
   });
 
