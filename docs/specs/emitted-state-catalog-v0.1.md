@@ -15,6 +15,10 @@ Interface-shape guidance, not implementation: the Forge owns the code.
 ```
 EmittedMessage {
   messageId          // unique, stable across redelivery (idempotence key)
+  observerId         // the observer this message is addressed to, as data
+                     // (added 2026-08-08 per Warden din.5.1 f5 / gw1 f5: E2's
+                     // per-observer cursor needs identity as a field, never
+                     // parsed out of messageId)
   class              // one of §2's classes
   payload            // class-specific, validated
   eventTimeMs        // sim time of the underlying event (youngest, if aggregate)
