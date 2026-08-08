@@ -76,8 +76,10 @@ describe("inbound causality invariant", () => {
         const persisted = await loop.persistedStream();
         expect(replayPersistedSegment(persisted)).toEqual(loop.state);
         expect((await AuthoritativeSimLoop.resume(store, persisted.id)).state).toEqual(loop.state);
+        const inboundCommand = persisted.events.find(({ event }) => event.type === "commandIssued")?.event;
+        const inboundCommandId = inboundCommand?.type === "commandIssued" ? inboundCommand.commandId : undefined;
         const arrival = persisted.events.find(({ event }) =>
-          (event.type === "planRevisionApplied" || event.type === "planRevisionRefused") && event.commandId !== undefined
+          (event.type === "planRevisionApplied" || event.type === "planRevisionRefused") && event.commandId === inboundCommandId
         )?.event;
         if (raceOffset > 0) {
           expect(arrival).toMatchObject({ type: "planRevisionApplied", replacedNodeIds: ["old"] });
@@ -96,7 +98,7 @@ describe("inbound causality invariant", () => {
     fc.assert(fc.property(fc.double({ min: 0, max: 100_000, noNaN: true }), (seconds) => {
       const burn = quantizeBurnParameters({ burnDurationSeconds: seconds });
       const restored = quantizeBurnParameters(dequantizeBurnParameters(burn));
-      const event: SimEvent = { type: "planRevisionApplied", flightPlan: { destination: "earth", nodes: [node("quantized", 1, burn.burnDurationMs)] } };
+      const event: SimEvent = { type: "planRevisionApplied", commandId: "command-1", flightPlan: { destination: "earth", nodes: [node("quantized", 1, burn.burnDurationMs)] } };
       const state = replaySegment(1, [event]);
       expect(restored).toEqual(burn);
       expect(state.ship?.flightPlan.nodes[0]?.burn).toEqual(burn);

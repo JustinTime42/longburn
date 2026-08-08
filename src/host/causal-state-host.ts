@@ -1,4 +1,4 @@
-import type { ObserverPositionAt } from "../sim/causality.js";
+import type { CausalityIncident, ObserverPositionAt } from "../sim/causality.js";
 import type { SimTimeMs } from "../sim/clock.js";
 import type { DeliveryCursorStore } from "../sim/delivery-cursor.js";
 import type { StoredSimEvent } from "../sim/event-store.js";
@@ -34,8 +34,8 @@ const storedEnvelope = (observerId: string, stored: StoredEventForEmission): Omi
 
 /**
  * Projects T0's catalog-backed stored facts into scheduler input. Unsupported
- * events have no player-visible projection; a command outcome without its
- * durable command identity is rejected rather than emitted ambiguously.
+ * events have no player-visible projection. Command echoes are observer-local
+ * state rebuilt by H1's reconnect snapshot, so durable replay omits them.
  */
 export const projectStoredEvent = (
   observerId: string,
@@ -60,12 +60,10 @@ export const projectStoredEvent = (
       case "burnEnded":
         return { ...base, class: "shipReport" as const, payload: { event: "burnEnded" as const, nodeId: stored.event.event.nodeId }, observerPositionAt };
       case "commandIssued":
-        return { ...base, class: "commandEcho" as const, payload: { commandId: stored.event.event.commandId }, observerPositionAt };
+        return undefined;
       case "planRevisionApplied":
-        if (stored.event.event.commandId === undefined) throw new RangeError("Projected command outcomes require a durable command ID.");
         return { ...base, class: "commandOutcomeReport" as const, payload: { outcome: "applied" as const, commandId: stored.event.event.commandId }, observerPositionAt };
       case "planRevisionRefused":
-        if (stored.event.event.commandId === undefined) throw new RangeError("Projected command outcomes require a durable command ID.");
         return {
           ...base,
           class: "commandOutcomeReport" as const,
@@ -90,12 +88,16 @@ export class CausalStateHost {
   readonly #observerId: string;
   readonly #observerPositionAt: ObserverPositionAt;
   readonly #scheduler: EmissionScheduler;
+  readonly #recordIncident: (incident: CausalityIncident) => void;
+  readonly #incrementCausalityFailure: () => void;
 
   constructor({ cursors, observerId, observerPositionAt, socket, recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression }: CausalStateHostOptions) {
     const egress = new CausalStateEgress({ recordIncident, incrementCausalityFailure });
     const subscription = egress.subscribe(observerId, socket);
     this.#observerId = observerId;
     this.#observerPositionAt = observerPositionAt;
+    this.#recordIncident = recordIncident;
+    this.#incrementCausalityFailure = incrementCausalityFailure;
     this.#scheduler = new EmissionScheduler({
       cursors,
       emit: async (candidate) => {
@@ -111,11 +113,47 @@ export class CausalStateHost {
     });
   }
 
-  run(now: SimTimeMs, storedEvents: readonly StoredEventForEmission[]): Promise<SchedulerRunResult> {
-    const scheduled = storedEvents.flatMap((stored) => {
-      const projected = projectStoredEvent(this.#observerId, this.#observerPositionAt, stored);
-      return projected === undefined ? [] : [projected];
-    });
-    return this.#scheduler.run(this.#observerId, now, scheduled);
+  async run(now: SimTimeMs, storedEvents: readonly StoredEventForEmission[]): Promise<SchedulerRunResult> {
+    const scheduled: ScheduledEmission[] = [];
+    const blocked: string[] = [];
+    for (const [index, stored] of storedEvents.entries()) {
+      try {
+        const projected = projectStoredEvent(this.#observerId, this.#observerPositionAt, stored);
+        if (projected !== undefined) scheduled.push(projected);
+      } catch {
+        const globalPosition = this.#projectionPosition(stored, index);
+        this.#recordProjectionFailure(stored);
+        blocked.push(`position:${globalPosition}`);
+      }
+    }
+    const result = await this.#scheduler.run(this.#observerId, now, scheduled);
+    return { ...result, blocked: [...blocked, ...result.blocked] };
+  }
+
+  #projectionPosition(stored: StoredEventForEmission, index: number): number | string {
+    try {
+      const position = stored.event.globalPosition;
+      return Number.isSafeInteger(position) && position > 0 ? position : `projection:${index}`;
+    } catch {
+      return `projection:${index}`;
+    }
+  }
+
+  #recordProjectionFailure(stored: StoredEventForEmission): void {
+    let eventTime: unknown;
+    let eventPosition: CausalityIncident["provenance"]["eventPosition"];
+    try {
+      eventTime = stored.event.eventTime;
+      const storedPosition = stored.event.eventPosition;
+      if (storedPosition !== undefined && Number.isFinite(storedPosition.x) && Number.isFinite(storedPosition.y) && Number.isFinite(storedPosition.z)) {
+        eventPosition = { x: storedPosition.x, y: storedPosition.y, z: storedPosition.z };
+      }
+    } catch { /* malformed records must not make reporting unsafe */ }
+    const provenance: CausalityIncident["provenance"] = {
+      ...(eventTime === undefined ? {} : { eventTime }),
+      ...(eventPosition === undefined ? {} : { eventPosition })
+    };
+    try { this.#recordIncident({ reason: "invalid-envelope", provenance }); } catch { /* closed even if reporting fails */ }
+    try { this.#incrementCausalityFailure(); } catch { /* closed even if alerting fails */ }
   }
 }

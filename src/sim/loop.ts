@@ -88,7 +88,7 @@ export class AuthoritativeSimLoop {
     const pending = new Map<string, Extract<SimEvent, { readonly type: "commandIssued" }>>();
     for (const { event } of persisted.events) {
       if (event.type === "commandIssued") pending.set(event.commandId, event);
-      if ((event.type === "planRevisionApplied" || event.type === "planRevisionRefused") && event.commandId !== undefined) {
+      if (event.type === "planRevisionApplied" || event.type === "planRevisionRefused") {
         pending.delete(event.commandId);
       }
     }
@@ -125,7 +125,11 @@ export class AuthoritativeSimLoop {
     return this.#serialize(async () => {
       await this.#recordDepartureIfNeeded(eventPosition);
       const validatedPlan = validateFlightPlanRevision(flightPlan, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? []);
-      const event: SimEvent = { type: "planRevisionApplied", flightPlan: validatedPlan };
+      const event: SimEvent = {
+        type: "planRevisionApplied",
+        commandId: `command-${this.#streamSequence + 1}`,
+        flightPlan: validatedPlan
+      };
       await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPosition) });
       this.#reducer.apply(event);
       await this.#advanceDueBurns(eventPosition);
@@ -170,7 +174,12 @@ export class AuthoritativeSimLoop {
   /** Records an arrival-time refusal without changing the paper plan. */
   async refusePlanRevision(flightPlan: FlightPlan, reason: PlanRevisionRefusalReason, eventPosition: () => PositionMeters): Promise<void> {
     return this.#serialize(async () => {
-      const event: SimEvent = { type: "planRevisionRefused", flightPlan, reason: assertPlanRevisionRefusalReason(reason) };
+      const event: SimEvent = {
+        type: "planRevisionRefused",
+        commandId: `command-${this.#streamSequence + 1}`,
+        flightPlan,
+        reason: assertPlanRevisionRefusalReason(reason)
+      };
       await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
       this.#reducer.apply(event);
     });

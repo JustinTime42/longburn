@@ -27,7 +27,7 @@ describe("event log replay", () => {
 
   it("derives phases from burn history and elapsed time, never phase events", () => {
     const events: readonly SimEvent[] = [
-      { type: "planRevisionApplied", flightPlan: plan(node("outbound", 2, "accel"), node("capture", 6, "decel")) },
+      { type: "planRevisionApplied", commandId: "command-1", flightPlan: plan(node("outbound", 2, "accel"), node("capture", 6, "decel")) },
       { type: "clockAdvanced", elapsedMs: 2 }, { type: "burnStarted", node: node("outbound", 2, "accel") },
       { type: "clockAdvanced", elapsedMs: 1 }, { type: "burnEnded", nodeId: "outbound" },
       { type: "clockAdvanced", elapsedMs: 3 }, { type: "burnStarted", node: node("capture", 6, "decel") },
@@ -44,10 +44,10 @@ describe("event log replay", () => {
 
   it("rejects reintroducing executed burns on both direct and persisted replay paths", () => {
     const events: readonly SimEvent[] = [
-      { type: "planRevisionApplied", flightPlan: plan(node("burn-1", 0)) },
+      { type: "planRevisionApplied", commandId: "command-1", flightPlan: plan(node("burn-1", 0)) },
       { type: "burnStarted", node: node("burn-1", 0) },
       { type: "clockAdvanced", elapsedMs: 1 }, { type: "burnEnded", nodeId: "burn-1" },
-      { type: "planRevisionApplied", flightPlan: plan(node("burn-1", 2, "decel")) }
+      { type: "planRevisionApplied", commandId: "command-2", flightPlan: plan(node("burn-1", 2, "decel")) }
     ];
     const replay = () => replaySegment(1, events);
     const persistedReplay = () => replayPersistedSegment({ seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) });
@@ -57,10 +57,10 @@ describe("event log replay", () => {
 
   it("rejects an applied command whose issue-time replacement set includes an executed burn on both replay paths", () => {
     const events: readonly SimEvent[] = [
-      { type: "planRevisionApplied", flightPlan: plan(node("burn-1", 0)) },
+      { type: "planRevisionApplied", commandId: "command-1", flightPlan: plan(node("burn-1", 0)) },
       { type: "burnStarted", node: node("burn-1", 0) },
       { type: "clockAdvanced", elapsedMs: 1 }, { type: "burnEnded", nodeId: "burn-1" },
-      { type: "planRevisionApplied", flightPlan: plan(node("replacement", 2)), replacedNodeIds: ["burn-1"] }
+      { type: "planRevisionApplied", commandId: "command-2", flightPlan: plan(node("replacement", 2)), replacedNodeIds: ["burn-1"] }
     ];
     const replay = () => replaySegment(1, events);
     const persistedReplay = () => replayPersistedSegment({ seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) });
@@ -70,10 +70,17 @@ describe("event log replay", () => {
 
   it("keeps a refused revision as history without changing the pending plan", () => {
     const events: readonly SimEvent[] = [
-      { type: "planRevisionApplied", flightPlan: plan(node("first", 4)) },
-      { type: "planRevisionRefused", flightPlan: plan(node("replacement", 4), node("replacement", 5)), reason: "invalid-plan" }
+      { type: "planRevisionApplied", commandId: "command-1", flightPlan: plan(node("first", 4)) },
+      { type: "planRevisionRefused", commandId: "command-2", flightPlan: plan(node("replacement", 4), node("replacement", 5)), reason: "invalid-plan" }
     ];
     expect(replaySegment(1, events).ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["first"]);
+  });
+
+  it("rejects revision outcomes without a non-empty command ID during replay", () => {
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", commandId: "", flightPlan: plan() }]))
+      .toThrow("non-empty command ID");
+    expect(() => replaySegment(1, [{ type: "planRevisionRefused", commandId: "", flightPlan: plan(), reason: "invalid-plan" }]))
+      .toThrow("non-empty command ID");
   });
 
   it("replays persisted plans with executed and revised pending nodes equivalently", async () => {
@@ -93,12 +100,12 @@ describe("event log replay", () => {
   });
 
   it("rejects malformed plans and impossible burn history in the shared reducer", () => {
-    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("late", 2), node("early", 1)) }]))
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", commandId: "command-1", flightPlan: plan(node("late", 2), node("early", 1)) }]))
       .toThrow("strictly increasing");
-    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("first", 0, "accel", 10), node("overlap", 5, "decel")) }]))
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", commandId: "command-2", flightPlan: plan(node("first", 0, "accel", 10), node("overlap", 5, "decel")) }]))
       .toThrow("cannot overlap");
     expect(() => replaySegment(1, [{ type: "burnStarted", node: node("orphan", 0) }])).toThrow("without a flight plan");
-    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: plan(node("one", 1)) }, { type: "burnStarted", node: node("one", 1) }]))
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", commandId: "command-3", flightPlan: plan(node("one", 1)) }, { type: "burnStarted", node: node("one", 1) }]))
       .toThrow("scheduled simulation time");
   });
 
@@ -124,7 +131,7 @@ describe("event log replay", () => {
     )).toMatchObject({ kind: "sufficient" });
     expect(projectPropellantForBurns(historicallyAcceptedPlan.nodes.map(({ burn }) => burn))).toMatchObject({ kind: "exhausted" });
 
-    const events: readonly SimEvent[] = [{ type: "planRevisionApplied", flightPlan: historicallyAcceptedPlan }];
+    const events: readonly SimEvent[] = [{ type: "planRevisionApplied", commandId: "command-1", flightPlan: historicallyAcceptedPlan }];
     const persisted = { seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) };
 
     expect(replaySegment(1, events).ship?.flightPlan).toEqual({ ...historicallyAcceptedPlan, destination: "earth" });
@@ -133,7 +140,7 @@ describe("event log replay", () => {
 
   it("rejects a recorded plan without a durable destination instead of inventing Earth", () => {
     const missingDestination = { nodes: [] } as unknown as FlightPlan;
-    expect(() => replaySegment(1, [{ type: "planRevisionApplied", flightPlan: missingDestination }]))
+    expect(() => replaySegment(1, [{ type: "planRevisionApplied", commandId: "command-1", flightPlan: missingDestination }]))
       .toThrow("known destination body");
   });
 
@@ -153,6 +160,8 @@ describe("event log replay", () => {
     const persisted = await loop.persistedStream();
     expect(persisted.events).toHaveLength(2);
     expect(replayPersistedSegment(persisted).ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["first"]);
+    expect(persisted.events.map(({ event }) => event.type === "planRevisionApplied" || event.type === "planRevisionRefused" ? event.commandId : undefined))
+      .toEqual(["command-1", "command-2"]);
   });
 
   it("validates a refusal reason before it can enter the durable log", async () => {
@@ -161,7 +170,7 @@ describe("event log replay", () => {
     await expect(loop.refusePlanRevision(plan(node("replacement", 4)), "unknown" as PlanRevisionRefusalReason, () => ({ x: 0, y: 0, z: 0 })))
       .rejects.toThrow("require a known reason");
     expect((await loop.persistedStream()).events).toEqual([]);
-    expect(() => replaySegment(1, [{ type: "planRevisionRefused", flightPlan: plan(node("replacement", 4)), reason: "unknown" as PlanRevisionRefusalReason }]))
+    expect(() => replaySegment(1, [{ type: "planRevisionRefused", commandId: "command-1", flightPlan: plan(node("replacement", 4)), reason: "unknown" as PlanRevisionRefusalReason }]))
       .toThrow("require a known reason");
   });
 });
