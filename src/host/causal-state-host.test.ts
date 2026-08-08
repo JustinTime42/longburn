@@ -59,7 +59,7 @@ describe("projectStoredEvent", () => {
     }))).toBeUndefined();
   });
 
-  it("blocks an unprojectable record without aborting a later delivery", async () => {
+  it("quarantines an unprojectable record without aborting a later delivery or raising a causality alarm", async () => {
     const received: EmittableMessage[] = [];
     const recordIncident = vi.fn();
     const incrementCausalityFailure = vi.fn();
@@ -80,6 +80,12 @@ describe("projectStoredEvent", () => {
     });
     expect(received).toHaveLength(1);
     expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "invalid-envelope" }));
-    expect(incrementCausalityFailure).toHaveBeenCalledOnce();
+    expect(incrementCausalityFailure).not.toHaveBeenCalled();
+
+    await expect(host.run(simTimeMs(12_002), [malformed])).resolves.toEqual({
+      emitted: [], deferred: [], blocked: ["position:7"]
+    });
+    expect(recordIncident).toHaveBeenCalledOnce();
+    expect(incrementCausalityFailure).not.toHaveBeenCalled();
   });
 });

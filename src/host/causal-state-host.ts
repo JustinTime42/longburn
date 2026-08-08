@@ -94,7 +94,12 @@ export class CausalStateHost {
   readonly #observerPositionAt: ObserverPositionAt;
   readonly #scheduler: EmissionScheduler;
   readonly #recordIncident: (incident: CausalityIncident) => void;
-  readonly #incrementCausalityFailure: () => void;
+  /**
+   * Projection failures have no scheduler candidate to acknowledge. Remember
+   * their stable log position for this long-lived observer host so one poison
+   * record remains blocked without continuously re-alerting operators.
+   */
+  readonly #reportedProjectionFailures = new Set<number | string>();
 
   constructor({ cursors, observerId, observerPositionAt, socket, recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression }: CausalStateHostOptions) {
     const egress = new CausalStateEgress({ recordIncident, incrementCausalityFailure });
@@ -102,7 +107,6 @@ export class CausalStateHost {
     this.#observerId = observerId;
     this.#observerPositionAt = observerPositionAt;
     this.#recordIncident = recordIncident;
-    this.#incrementCausalityFailure = incrementCausalityFailure;
     this.#scheduler = new EmissionScheduler({
       cursors,
       emit: async (candidate) => {
@@ -127,7 +131,7 @@ export class CausalStateHost {
         if (projected !== undefined) scheduled.push(projected);
       } catch {
         const globalPosition = this.#projectionPosition(stored, index);
-        this.#recordProjectionFailure(stored);
+        this.#recordProjectionFailure(globalPosition, stored);
         blocked.push(`position:${globalPosition}`);
       }
     }
@@ -144,7 +148,9 @@ export class CausalStateHost {
     }
   }
 
-  #recordProjectionFailure(stored: StoredEventForEmission): void {
+  #recordProjectionFailure(globalPosition: number | string, stored: StoredEventForEmission): void {
+    if (this.#reportedProjectionFailures.has(globalPosition)) return;
+    this.#reportedProjectionFailures.add(globalPosition);
     let eventTime: unknown;
     let eventPosition: CausalityIncident["provenance"]["eventPosition"];
     try {
@@ -159,6 +165,5 @@ export class CausalStateHost {
       ...(eventPosition === undefined ? {} : { eventPosition })
     };
     try { this.#recordIncident({ reason: "invalid-envelope", provenance }); } catch { /* closed even if reporting fails */ }
-    try { this.#incrementCausalityFailure(); } catch { /* closed even if alerting fails */ }
   }
 }
