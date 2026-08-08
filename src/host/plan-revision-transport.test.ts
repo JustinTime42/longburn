@@ -12,7 +12,7 @@ import { PlanRevisionTransport } from "./plan-revision-transport.js";
 const position = () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
 const node = (nodeId: string, executeAtMs: number) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind: "accel" as const,
-  burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 }
+  burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 1, y: 0, z: 0 }
 });
 
 const expectUnchangedExecutedHistory = (
@@ -127,6 +127,18 @@ describe("PlanRevision command transport", () => {
       type: "planRevisionRefused", reason: "invalid-plan"
     }));
     expect(events.events.some(({ event }) => event.type === "planRevisionApplied")).toBe(false);
+  });
+
+  it("records a delta-v ceiling breach as an invalid-plan refusal at the inbound arrival boundary", async () => {
+    const { loop, transport } = await setup("delta-v-ceiling-arrival");
+    await transport.issue({ destination: "earth", nodes: [{ ...node("impossible", 2_000), deltaVMmPerSecond: { x: 10, y: 0, z: 0 } }] });
+    await loop.advance(999, position);
+    expect((await loop.persistedStream()).events.some(({ event }) => event.type === "planRevisionRefused")).toBe(false);
+
+    await loop.advance(1, position);
+    const event = (await loop.persistedStream()).events.at(-1)?.event;
+    expect(event).toMatchObject({ type: "planRevisionRefused", reason: "invalid-plan" });
+    expect(loop.state.ship).toBeUndefined();
   });
 
   it("refuses an over-budget revision at arrival without trusting any caller-named cost", async () => {

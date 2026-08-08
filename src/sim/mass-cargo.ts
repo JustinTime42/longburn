@@ -69,7 +69,7 @@ export const TIER0_SHIP: Readonly<ShipMassConfig> = Object.freeze({
  * This is the exact representation used at the committed-command boundary.
  */
 export const TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 = 9_806_650n;
-const MICROSECONDS_PER_SECOND = 1_000_000n;
+const NANOMETRES_PER_MILLIMETRE = 1_000_000n;
 
 export interface BurnParameters {
   readonly deltaVKmPerSecond: number;
@@ -89,6 +89,10 @@ export interface QuantizedBurnParameters {
  * committed duration. The squared comparison stays entirely in bigint space:
  * no square root or planner floating point may decide a live command.
  *
+ * This intentionally hard-codes the Tier 0 acceleration rather than accepting
+ * a ShipMassConfig. Tier 0 has one fixed ship; multi-ship parameterization is
+ * future-tier work under standing order 13.
+ *
  * A shorter vector is valid throttling. The duration remains the authoritative
  * propellant commitment for the constant-acceleration model.
  */
@@ -103,7 +107,7 @@ export const assertTier0DeltaVConsistentWithBurn = (
   const squaredDeltaV = x * x + y * y + z * z;
   const impulseNumerator = TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 * durationMs;
   const squaredImpulseCeiling = impulseNumerator * impulseNumerator;
-  const squaredDeltaVScaled = squaredDeltaV * MICROSECONDS_PER_SECOND * MICROSECONDS_PER_SECOND;
+  const squaredDeltaVScaled = squaredDeltaV * NANOMETRES_PER_MILLIMETRE * NANOMETRES_PER_MILLIMETRE;
 
   if (squaredDeltaVScaled > squaredImpulseCeiling) {
     throw new RangeError("Burn delta-v exceeds the fixed ship acceleration for its committed duration.");
@@ -251,8 +255,8 @@ export const dequantizeBurnParameters = (
 /**
  * Projects every committed node through the rocket equation in execution
  * order. The ship configuration, not a command payload, owns its propellant
- * mass. Equality with the structural floor is valid: it spends the final gram
- * of propellant but never asks the engine to consume structure.
+ * mass. The strict-< viability wall refuses equality with the structural floor:
+ * a plan must retain propellant rather than spend the final gram.
  */
 export const projectPropellantForBurns = (
   burns: readonly QuantizedBurnParameters[],
