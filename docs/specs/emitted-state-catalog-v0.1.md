@@ -39,7 +39,7 @@ EmittedMessage {
   emission cursor; retries re-enter the gate and re-validate, so a duplicate can only
   leave at a legal tick. No three-state result; `sent:false` plus redelivery is the model.
 - **Delivery-guarantee split (ADDENDUM 2026-08-08, Mayor answer to the Forge's din.5.2
-  escalation; flagged for Overseer ratification at din.5.2 review):** the durable no-skip
+  escalation; RATIFIED by the Overseer 2026-08-08):** the durable no-skip
   cursor guarantee covers the LIGHT-LAGGED classes (2.1, 2.2, 2.4) — a lost report has no
   other path to the player. Observer-local classes (2.3 commandEcho, 2.5 simClock) are
   live-delivery-only and excluded from the cursor: after a crash they are RECONSTRUCTED by
@@ -47,16 +47,20 @@ EmittedMessage {
   durable log — `commandIssued` is the truth, the echo is its projection), never re-emitted
   with a violated zero-staleness envelope and never silently lost. The cursor advances
   after transport acknowledgment: at-least-once, with duplicates that re-enter the gate.
-- **Per-observer ordering (restored 2026-08-08, Warden din.5.2 f8 — the addendum edit had
-  displaced this bullet without saying so):** light-lagged delivery is ordered and gated
-  strictly by `globalPosition` — a single scalar watermark with head-of-line blocking. An
-  earlier-logged report whose light has not yet arrived delays a later-logged report whose
-  light already has (a near-Earth report can wait behind an older Mars report). This
-  SUPERSEDES the earlier "monotone by emissionTimeMs, ties by log order" rule: the
-  watermark is conservative (later, never earlier — SO 12 intact), makes the no-skip
-  cursor a single comparable scalar, and the head-of-line cost at T0 (one ship, one
-  observer) is nil. Revisit if multi-source lag spreads ever make the blocking
-  player-visible — that revisit is a design decision, not a bug fix.
+- **Per-observer delivery timing (OVERSEER RULING 2026-08-08, vetoing the watermark
+  design):** every message is delivered at its own earliest legal arrival tick,
+  **independently of every other message**. His words: "news from the moon a couple
+  minutes away shouldn't wait hours to be displayed simply because news from jupiter was
+  transmitted first. They shouldn't be dependent on each other at all. they are separate
+  events emitted, and should be available to the user at the time they are supposed to
+  arrive." Head-of-line blocking on a `globalPosition` watermark (the din.5.2
+  implementation and this bullet's previous text) is REJECTED: no cross-event delivery
+  dependency of any kind, at any tier. Two messages whose arrivals coincide may be
+  batched; ties in presentation order break by log order (`globalPosition`), which is the
+  only thing that scalar now governs. The no-skip guarantee must be provided by
+  per-message accounting rather than a single scalar cursor — rework filed
+  (longburn-uso1), and physics is the arbiter of WHEN; the log arbitrates only
+  simultaneous ties.
 
 ## 2. The catalog
 
