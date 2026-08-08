@@ -180,7 +180,7 @@ describe("host tick driver", () => {
     await appendStarted;
     let commandPosition = { x: 4, y: 5, z: 6 };
     const commitment = simulation.applyPlanRevision({
-      nodes: [{ nodeId: "interleaved-burn", executeAtMs: simTimeMs(10), kind: "accel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }]
+      destination: "earth", nodes: [{ nodeId: "interleaved-burn", executeAtMs: simTimeMs(10), kind: "accel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }]
     }, () => commandPosition);
     commandPosition = { x: 10, y: 11, z: 12 };
     releaseFirstAppend?.();
@@ -189,7 +189,7 @@ describe("host tick driver", () => {
     expect(driver.running).toBe(true);
     expect(simulation.state).toMatchObject({
       time: simTimeMs(10),
-      ship: { flightPlan: { nodes: [] }, phase: "accel" }
+      ship: { flightPlan: { destination: "earth", nodes: [] }, phase: "accel" }
     });
     expect((await simulation.persistedStream()).events.map(({ event }) => event.type)).toEqual([
       "clockAdvanced", "planRevisionApplied", "burnStarted"

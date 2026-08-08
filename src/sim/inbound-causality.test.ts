@@ -28,7 +28,7 @@ describe("inbound causality invariant", () => {
         const arrivalAtMs = issuedAtMs + lightTimeMs;
         const command: SimEvent = {
           type: "commandIssued", commandId: "command", issuedAtMs: simTimeMs(issuedAtMs), arrivalAtMs: simTimeMs(arrivalAtMs),
-          hqPosition, arrivalPosition, replacedNodeIds: [], flightPlan: { nodes: [] }
+          hqPosition, arrivalPosition, replacedNodeIds: [], flightPlan: { destination: "earth", nodes: [] }
         };
         const prefix: SimEvent[] = issuedAtMs === 0 ? [] : [{ type: "clockAdvanced", elapsedMs: issuedAtMs }];
         const events = [...prefix, command];
@@ -66,8 +66,8 @@ describe("inbound causality invariant", () => {
         };
         const arrivalAtMs = issueDelayMs + lightSeconds * 1_000;
         const burnAtMs = arrivalAtMs + raceOffset;
-        const replacement = { nodes: [node("replacement", arrivalAtMs + 2)] };
-        await loop.applyPlanRevision({ nodes: [node("old", burnAtMs)] }, () => shipPosition);
+        const replacement = { destination: "earth" as const, nodes: [node("replacement", arrivalAtMs + 2)] };
+        await loop.applyPlanRevision({ destination: "earth", nodes: [node("old", burnAtMs)] }, () => shipPosition);
         await loop.advance(issueDelayMs, () => shipPosition);
         const transport = new PlanRevisionTransport({ loop, shipPositionAt: () => shipPosition, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
         await transport.issue(replacement);
@@ -96,7 +96,7 @@ describe("inbound causality invariant", () => {
     fc.assert(fc.property(fc.double({ min: 0, max: 100_000, noNaN: true }), (seconds) => {
       const burn = quantizeBurnParameters({ burnDurationSeconds: seconds });
       const restored = quantizeBurnParameters(dequantizeBurnParameters(burn));
-      const event: SimEvent = { type: "planRevisionApplied", flightPlan: { nodes: [node("quantized", 1, burn.burnDurationMs)] } };
+      const event: SimEvent = { type: "planRevisionApplied", flightPlan: { destination: "earth", nodes: [node("quantized", 1, burn.burnDurationMs)] } };
       const state = replaySegment(1, [event]);
       expect(restored).toEqual(burn);
       expect(state.ship?.flightPlan.nodes[0]?.burn).toEqual(burn);

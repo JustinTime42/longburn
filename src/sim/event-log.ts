@@ -18,6 +18,8 @@ export interface ArrivalState {
   readonly destination: DestinationBody;
   readonly targetPositionMeters: PositionMeters;
   readonly terminalPositionMeters: PositionMeters;
+  readonly positionGapMeters: PositionMeters;
+  readonly velocityGapMmPerSecond: QuantizedDeltaV;
 }
 
 /** A view of executed history and elapsed virtual time, never stored by an event. */
@@ -40,7 +42,7 @@ export interface BurnNode {
 /** The complete, replaceable set of burns which have not begun firing. */
 export interface FlightPlan {
   /** The body the final planned burn is intended to reach. */
-  readonly destination?: DestinationBody;
+  readonly destination: DestinationBody;
   readonly nodes: readonly BurnNode[];
 }
 
@@ -57,6 +59,9 @@ export interface ShipState {
   readonly phase: ShipPhase;
   readonly departureState?: DepartureState;
   readonly arrivalState?: ArrivalState;
+  /** Ordered durable worldline boundaries, retained for time-indexed queries. */
+  readonly departureStates: readonly DepartureState[];
+  readonly arrivalStates: readonly ArrivalState[];
 }
 
 export type PlanRevisionRefusalReason = "executed-burn-conflict" | "invalid-plan" | "insufficient-propellant";
@@ -126,7 +131,7 @@ const assertNode = (node: BurnNode): BurnNode => {
 };
 
 const assertPlan = (plan: FlightPlan): FlightPlan => {
-  const destination = plan.destination ?? "earth";
+  const destination = plan.destination;
   if (destination !== "earth" && destination !== "moon" && destination !== "mars") {
     throw new RangeError("Flight plans require a known destination body.");
   }
@@ -223,7 +228,7 @@ const derivedPhase = (flightPlan: FlightPlan, executedBurns: readonly ExecutedBu
     return active.node.kind === "accel" ? "accel" : active.node.kind === "decel" ? "decel" : "flip";
   }
   if (executedBurns.length === 0) return "docked";
-  if (flightPlan.nodes.length === 0) return "arrived";
+  if (flightPlan.nodes.length === 0) return "coast";
   return executedBurns.at(-1)?.node.kind === "accel" ? "coast" : "flip";
 };
 
@@ -236,6 +241,8 @@ export class SimEventReducer {
   #executedBurns: ExecutedBurn[] = [];
   #departureState: DepartureState | undefined;
   #arrivalState: ArrivalState | undefined;
+  #departureStates: DepartureState[] = [];
+  #arrivalStates: ArrivalState[] = [];
 
   constructor(seed: number, initialTime: SimTimeMs = simTimeMs(0)) {
     this.#clock = SimClock.production(initialTime);
@@ -255,7 +262,9 @@ export class SimEventReducer {
         executedBurns: [...this.#executedBurns],
         phase: derivedPhase(flightPlan, this.#executedBurns),
         ...(this.#departureState === undefined ? {} : { departureState: this.#departureState }),
-        ...(this.#arrivalState === undefined ? {} : { arrivalState: this.#arrivalState })
+        ...(this.#arrivalState === undefined ? {} : { arrivalState: this.#arrivalState }),
+        departureStates: [...this.#departureStates],
+        arrivalStates: [...this.#arrivalStates]
       }
     };
   }
@@ -269,16 +278,20 @@ export class SimEventReducer {
         this.#randomValues.push(this.#rng.nextInt(event.upperExclusive));
         return;
       case "departureRecorded":
-        if (this.#departureState !== undefined || event.departureState.departureAtMs !== this.#clock.now) {
-          throw new RangeError("A ship departure state is recorded exactly once at its current simulation time.");
+        if (event.departureState.departureAtMs !== this.#clock.now ||
+          (this.#departureState !== undefined && (this.#arrivalState === undefined || this.#arrivalState.arrivedAtMs < this.#departureState.departureAtMs))) {
+          throw new RangeError("A ship departure state is recorded at the current time only when initially leaving or leaving a docked body.");
         }
         this.#departureState = event.departureState;
+        this.#departureStates.push(event.departureState);
         return;
       case "arrivalRecorded":
-        if (this.#arrivalState !== undefined || event.arrivalState.arrivedAtMs !== this.#clock.now) {
-          throw new RangeError("A ship arrival state is recorded exactly once at its current simulation time.");
+        if (event.arrivalState.arrivedAtMs !== this.#clock.now || this.#departureState === undefined ||
+          (this.#arrivalState !== undefined && this.#arrivalState.arrivedAtMs >= this.#departureState.departureAtMs)) {
+          throw new RangeError("A ship arrival state is recorded once for each departure at its current simulation time.");
         }
         this.#arrivalState = event.arrivalState;
+        this.#arrivalStates.push(event.arrivalState);
         return;
       case "commandIssued":
         if (event.commandId.length === 0 || event.issuedAtMs !== this.#clock.now || event.arrivalAtMs < event.issuedAtMs) {

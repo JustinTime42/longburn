@@ -42,8 +42,8 @@ const setup = async (id: string) => {
 describe("PlanRevision command transport", () => {
   it("stores the resolver evaluated at each due event's own time", async () => {
     const { loop, transport } = await setup("own-time-envelope");
-    await loop.applyPlanRevision({ nodes: [node("due-now", 0)] }, position);
-    await transport.issue({ nodes: [node("later", 2_000)] });
+    await loop.applyPlanRevision({ destination: "earth", nodes: [node("due-now", 0)] }, position);
+    await transport.issue({ destination: "earth", nodes: [node("later", 2_000)] });
 
     const persisted = await loop.persistedStream();
     const burnStarted = persisted.events.find(({ event }) => event.type === "burnStarted");
@@ -54,7 +54,7 @@ describe("PlanRevision command transport", () => {
 
   it("uses the fixed Earth-HQ light-time solve and applies at the exact arrival boundary", async () => {
     const { loop, transport } = await setup("arrival-boundary");
-    const issued = await transport.issue({ nodes: [node("arrival-burn", 2_000)] });
+    const issued = await transport.issue({ destination: "earth", nodes: [node("arrival-burn", 2_000)] });
 
     expect(issued).toEqual({ issuedAtMs: simTimeMs(0), arrivalAtMs: simTimeMs(1_000) });
     await loop.advance(999, position);
@@ -69,8 +69,8 @@ describe("PlanRevision command transport", () => {
 
   it("accepts an arrival before the pending burn and replaces the complete unexecuted set", async () => {
     const { loop, transport } = await setup("arrival-acceptance");
-    await loop.applyPlanRevision({ nodes: [node("old", 2_000)] }, position);
-    await transport.issue({ nodes: [node("replacement", 3_000)] });
+    await loop.applyPlanRevision({ destination: "earth", nodes: [node("old", 2_000)] }, position);
+    await transport.issue({ destination: "earth", nodes: [node("replacement", 3_000)] });
     await loop.advance(1_000, position);
 
     expect(loop.state.ship?.flightPlan.nodes.map(({ nodeId }) => nodeId)).toEqual(["replacement"]);
@@ -99,8 +99,8 @@ describe("PlanRevision command transport", () => {
       store, stream: { id: "interleaved-rejection", seed: 1, initialTime: simTimeMs(0) }
     });
     const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
-    await loop.applyPlanRevision({ nodes: [node("racing-burn", 1_000)] }, position);
-    await transport.issue({ nodes: [node("replacement", 2_000)] });
+    await loop.applyPlanRevision({ destination: "earth", nodes: [node("racing-burn", 1_000)] }, position);
+    await transport.issue({ destination: "earth", nodes: [node("replacement", 2_000)] });
     blockNextAppend = true;
     const tick = loop.advance(1_000, position);
     await appendBlocked;
@@ -119,7 +119,7 @@ describe("PlanRevision command transport", () => {
 
   it("records malformed payloads as typed arrival-time refusals without appending a revision", async () => {
     const { loop, transport } = await setup("invalid-arrival");
-    await transport.issue({ nodes: [node("late", 2_000), node("early", 1_500)] });
+    await transport.issue({ destination: "earth", nodes: [node("late", 2_000), node("early", 1_500)] });
     await loop.advance(1_000, position);
 
     const events = await loop.persistedStream();
@@ -131,7 +131,7 @@ describe("PlanRevision command transport", () => {
 
   it("refuses an over-budget revision at arrival without trusting any caller-named cost", async () => {
     const { loop, transport } = await setup("insufficient-propellant");
-    await transport.issue({ nodes: [{ ...node("impossible", 2_000), burn: { burnDurationMs: burnDurationMs(300_000_000) } }] });
+    await transport.issue({ destination: "earth", nodes: [{ ...node("impossible", 2_000), burn: { burnDurationMs: burnDurationMs(300_000_000) } }] });
     await loop.advance(1_000, position);
 
     const event = (await loop.persistedStream()).events.at(-1)?.event;
@@ -141,9 +141,9 @@ describe("PlanRevision command transport", () => {
 
   it("checks a revision against propellant already committed by earlier projected nodes", async () => {
     const { loop, transport } = await setup("sequential-propellant");
-    await loop.applyPlanRevision({ nodes: [{ ...node("outbound", 1), burn: { burnDurationMs: burnDurationMs(150_000_000) } }] }, position);
+    await loop.applyPlanRevision({ destination: "earth", nodes: [{ ...node("outbound", 1), burn: { burnDurationMs: burnDurationMs(150_000_000) } }] }, position);
     await loop.advance(1, position);
-    await transport.issue({ nodes: [{ ...node("capture", 200_000_000), burn: { burnDurationMs: burnDurationMs(100_000_000) } }] });
+    await transport.issue({ destination: "earth", nodes: [{ ...node("capture", 200_000_000), burn: { burnDurationMs: burnDurationMs(100_000_000) } }] });
     await loop.advance(1_000, position);
 
     expect((await loop.persistedStream()).events.at(-1)?.event).toMatchObject({
@@ -158,7 +158,7 @@ describe("PlanRevision command transport", () => {
       store, stream: { id: "resume-inbound", seed: 1, initialTime: simTimeMs(0) }
     });
     const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
-    await transport.issue({ nodes: [node("after-restart", 2_000)] });
+    await transport.issue({ destination: "earth", nodes: [node("after-restart", 2_000)] });
 
     const resumed = await AuthoritativeSimLoop.resume(store, "resume-inbound");
     await resumed.advance(1_000, position);
@@ -178,8 +178,8 @@ describe("PlanRevision command transport", () => {
       store, stream: { id: "resume-replacement", seed: 1, initialTime: simTimeMs(0) }
     });
     const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
-    await loop.applyPlanRevision({ nodes: [node("old", 3_000)] }, position);
-    await transport.issue({ nodes: [node("replacement", 4_000)] });
+    await loop.applyPlanRevision({ destination: "earth", nodes: [node("old", 3_000)] }, position);
+    await transport.issue({ destination: "earth", nodes: [node("replacement", 4_000)] });
 
     const resumed = await AuthoritativeSimLoop.resume(store, "resume-replacement");
     await resumed.advance(999, position);
@@ -199,8 +199,8 @@ describe("PlanRevision command transport", () => {
     const transport = new PlanRevisionTransport({
       loop, shipPositionAt: () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND * 2, y: 0, z: 0 }), hqPositionAt: () => ({ x: 0, y: 0, z: 0 })
     });
-    await loop.applyPlanRevision({ nodes: [node("old", 1_000)] }, position);
-    await transport.issue({ nodes: [node("replacement", 3_000)] });
+    await loop.applyPlanRevision({ destination: "earth", nodes: [node("old", 1_000)] }, position);
+    await transport.issue({ destination: "earth", nodes: [node("replacement", 3_000)] });
 
     const resumed = await AuthoritativeSimLoop.resume(store, "resume-refusal");
     await resumed.advance(2_000, position);
@@ -235,7 +235,7 @@ describe("PlanRevision command transport", () => {
     const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
     const tick = loop.advance(1_000, position);
     await appendBlocked;
-    const issued = transport.issue({ nodes: [node("post-tick", 3_000)] });
+    const issued = transport.issue({ destination: "earth", nodes: [node("post-tick", 3_000)] });
     releaseAppend?.();
     await tick;
 
@@ -251,12 +251,12 @@ describe("PlanRevision command transport", () => {
           store, stream: { id: `immutability-${durations.join("-")}`, seed: 1, initialTime: simTimeMs(0) }
         });
         const transport = new PlanRevisionTransport({ loop, shipPositionAt: position, hqPositionAt: () => ({ x: 0, y: 0, z: 0 }) });
-        await loop.applyPlanRevision({ nodes: [node("executed", 1)] }, position);
+        await loop.applyPlanRevision({ destination: "earth", nodes: [node("executed", 1)] }, position);
         await loop.advance(1, position);
         let history = loop.state.ship?.executedBurns ?? [];
         for (const [index, duration] of durations.entries()) {
           await transport.issue({
-            nodes: [{ ...node(`pending-${index}`, 10_000 + index), burn: { burnDurationMs: burnDurationMs(duration) } }]
+            destination: "earth", nodes: [{ ...node(`pending-${index}`, 10_000 + index), burn: { burnDurationMs: burnDurationMs(duration) } }]
           });
           await loop.advance(1_000, position);
           const currentHistory = loop.state.ship?.executedBurns ?? [];

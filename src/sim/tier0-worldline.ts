@@ -24,8 +24,11 @@ export const createTier0AuthoritativeSimLoop = (
     const earth = ephemeridesAt(epochUtDaysSinceJ2000, time).earth;
     return { departureAtMs: time, positionMeters: positionMeters(earth.positionKm), velocityMmPerSecond: velocityMmPerSecond(earth.velocityKmPerSecond) };
   },
-  destinationPositionAt: (destination: DestinationBody, time) => {
+  destinationStateAt: (destination: DestinationBody, time) => {
     const states = ephemeridesAt(epochUtDaysSinceJ2000, time as SimTimeMs);
-    return positionMeters(states[destination].positionKm);
+    return {
+      positionMeters: positionMeters(states[destination].positionKm),
+      velocityMmPerSecond: velocityMmPerSecond(states[destination].velocityKmPerSecond)
+    };
   }
 });

@@ -14,7 +14,7 @@ describe("authoritative ship worldline", () => {
         node: { nodeId: "burn", executeAtMs: simTimeMs(1_000), kind: "accel" as const, burn: { burnDurationMs: burnDurationMs(1_000) }, deltaVMmPerSecond: { x: 10_000, y: 0, z: 0 } },
         startedAtMs: simTimeMs(1_000), endedAtMs: simTimeMs(2_000)
       }],
-      flightPlan: { nodes: [] }
+      flightPlan: { destination: "earth" as const, nodes: [] }
     };
     expect(shipPositionAt(worldline, 5_000)).toEqual(shipPositionAt(worldline, 5_000));
     expect(shipPositionAt(worldline, 2_000).x).toBeGreaterThan(shipPositionAt({ ...worldline, executedBurns: [] }, 2_000).x);
