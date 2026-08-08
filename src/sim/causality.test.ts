@@ -9,12 +9,27 @@ import {
   assertCausalityInvariant,
   earliestLegalEmissionTimeMs,
   requiredArrivalTimeMs,
-  type EmittedMessage,
   type PositionMeters
 } from "./causality.js";
+import type { EmissionCandidate, EmittedMessage } from "./emitted-message.js";
 
 const ORIGIN: PositionMeters = { x: 0, y: 0, z: 0 };
 const stationaryAt = (position: PositionMeters) => () => position;
+const emissionCandidate = (
+  eventTimeMs: number,
+  emissionTimeMs: number,
+  eventPosition: PositionMeters,
+  observerPositionAt: (timeMs: number) => PositionMeters
+): EmissionCandidate => ({
+  messageId: "message-1",
+  observerId: "observer-1",
+  class: "shipReport",
+  payload: { event: "departureRecorded" },
+  eventTimeMs: simTimeMs(eventTimeMs),
+  emissionTimeMs: simTimeMs(emissionTimeMs),
+  eventPosition,
+  observerPositionAt
+});
 const independentEarliestTick = (distanceMeters: number): number => Math.ceil((distanceMeters / 299_792_458) * 1_000);
 
 /** Independent closed-form light-cone oracle for linear receiver motion. */
@@ -71,13 +86,9 @@ describe("causality invariant", () => {
     const incrementCausalityFailure = vi.fn(() => { throw new Error("counter unavailable"); });
     const gate = new CausalEmissionGate({ send, recordIncident, incrementCausalityFailure });
 
-    const result = gate.emit({
-      payload: { kind: "marketQuote" },
-      eventTime: Number.NaN as never,
-      emissionTime: simTimeMs(1_000),
-      eventPosition: ORIGIN,
-      observerPositionAt: stationaryAt({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 })
-    });
+    const malformed = emissionCandidate(0, 1_000, ORIGIN, stationaryAt({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 }));
+    Object.assign(malformed, { eventTimeMs: Number.NaN });
+    const result = gate.emit(malformed);
 
     expect(result).toEqual({ sent: false, reason: "invalid-provenance" });
     expect(send).not.toHaveBeenCalled();
@@ -90,13 +101,8 @@ describe("causality invariant", () => {
     const recordIncident = vi.fn();
     const incrementCausalityFailure = vi.fn();
     const gate = new CausalEmissionGate({ send, recordIncident, incrementCausalityFailure });
-    const result = gate.emit({
-      payload: { kind: "telemetry" },
-      eventTime: simTimeMs(0),
-      emissionTime: simTimeMs(10_000),
-      eventPosition: ORIGIN,
-      observerPositionAt: (timeMs) => timeMs <= 0 ? { x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 } : ORIGIN
-    });
+    const result = gate.emit(emissionCandidate(0, 10_000, ORIGIN,
+      (timeMs) => timeMs <= 0 ? { x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 } : ORIGIN));
 
     expect(result).toEqual({ sent: false, reason: "light-cone-failure" });
     expect(send).not.toHaveBeenCalled();
@@ -122,15 +128,7 @@ describe("causality invariant", () => {
     const recordIncident = vi.fn();
     const incrementCausalityFailure = vi.fn();
     const gate = new CausalEmissionGate({ send, recordIncident, incrementCausalityFailure });
-    const secretPayload = { message: "do not place this in an incident" };
-
-    const result = gate.emit({
-      payload: secretPayload,
-      eventTime: simTimeMs(0),
-      emissionTime: simTimeMs(1_000),
-      eventPosition: ORIGIN,
-      observerPositionAt: stationaryAt({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 })
-    });
+    const result = gate.emit(emissionCandidate(0, 1_000, ORIGIN, stationaryAt({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 })));
 
     expect(result).toEqual({ sent: false, reason: "transport-failure" });
     expect(send).toHaveBeenCalledOnce();
@@ -212,35 +210,36 @@ describe("causality invariant", () => {
   it("eventually emits every delayed message with authoritative staleness", () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 0, max: 0xffff_ffff }),
-        fc.array(fc.integer({ min: 0, max: 20_000_000_000 }), { minLength: 1, maxLength: 40 }),
-        (seed, distances) => {
-          const sent: EmittedMessage<{ readonly seed: number; readonly index: number }>[] = [];
+        fc.array(fc.integer({ min: 1, max: 20_000_000_000 }), { minLength: 1, maxLength: 40 }),
+        (distances) => {
+          const sent: EmittedMessage[] = [];
           const recordIncident = vi.fn();
           const incrementCausalityFailure = vi.fn();
-          const gate = new CausalEmissionGate<{ readonly seed: number; readonly index: number }>({
+          const gate = new CausalEmissionGate({
             send: (message) => sent.push(message), recordIncident, incrementCausalityFailure
           });
 
           for (const [index, distance] of distances.entries()) {
             const eventTime = index * 10_000;
             const earliest = eventTime + independentEarliestTick(distance);
-            const event = {
-              payload: { seed, index }, eventTime: simTimeMs(eventTime), eventPosition: ORIGIN,
-              observerPositionAt: stationaryAt({ x: distance, y: 0, z: 0 })
-            };
-            expect(gate.emit({ ...event, emissionTime: simTimeMs(earliest - 1) })).toEqual({
+            const observerPositionAt = stationaryAt({ x: distance, y: 0, z: 0 });
+            expect(gate.emit(emissionCandidate(eventTime, earliest - 1, ORIGIN, observerPositionAt))).toEqual({
               sent: false, reason: "early-emission"
             });
-            expect(gate.emit({ ...event, emissionTime: simTimeMs(earliest) })).toEqual({ sent: true });
+            expect(gate.emit(emissionCandidate(eventTime, earliest, ORIGIN, observerPositionAt))).toEqual({ sent: true });
           }
 
           expect(sent).toHaveLength(distances.length);
           expect(recordIncident).toHaveBeenCalledTimes(distances.length);
           expect(incrementCausalityFailure).toHaveBeenCalledTimes(distances.length);
           for (const message of sent) {
-            assertCausalityInvariant(message);
-            expect(message.stalenessMs).toBe(message.emissionTime - message.eventTime);
+            assertCausalityInvariant({
+              eventTime: message.eventTimeMs,
+              emissionTime: message.emissionTimeMs,
+              eventPosition: message.eventPosition,
+              observerPositionAt: () => message.observerPosition
+            });
+            expect(message.stalenessMs).toBe(message.emissionTimeMs - message.eventTimeMs);
           }
         }
       ),

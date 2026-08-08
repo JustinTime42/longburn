@@ -1,4 +1,5 @@
 import type { SimTimeMs } from "./clock.js";
+import { validateEmittedMessage, type EmissionCandidate, type EmittedMessage } from "./emitted-message.js";
 
 /** Exact SI value, shared by every server-side causality check. */
 export const SPEED_OF_LIGHT_METERS_PER_SECOND = 299_792_458;
@@ -33,12 +34,7 @@ export interface OutboundEvent<T> extends CausalityProvenance {
   readonly payload: T;
 }
 
-export interface EmittedMessage<T> extends OutboundEvent<T> {
-  /** Receiver position at emission, supplied by the authoritative trajectory. */
-  readonly observerPosition: PositionMeters;
-  /** Server-authoritative age for the client to render, in simulation ms. */
-  readonly stalenessMs: number;
-}
+export type { EmittedMessage } from "./emitted-message.js";
 
 export type CausalityFailureReason = "invalid-provenance" | "invalid-position" | "light-cone-failure" | "early-emission";
 export type TransportFailureReason = "transport-failure";
@@ -101,7 +97,7 @@ const incidentProvenance = (provenance: unknown): IncidentProvenance => {
     if (typeof provenance !== "object" || provenance === null) {
       return {};
     }
-    const event = provenance as Partial<CausalityProvenance>;
+    const event = provenance as Partial<CausalityProvenance> & { readonly eventTimeMs?: unknown; readonly emissionTimeMs?: unknown };
     const eventPosition = event.eventPosition;
     const position = typeof eventPosition === "object" && eventPosition !== null
       ? eventPosition as Partial<PositionMeters>
@@ -115,8 +111,8 @@ const incidentProvenance = (provenance: unknown): IncidentProvenance => {
       : undefined;
 
     return {
-      eventTime: event.eventTime,
-      emissionTime: event.emissionTime,
+      eventTime: event.eventTime ?? event.eventTimeMs,
+      emissionTime: event.emissionTime ?? event.emissionTimeMs,
       ...(positionSnapshot === undefined ? {} : { eventPosition: positionSnapshot })
     };
   } catch {
@@ -216,9 +212,9 @@ export const assertInboundCausalityInvariant = (
   });
 };
 
-export interface CausalEmissionGateOptions<T> {
+export interface CausalEmissionGateOptions {
   /** The sole raw outbound transport callback. No message reaches it unchecked. */
-  readonly send: (message: EmittedMessage<T>) => void;
+  readonly send: (message: EmittedMessage) => void;
   /** Incident-grade sink, invoked for every blocked message. */
   readonly recordIncident: (incident: CausalityIncident) => void;
   /** Counter/alert hook, invoked even if incident recording itself fails. */
@@ -233,23 +229,32 @@ export type EmissionResult =
  * The outbound choke point. Future transports receive this gate, never a raw
  * send callback. `test/causal-transport-fence.test.ts` enforces that boundary.
  */
-export class CausalEmissionGate<T> {
-  readonly #send: (message: EmittedMessage<T>) => void;
+export class CausalEmissionGate {
+  readonly #send: (message: EmittedMessage) => void;
   readonly #recordIncident: (incident: CausalityIncident) => void;
   readonly #incrementCausalityFailure: () => void;
 
-  constructor({ send, recordIncident, incrementCausalityFailure }: CausalEmissionGateOptions<T>) {
+  constructor({ send, recordIncident, incrementCausalityFailure }: CausalEmissionGateOptions) {
     this.#send = send;
     this.#recordIncident = recordIncident;
     this.#incrementCausalityFailure = incrementCausalityFailure;
   }
 
-  emit(event: OutboundEvent<T>): EmissionResult {
-    let message: EmittedMessage<T>;
+  emit(event: EmissionCandidate): EmissionResult {
+    let message: EmittedMessage;
     try {
-      assertCausalityInvariant(event);
-      const observerPosition = validatedPosition(event.observerPositionAt(event.emissionTime));
-      message = { ...event, observerPosition, stalenessMs: event.emissionTime - event.eventTime };
+      assertCausalityInvariant({
+        eventTime: event.eventTimeMs,
+        emissionTime: event.emissionTimeMs,
+        eventPosition: event.eventPosition,
+        observerPositionAt: event.observerPositionAt
+      });
+      const observerPosition = validatedPosition(event.observerPositionAt(event.emissionTimeMs));
+      message = validateEmittedMessage({
+        ...event,
+        observerPosition,
+        stalenessMs: event.emissionTimeMs - event.eventTimeMs
+      });
     } catch (error: unknown) {
       const incident = error instanceof CausalityInvariantViolation
         ? error.incident
