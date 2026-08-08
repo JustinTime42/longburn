@@ -88,7 +88,7 @@ never excuses.
 |---|---|
 | `invalid-provenance` | A time failed validation (non-negative safe-integer sim ms) before comparison — includes NaN and malformed decodes |
 | `invalid-position` | A position was non-finite or otherwise unusable, wherever sampled (event, arrival iterates, or emission time — Warden cav f1) |
-| `light-cone-failure` | The arrival-time solve failed to converge inside its hard iteration cap, or errored |
+| `light-cone-failure` | The arrival-time solve failed to converge inside its hard iteration cap. (A solve that *errors* on a non-finite arrival sample reports `invalid-position` — the bad sample is the cause; clarified 2026-08-08, Warden w35 f4, so the two rows no longer claim the same event) |
 | `early-emission` | The invariant itself would be violated: emission before the earliest legal tick |
 | `invalid-envelope` | The EmittedMessage failed schema validation (bad payload, empty observerId, reserved class) |
 | `transport-failure` | The transport layer reported failure after the gate released the message; the message may already be on the wire — retries re-enter the gate and are legal duplicates (idempotent delivery, §1) |
