@@ -55,6 +55,10 @@ RO_PATHS=("$HOME/.codex/config.toml" "$wt/.claude" "$root/.claude")
 for c in fort/charter.md fort/seats fort/profiles fort/scripts; do
   RO_PATHS+=("$wt/$c" "$root/$c")
 done
+# .git/config and .git/hooks execute on the host — hooks fire unmasked on the
+# next host-side commit, and core.hooksPath repoints them. Same class as the
+# .beads hooks below (fortkit-cqc, cycle 7 / longburn-suti).
+RO_PATHS+=("$root/.git/config" "$root/.git/hooks")
 
 mask=(--bind / / --dev /dev --die-with-parent)
 for f in "${MASK_FILES[@]}"; do

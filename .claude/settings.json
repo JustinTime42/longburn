@@ -107,13 +107,9 @@
       "Edit(//home/justin/.codex/**)",
       "Edit(//home/justin/dev/longburn-worktrees/**/.claude/**)",
       "Edit(//home/justin/dev/longburn/.claude/**)",
-      "Edit(//home/justin/dev/longburn/fort/charter.md)",
       "Edit(//home/justin/dev/longburn/fort/profiles/**)",
-      "Edit(//home/justin/dev/longburn/fort/seats/**)",
-      "Edit(fort/charter.md)",
       "Edit(fort/events/*)",
       "Edit(fort/profiles/**)",
-      "Edit(fort/seats/**)",
       "Read(**/.env*)",
       "Read(.env*)",
       "Write(**/.env*)",
@@ -126,13 +122,9 @@
       "Write(//home/justin/.codex/**)",
       "Write(//home/justin/dev/longburn-worktrees/**/.claude/**)",
       "Write(//home/justin/dev/longburn/.claude/**)",
-      "Write(//home/justin/dev/longburn/fort/charter.md)",
       "Write(//home/justin/dev/longburn/fort/profiles/**)",
-      "Write(//home/justin/dev/longburn/fort/seats/**)",
-      "Write(fort/charter.md)",
       "Write(fort/events/*.jsonl)",
-      "Write(fort/profiles/**)",
-      "Write(fort/seats/**)"
+      "Write(fort/profiles/**)"
     ],
     "additionalDirectories": [
       "/home/justin/dev/longburn-worktrees"

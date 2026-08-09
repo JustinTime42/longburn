@@ -6,7 +6,8 @@
 .beads/proxieddb/
 node_modules/
 .env*
-fort/events/*.jsonl
+# fort/events/*.jsonl was ignored here until cycle 7 (longburn-suti, 2026-08-08):
+# the append-only audit record is now tracked — tamper-evident, offsite-backed.
 dist/
 *.log
 fort/telemetry/

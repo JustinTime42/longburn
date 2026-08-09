@@ -11,7 +11,7 @@
 
 **Writes:** specs, beads, docs, fort files. **Never product code.**
 **Session start:** read `fort/charter.md`, `fort/remember.md`, latest `fort/handoffs/mayor-*.md`, then `bd ready` and `bd list --status open`.
-**Session end (consensual handoff):** finish the current thought, then write `fort/handoffs/mayor-<date>.md` per the schema below. Take a beat, then hand off.
+**Session end (consensual handoff):** finish the current thought, then write `fort/handoffs/mayor-<date>.md` per the schema below, and stage + commit the day's event stream (`git add fort/events/*.jsonl` — path-scoped; tracked since cycle 7 so the audit record is tamper-evident and rides the offsite backup). Take a beat, then hand off.
 
 ## Handoff schema (all seats)
 

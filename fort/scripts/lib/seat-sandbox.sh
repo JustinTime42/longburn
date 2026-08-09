@@ -43,7 +43,26 @@ build_mask() {
   done
 
   local MASK_DIRS=("$HOME/.ssh" "$HOME/.aws" "$HOME/.config/gh" "$HOME/.docker" "$HOME/.config/git")
-  local RO_PATHS=("$root/.claude" "$root/fort/charter.md" "$root/fort/seats" "$root/fort/profiles")
+  # Cycle 7 (Overseer edict 2026-08-08, longburn-suti / fortkit-i4y): charter
+  # and seat files moved OUT of the kernel mask to a prose gate — charter prose
+  # binds a session only through its own reading of it, and amendments now ride
+  # a bead with the Overseer's approval and a charter.amended event, with drift
+  # made visible by events-in-git and routine push. The ENFORCEMENT layer
+  # tightens instead: write access follows execution context. fort/scripts
+  # executes on the HOST (launchers, emit.sh in its launcher role), so a seat
+  # that can edit it is editing code that runs unmasked at the next launch;
+  # verify.sh alone is re-granted writable below. .git/config and .git/hooks
+  # are host-executed the same way — hooks fire unmasked on the Overseer's next
+  # commit, and core.hooksPath repoints them (fortkit-cqc, same class as the
+  # .beads hooks below).
+  local RO_PATHS=("$root/.claude" "$root/fort/profiles" "$root/fort/scripts"
+                  "$root/.git/config" "$root/.git/hooks")
+  # Host-executed civilization surface, present only in the capital: the
+  # Regent's and factory's bin/, the civ launchers, and the civ profiles.
+  local hostpath
+  for hostpath in "$root/bin" "$root/civ/scripts" "$root/civ/profiles"; do
+    [ -e "$hostpath" ] && RO_PATHS+=("$hostpath")
+  done
 
   case "$seat" in
     codex)
@@ -54,6 +73,10 @@ build_mask() {
       # has no business with the other runtime's credentials or memory.
       MASK_DIRS+=("$HOME/.claude")
       RO_PATHS+=("$HOME/.codex/config.toml")
+      # The cycle-7 prose gate on charter and seats applies to ATTENDED seats
+      # only — an unattended seat cannot ask first, so a prose gate on it
+      # guards nothing (cycle 6 ruling). The Forge keeps the mechanical lock.
+      RO_PATHS+=("$root/fort/charter.md" "$root/fort/seats")
       ;;
     claude)
       # Mirror image. ~/.claude stays readable and writable: it holds this
@@ -113,6 +136,11 @@ build_mask() {
   # masks and per-dir tmpfs masks go LAST.
   local p
   for p in "${RO_PATHS[@]}" "${extra_ro[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
+  # Cycle 7 re-grant: verify.sh is the one session-run tool inside the now-RO
+  # fort/scripts — the fort evolves it through beads, and a malicious edit to
+  # it executes INSIDE this mask and lands in git. Stacked after the RO bind
+  # per the ordering invariant, so the rw file bind wins for that one path.
+  [ -e "$root/fort/scripts/verify.sh" ] && mask+=(--bind "$root/fort/scripts/verify.sh" "$root/fort/scripts/verify.sh")
   # SSH inside a user namespace (cycle 6). bwrap's userns maps root-owned files
   # to 'nobody', and OpenSSH refuses any config owned by neither root nor the
   # invoking user, so it aborts before authenticating: "Bad owner or permissions
