@@ -18,7 +18,13 @@ export interface QueuedNotification {
  * and compaction policy.
  */
 export interface NotificationQueueStore {
+  /** First-write-wins for immutable report notifications. */
   enqueue(notification: NotificationMoment): Promise<void>;
+  /**
+   * Reconciles the complete current set of planner-local last-revision
+   * warnings. Pending rows may move; delivered rows remain immutable records.
+   */
+  reconcilePendingLastRevisionWarnings(warnings: readonly NotificationMoment[]): Promise<void>;
   dueAtOrBefore(nowMs: SimTimeMs): Promise<readonly QueuedNotification[]>;
   recordAttempt(id: string): Promise<void>;
   markDelivered(id: string, deliveredAtWallClockMs: number): Promise<void>;
@@ -37,6 +43,22 @@ export class InMemoryNotificationQueueStore implements NotificationQueueStore {
   async enqueue(notification: NotificationMoment): Promise<void> {
     if (notification.id.length === 0) throw new RangeError("Notifications require a non-empty stable ID.");
     if (!this.#items.has(notification.id)) this.#items.set(notification.id, { notification: { ...notification }, attempts: 0, deliveredAtWallClockMs: undefined });
+  }
+
+  async reconcilePendingLastRevisionWarnings(warnings: readonly NotificationMoment[]): Promise<void> {
+    const warningIds = new Set(warnings.map((warning) => {
+      this.#assertLastRevisionWarning(warning);
+      return warning.id;
+    }));
+    for (const warning of warnings) {
+      const existing = this.#items.get(warning.id);
+      if (existing?.deliveredAtWallClockMs === undefined) {
+        this.#items.set(warning.id, { notification: { ...warning }, attempts: existing?.attempts ?? 0, deliveredAtWallClockMs: undefined });
+      }
+    }
+    for (const [id, item] of this.#items) {
+      if (id.startsWith(LAST_REVISION_ID_PREFIX) && item.deliveredAtWallClockMs === undefined && !warningIds.has(id)) this.#items.delete(id);
+    }
   }
 
   async dueAtOrBefore(nowMs: SimTimeMs): Promise<readonly QueuedNotification[]> {
@@ -64,7 +86,15 @@ export class InMemoryNotificationQueueStore implements NotificationQueueStore {
     if (item === undefined) throw new RangeError("Unknown notification ID.");
     return item;
   }
+
+  #assertLastRevisionWarning(notification: NotificationMoment): void {
+    if (notification.kind !== "lastRevisionInstant" || !notification.id.startsWith(LAST_REVISION_ID_PREFIX)) {
+      throw new RangeError("Only last-revision warnings can be reconciled.");
+    }
+  }
 }
+
+const LAST_REVISION_ID_PREFIX = "notification:last-revision:";
 
 interface NotificationQueueRow extends Record<string, unknown> {
   readonly notification_id: string;
@@ -91,6 +121,26 @@ export class PostgresNotificationQueueStore implements NotificationQueueStore {
       `INSERT INTO notification_queue (notification_id, deliver_at_sim_ms, notification)
        VALUES ($1, $2, $3::jsonb) ON CONFLICT (notification_id) DO NOTHING`,
       [notification.id, notification.deliverAtMs, JSON.stringify(notification)]
+    );
+  }
+
+  async reconcilePendingLastRevisionWarnings(warnings: readonly NotificationMoment[]): Promise<void> {
+    for (const warning of warnings) {
+      assertLastRevisionWarning(warning);
+      await this.#client.query(
+        `INSERT INTO notification_queue (notification_id, deliver_at_sim_ms, notification)
+         VALUES ($1, $2, $3::jsonb)
+         ON CONFLICT (notification_id) DO UPDATE
+           SET deliver_at_sim_ms = EXCLUDED.deliver_at_sim_ms, notification = EXCLUDED.notification
+         WHERE notification_queue.delivered_at_wall_clock_ms IS NULL`,
+        [warning.id, warning.deliverAtMs, JSON.stringify(warning)]
+      );
+    }
+    await this.#client.query(
+      `DELETE FROM notification_queue
+        WHERE notification_id LIKE $1 AND delivered_at_wall_clock_ms IS NULL
+          AND notification_id <> ALL($2::text[])`,
+      [`${LAST_REVISION_ID_PREFIX}%`, warnings.map((warning) => warning.id)]
     );
   }
 
@@ -127,6 +177,12 @@ const deserialize = (row: NotificationQueueRow): QueuedNotification => {
     row.notification.deliverAtMs !== row.deliver_at_sim_ms) throw new RangeError("Persisted notification queue row is invalid.");
   if (row.delivered_at_wall_clock_ms !== null) validWallClockMs(row.delivered_at_wall_clock_ms);
   return { notification: { ...row.notification }, attempts: row.attempts, deliveredAtWallClockMs: row.delivered_at_wall_clock_ms ?? undefined };
+};
+
+const assertLastRevisionWarning = (notification: NotificationMoment): void => {
+  if (notification.kind !== "lastRevisionInstant" || !notification.id.startsWith(LAST_REVISION_ID_PREFIX)) {
+    throw new RangeError("Only last-revision warnings can be reconciled.");
+  }
 };
 
 export interface NotificationQueueOptions {

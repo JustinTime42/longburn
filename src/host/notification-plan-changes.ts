@@ -14,7 +14,7 @@ export interface PaperProjectionProvider {
 
 /** Narrow queue input so plan-change derivation stays independent of transport. */
 export interface NotificationMomentSink {
-  enqueue(notifications: readonly NotificationMoment[]): Promise<void>;
+  reconcilePendingLastRevisionWarnings(warnings: readonly NotificationMoment[]): Promise<void>;
 }
 
 export interface PlanChangeNotificationOptions {
@@ -37,5 +37,5 @@ export const enqueuePlanChangeWarnings = async (
     hqPositionAt,
     shipPositionAt: paperProjection.shipPositionAt
   });
-  await sink.enqueue(deriveLocalNotifications([], warnings));
+  await sink.reconcilePendingLastRevisionWarnings(deriveLocalNotifications([], warnings));
 };

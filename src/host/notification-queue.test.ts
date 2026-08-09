@@ -33,6 +33,16 @@ describe("NotificationQueue", () => {
     expect(send.mock.calls.map(([sent]) => sent.id)).toEqual(["notification:arrival", "notification:arrival"]);
   });
 
+  it("keeps first-write-wins semantics for immutable report notification IDs", async () => {
+    const store = new InMemoryNotificationQueueStore();
+    const report = notification("notification:stream:sol/event:1/kind:arrival");
+    await store.enqueue(report);
+    await store.enqueue({ ...report, deliverAtMs: simTimeMs(500) });
+
+    await expect(store.dueAtOrBefore(simTimeMs(500))).resolves.toEqual([]);
+    await expect(store.dueAtOrBefore(simTimeMs(1_000))).resolves.toMatchObject([{ notification: { deliverAtMs: simTimeMs(1_000) } }]);
+  });
+
   it("keeps delivered records durable across a worker restart", async () => {
     const store = new InMemoryNotificationQueueStore();
     const firstSend = vi.fn(async () => ({ delivered: true as const }));
