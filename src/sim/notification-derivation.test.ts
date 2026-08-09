@@ -47,7 +47,7 @@ describe("notification derivation", () => {
   it("keeps planner openings and revision-deadline warnings local to HQ", () => {
     expect(deriveLocalNotifications(
       [{ windowId: "earth-mars-2030", opensAtMs: simTimeMs(4_000) }],
-      [{ nodeId: "capture", lastRevisionAtMs: simTimeMs(5_000) }]
+      [{ nodeId: "capture", executeAtMs: simTimeMs(6_000), lastRevisionAtMs: simTimeMs(5_000) }]
     )).toMatchObject([
       { kind: "transferWindowOpened", deliverAtMs: 4_000 },
       { kind: "lastRevisionInstant", deliverAtMs: 5_000 }
@@ -59,7 +59,7 @@ describe("notification derivation", () => {
     expect(last).toBe(8_999);
     expect(deriveLastRevisionWarnings([
       { nodeId: "capture", executeAtMs: simTimeMs(10_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }
-    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(0) })).toEqual([{ nodeId: "capture", lastRevisionAtMs: simTimeMs(8_999) }]);
+    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(0) })).toEqual([{ nodeId: "capture", executeAtMs: simTimeMs(10_000), lastRevisionAtMs: simTimeMs(8_999) }]);
   });
 
   it("does not invent a warning when a burn was already unreachable at simulation start", () => {

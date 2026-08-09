@@ -60,6 +60,8 @@ export interface TransferWindowOpening {
 /** A warning is local even though its subject is a remote command's light lag. */
 export interface LastRevisionWarning {
   readonly nodeId: string;
+  /** Identifies the pending burn whose revision deadline this warning describes. */
+  readonly executeAtMs: SimTimeMs;
   readonly lastRevisionAtMs: SimTimeMs;
 }
 
@@ -125,8 +127,8 @@ export const deriveLocalNotifications = (
     windowId,
     deliverAtMs: simTimeMs(opensAtMs)
   })),
-  ...revisionWarnings.map(({ nodeId, lastRevisionAtMs }) => ({
-    id: `notification:last-revision:${encodeURIComponent(nonEmpty(nodeId, "Burn node ID"))}`,
+  ...revisionWarnings.map(({ nodeId, executeAtMs, lastRevisionAtMs }) => ({
+    id: `notification:last-revision:${encodeURIComponent(nonEmpty(nodeId, "Burn node ID"))}:${executeAtMs}`,
     kind: "lastRevisionInstant" as const,
     nodeId,
     deliverAtMs: simTimeMs(lastRevisionAtMs)
@@ -170,5 +172,5 @@ export const deriveLastRevisionWarnings = (
   const lastRevisionAtMs = lastRevisionInstantMs({ ...input, executeAtMs: node.executeAtMs });
   return lastRevisionAtMs === undefined || lastRevisionAtMs <= input.nowMs
     ? []
-    : [{ nodeId: node.nodeId, lastRevisionAtMs }];
+    : [{ nodeId: node.nodeId, executeAtMs: node.executeAtMs, lastRevisionAtMs }];
 });

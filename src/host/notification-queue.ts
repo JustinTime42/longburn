@@ -215,6 +215,11 @@ export class NotificationQueue {
   }
 
   async enqueue(notifications: readonly NotificationMoment[]): Promise<void> {
+    for (const notification of notifications) {
+      if (notification.id.startsWith(LAST_REVISION_ID_PREFIX)) {
+        throw new RangeError("Last-revision warnings must be reconciled, not enqueued.");
+      }
+    }
     for (const notification of notifications) await this.#store.enqueue(notification);
   }
 
