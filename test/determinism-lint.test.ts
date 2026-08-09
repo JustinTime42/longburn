@@ -5,12 +5,15 @@ describe("simulation determinism lint guard", () => {
   it("applies determinism rules only to simulation code while retaining the causal boundary across src", async () => {
     const eslint = new ESLint();
     const simConfig = await eslint.calculateConfigForFile("src/sim/loop.ts");
+    const marketConfig = await eslint.calculateConfigForFile("src/sim/market.ts");
     const hostConfig = await eslint.calculateConfigForFile("src/host/tick-driver.ts");
 
     expect(simConfig.rules["no-restricted-properties"]).toEqual(expect.arrayContaining([2]));
     expect(simConfig.rules["no-restricted-syntax"]).toEqual(expect.arrayContaining([2]));
     expect(simConfig.rules["authoritative-propellant/integer-only-acceptance"]).toEqual([2]);
     expect(simConfig.rules["causal-boundary/no-raw-outbound"]).toEqual([2]);
+    expect(marketConfig.rules["no-restricted-properties"]).toEqual(expect.arrayContaining([2]));
+    expect(marketConfig.rules["no-restricted-syntax"]).toEqual(expect.arrayContaining([2]));
     expect(hostConfig.rules["no-restricted-properties"]).toBeUndefined();
     expect(hostConfig.rules["no-restricted-syntax"]).toBeUndefined();
     expect(hostConfig.rules["causal-boundary/no-raw-outbound"]).toEqual([2]);
