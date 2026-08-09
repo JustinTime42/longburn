@@ -79,7 +79,11 @@ mask=()
 # shellcheck disable=SC1091  # resolved at runtime; build_mask fills mask[]
 source "$root/fort/scripts/lib/seat-sandbox.sh"
 require_bwrap || exit $?
-build_mask claude "$root" "$src"
+# r3 (Warden suti r2 finding 1): the main checkout is extra_ro UNCONDITIONALLY,
+# so a worktree-candidate review still locks $root — the Warden is read-only
+# by construction in every posture, and the verify.sh Mayor re-grant is
+# re-masked here regardless of which tree is under review.
+build_mask claude "$root" "$root" "$src"
 mask_env claude
 
 "$emit" session.start "Sereth begins $([ "${WARDEN_SMOKE:-0}" = "1" ] && echo smoke-test || echo review) of $bead ($model)" -a sereth -s warden -t "$bead" -p "{\"model\":\"$model\"}"
