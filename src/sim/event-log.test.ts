@@ -5,13 +5,18 @@ import { simTimeMs } from "./clock.js";
 import { InMemorySimulationEventStore } from "./event-store.js";
 import { replayPersistedSegment, replaySegment, type FlightPlan, type PlanRevisionRefusalReason, type SimEvent } from "./event-log.js";
 import { AuthoritativeSimLoop } from "./loop.js";
-import { burnDurationMs, projectPropellantForBurns, TIER0_SHIP } from "./mass-cargo.js";
+import { burnDurationMs, projectPropellantForBurns, TIER0_ACCELERATION_MICROMETERS_PER_SECOND2, TIER0_SHIP } from "./mass-cargo.js";
 
 const node = (nodeId: string, executeAtMs: number, kind: "accel" | "correction" | "decel" = "accel", durationMs = 1) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind, burn: { burnDurationMs: burnDurationMs(durationMs) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 }
 });
 
 const plan = (...nodes: ReturnType<typeof node>[]): FlightPlan => ({ destination: "earth", nodes });
+
+const propellantBurn = (durationMs: number) => ({
+  burn: { burnDurationMs: burnDurationMs(durationMs) },
+  deltaVMmPerSecond: { x: Number((TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 * BigInt(durationMs)) / 1_000_000n), y: 0, z: 0 }
+});
 
 const eventArbitrary = fc.oneof(
   fc.record({ type: fc.constant<"clockAdvanced">("clockAdvanced"), elapsedMs: fc.integer({ min: 0, max: 10_000 }) }),
@@ -126,6 +131,16 @@ describe("event log replay", () => {
     expect((await loop.persistedStream()).events).toEqual([]);
   });
 
+  it("bills a throttled revision by committed delta-v instead of its schedule slot", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "throttled-propellant", seed: 1, initialTime: simTimeMs(0) } });
+    await expect(loop.applyPlanRevision(
+      plan({ ...node("throttled", 200_000_000, "accel", 193_452_401), deltaVMmPerSecond: { x: 1, y: 0, z: 0 } }),
+      () => ({ x: 0, y: 0, z: 0 })
+    )).resolves.toBeUndefined();
+    expect((await loop.persistedStream()).events).toHaveLength(1);
+  });
+
   it("rejects overlapping burns before they can enter the durable log", async () => {
     const store = new InMemorySimulationEventStore();
     const loop = await AuthoritativeSimLoop.create({ store, stream: { id: "overlapping-burns", seed: 1, initialTime: simTimeMs(0) } });
@@ -136,7 +151,7 @@ describe("event log replay", () => {
   it("replays an accepted revision after a ship config change makes it propellant-exhausted", () => {
     const historicallyAcceptedPlan = plan(node("long-burn", 0, "accel", 200_000_000));
     expect(projectPropellantForBurns(
-      historicallyAcceptedPlan.nodes.map(({ burn }) => burn),
+      historicallyAcceptedPlan.nodes.map(({ burn }) => ({ ...propellantBurn(burn.burnDurationMs), burn })),
       {
         ...TIER0_SHIP,
         structuralMassFraction: 0.05,
@@ -144,7 +159,7 @@ describe("event log replay", () => {
         maxViableBurnDurationMs: burnDurationMs(200_000_001)
       }
     )).toMatchObject({ kind: "sufficient" });
-    expect(projectPropellantForBurns(historicallyAcceptedPlan.nodes.map(({ burn }) => burn))).toMatchObject({ kind: "exhausted" });
+    expect(projectPropellantForBurns(historicallyAcceptedPlan.nodes.map(({ burn }) => ({ ...propellantBurn(burn.burnDurationMs), burn })))).toMatchObject({ kind: "exhausted" });
 
     const events: readonly SimEvent[] = [{ type: "planRevisionApplied", commandId: "command-1", flightPlan: historicallyAcceptedPlan }];
     const persisted = { seed: 1, initialTime: simTimeMs(0), events: events.map((event) => ({ event })) };

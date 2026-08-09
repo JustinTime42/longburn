@@ -8,6 +8,7 @@ import {
   BURN_DURATION_QUANTUM_MILLISECONDS,
   deltaVForBurn,
   dequantizeBurnParameters,
+  fullThrottleEquivalentBurnDurationMs,
   massRatioForDeltaV,
   projectPropellantForBurns,
   quantizeBurnParameters,
@@ -16,6 +17,16 @@ import {
   viabilityWallDeltaV,
   type QuantizedBurnParameters
 } from "./mass-cargo.js";
+
+const committedBurn = (scheduledDurationMs: number, deltaVMmPerSecond = 0) => ({
+  burn: { burnDurationMs: burnDurationMs(scheduledDurationMs) },
+  deltaVMmPerSecond: { x: deltaVMmPerSecond, y: 0, z: 0 }
+});
+
+const fullThrottleBurn = (durationMs: number) => committedBurn(
+  durationMs,
+  Number((TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 * BigInt(durationMs)) / 1_000_000n)
+);
 
 describe("mass and cargo", () => {
   it("pins the float economy acceleration to the bigint command-boundary acceleration", () => {
@@ -116,6 +127,22 @@ describe("burn commitment quantization", () => {
 });
 
 describe("sequential propellant projection", () => {
+  it("charges a throttled burn for committed delta-v, not its schedule slot", () => {
+    const throttled = committedBurn(10_000, 9);
+    expect(fullThrottleEquivalentBurnDurationMs(throttled)).toBe(burnDurationMs(1));
+    expect(projectPropellantForBurns([throttled]).nodes[0]).toMatchObject({
+      burnDurationMs: burnDurationMs(10_000),
+      propellantDurationMs: burnDurationMs(1)
+    });
+  });
+
+  it("rounds non-axial delta-v and equivalent duration upward", () => {
+    expect(fullThrottleEquivalentBurnDurationMs({
+      burn: { burnDurationMs: burnDurationMs(1) },
+      deltaVMmPerSecond: { x: 7, y: 7, z: 0 }
+    })).toBe(burnDurationMs(2));
+  });
+
   it("refuses the same just-over-ceiling commitment independently of wet mass", () => {
     const ship = {
       exhaustVelocityKmPerSecond: 1,
@@ -127,7 +154,7 @@ describe("sequential propellant projection", () => {
 
     // This ship's frozen ceiling is zero milliseconds. The decision must not
     // depend on wet mass, which is a readout-only quantity at this boundary.
-    const burns = [{ burnDurationMs: burnDurationMs(1) }];
+    const burns = [committedBurn(1, 1)];
     const gramShip = projectPropellantForBurns(burns, ship);
     const tonneShip = projectPropellantForBurns(burns, { ...ship, wetMassGrams: 1_000_000 });
 
@@ -138,8 +165,8 @@ describe("sequential propellant projection", () => {
   });
 
   it("straddles the authoritative Tier 0 ship's strict viability wall", () => {
-    const belowWall = projectPropellantForBurns([{ burnDurationMs: burnDurationMs(193_452_400) }]);
-    const aboveWall = projectPropellantForBurns([{ burnDurationMs: burnDurationMs(193_452_401) }]);
+    const belowWall = projectPropellantForBurns([fullThrottleBurn(193_452_400)]);
+    const aboveWall = projectPropellantForBurns([fullThrottleBurn(193_452_401)]);
 
     expect(belowWall.kind).toBe("sufficient");
     expect(aboveWall.kind).toBe("exhausted");
@@ -156,17 +183,17 @@ describe("sequential propellant projection", () => {
   });
 
   it("refuses a total duration that cannot remain a safe integer", () => {
-    const largestDuration = { burnDurationMs: burnDurationMs(Number.MAX_SAFE_INTEGER) };
+    const largestDeltaV = committedBurn(0, Number.MAX_SAFE_INTEGER);
 
-    expect(() => projectPropellantForBurns([largestDuration, largestDuration]))
+    expect(() => projectPropellantForBurns(Array.from({ length: 10 }, () => largestDeltaV)))
       .toThrow("Total burn duration must be a non-negative safe integer in milliseconds.");
   });
 
   it("projects each node from the previous node's remaining wet mass", () => {
     const ship = { ...TIER0_SHIP, wetMassGrams: 1_000_000 };
     const projected = projectPropellantForBurns([
-      { burnDurationMs: burnDurationMs(10_000) },
-      { burnDurationMs: burnDurationMs(20_000) }
+      fullThrottleBurn(10_000),
+      fullThrottleBurn(20_000)
     ], ship);
 
     expect(projected.kind).toBe("sufficient");

@@ -6,7 +6,7 @@ import { simTimeMs } from "../sim/clock.js";
 import { InMemorySimulationEventStore, type SimulationEventStore } from "../sim/event-store.js";
 import type { ExecutedBurn } from "../sim/event-log.js";
 import { AuthoritativeSimLoop } from "../sim/loop.js";
-import { burnDurationMs } from "../sim/mass-cargo.js";
+import { burnDurationMs, TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 } from "../sim/mass-cargo.js";
 import { PlanRevisionTransport } from "./plan-revision-transport.js";
 
 const position = () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
@@ -14,6 +14,12 @@ const timeVaryingPosition = (timeMs = 0) => ({ x: SPEED_OF_LIGHT_METERS_PER_SECO
 const node = (nodeId: string, executeAtMs: number) => ({
   nodeId, executeAtMs: simTimeMs(executeAtMs), kind: "accel" as const,
   burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 1, y: 0, z: 0 }
+});
+
+const fullThrottleNode = (nodeId: string, executeAtMs: number, durationMs: number) => ({
+  ...node(nodeId, executeAtMs),
+  burn: { burnDurationMs: burnDurationMs(durationMs) },
+  deltaVMmPerSecond: { x: Number((TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 * BigInt(durationMs)) / 1_000_000n), y: 0, z: 0 }
 });
 
 const expectUnchangedExecutedHistory = (
@@ -144,7 +150,7 @@ describe("PlanRevision command transport", () => {
 
   it("refuses an over-budget revision at arrival without trusting any caller-named cost", async () => {
     const { loop, transport } = await setup("insufficient-propellant");
-    await transport.issue({ destination: "earth", nodes: [{ ...node("impossible", 2_000), burn: { burnDurationMs: burnDurationMs(300_000_000) } }] });
+    await transport.issue({ destination: "earth", nodes: [fullThrottleNode("impossible", 2_000, 300_000_000)] });
     await loop.advance(1_000, position);
 
     const event = (await loop.persistedStream()).events.at(-1)?.event;
@@ -154,9 +160,9 @@ describe("PlanRevision command transport", () => {
 
   it("checks a revision against propellant already committed by earlier projected nodes", async () => {
     const { loop, transport } = await setup("sequential-propellant");
-    await loop.applyPlanRevision({ destination: "earth", nodes: [{ ...node("outbound", 1), burn: { burnDurationMs: burnDurationMs(150_000_000) } }] }, position);
+    await loop.applyPlanRevision({ destination: "earth", nodes: [fullThrottleNode("outbound", 1, 150_000_000)] }, position);
     await loop.advance(1, position);
-    await transport.issue({ destination: "earth", nodes: [{ ...node("capture", 200_000_000), burn: { burnDurationMs: burnDurationMs(100_000_000) } }] });
+    await transport.issue({ destination: "earth", nodes: [fullThrottleNode("capture", 200_000_000, 100_000_000)] });
     await loop.advance(1_000, position);
 
     expect((await loop.persistedStream()).events.at(-1)?.event).toMatchObject({
