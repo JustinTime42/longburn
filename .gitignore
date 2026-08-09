@@ -4,7 +4,11 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
-node_modules/
+# No trailing slash: the slash form does not match a SYMLINK named
+# node_modules, and worktree verify-seeding uses exactly such symlinks —
+# an unscoped git add would commit a link pointing outside the repo
+# (Warden 5h49 f7; SO 4 was the only guard).
+node_modules
 .env*
 # fort/events/*.jsonl was ignored here until cycle 7 (longburn-suti, 2026-08-08):
 # the append-only audit record is now tracked — tamper-evident, offsite-backed.
