@@ -22,7 +22,7 @@ A change that violates a pillar is treated like a change that violates documente
 1. **Tier promotion.** Moving to Tier N+1 requires the Overseer's judgment that Tier N's question is answered (Tier 0's answer comes from the 3-week live tester run — a permanently human bead).
 2. **Design-pillar amendments and the GDD itself** → Overseer only. Agents propose via beads.
 3. **Monetization decisions** → Overseer only (GDD §9.6: nothing that sells economic advantage).
-4. The fort's own constitution — `fort/` files, seat definitions, launchers, permission profiles → Warden + Overseer review (Proofdelve gate 6, inherited). (Amendment 2026-08-08, cycle 7, longburn-suti: `fort/charter.md` and `fort/seats/` move to a prose gate for attended seats — see "Prose gates". `fort/profiles/`, `.claude/`, host-executed scripts in `fort/scripts/`, and `.git/config` + `.git/hooks` stay kernel read-only, with `verify.sh` alone re-granted writable to the Mayor. Partially resolves longburn-a6a.)
+4. The fort's own constitution — the enumerated set, and only it: `fort/charter.md`, `fort/seats/`, `fort/profiles/`, `.claude/`, host-executed scripts in `fort/scripts/`, and `.git/config` + `.git/hooks` → Warden + Overseer review (Proofdelve gate 6, inherited). The Memory-section files (`fort/remember.md`, `fort/handoffs/`, `fort/events/`, `fort/annals/`) are seat-writable records, not constitution. *(Gloss narrowed 2026-08-08, Overseer approval on longburn-c6mz; previously read "`fort/` files, seat definitions, launchers, permission profiles", which swept in the Memory files and cost a Warden review a judgment call.)* (Amendment 2026-08-08, cycle 7, longburn-suti: `fort/charter.md` and `fort/seats/` move to a prose gate for attended seats — see "Prose gates". `fort/profiles/`, `.claude/`, host-executed scripts in `fort/scripts/`, and `.git/config` + `.git/hooks` stay kernel read-only, with `verify.sh` alone re-granted writable to the Mayor. Partially resolves longburn-a6a.)
 5. `.env*` / secrets → deny-listed from all agent access from day zero.
 6. Anything public-facing (domains, store pages, published builds) → Overseer.
 
@@ -93,7 +93,8 @@ Some seats of this civilization are not seats of any settlement. They work acros
 forts, or above what a fort may do to itself, or point outward at the world, and
 they are governed by their own law: `civ/covenant.md`, in the fortkit repository,
 which is the civilization's capital. They reside there; they are not ruled by
-Manyhalls, and this charter does not bind them. Their seats and access schedules are in `fortkit/civ/seats/`,
+Farlantern *(corrected from "Manyhalls", a wrong-fort residue — longburn-0ec,
+Overseer-approved 2026-08-08)*, and this charter does not bind them. Their seats and access schedules are in `fortkit/civ/seats/`,
 readable by anyone. **Every `civ/` path in this section is relative to the
 fortkit repository, not to this one; no settlement but the capital has a `civ/`
 directory at all.**

@@ -205,12 +205,13 @@ The full design specifies four hard systems — trajectory sim, player-driven ec
 - Full plan agency at light-lag: any planned burn (re-target, correction, capture, arrival profile) may be edited or aborted until it executes; commands travel at c from the player's HQ, so agency thins with distance
 - Light-lag applied to all displayed information, with visible staleness indicators
 - A single fake market at the destination whose prices move on a scripted/noisy basis while you're in flight, so the cargo decision is a real bet
+- **The cargo-composition bet:** a single NPC forward desk at the destination offers a hauling contract before departure — contracted forward tonnage at a rate fixed and persisted at composition (two-sided risk: the rate binds in both directions) versus spot tonnage sold at arrival prices, both physically loaded; optionality costs delta-v. Three sell dispositions: manual sell order at c, sell-on-arrival, contractual auto-settle. Physical delivery only. *(Amended 2026-08-08, Overseer ruling, longburn-gfg4; governing spec market-model-v0.1.md §4.)*
 - Push/desktop notification on window opening, arrival, and events
 - Deliberately minimal visuals: 2D orbital plot, vector lines, data panels
 
 ### 7.4 Scope — Out
 
-Everything else. Specifically: multiplayer, real economy simulation, contracts, reputation, NPC firms, colony demand, construction, combat, propulsion tech tree, additional bodies, mobile wrapper, art.
+Everything else. Specifically: multiplayer, real economy simulation, player-to-player contracts, reputation, NPC trading fleets and firms, colony demand, construction, combat, propulsion tech tree, additional bodies, mobile wrapper, art. *(Amended 2026-08-08, Overseer ruling, longburn-gfg4: the single NPC forward desk and its hauling contract, market-model-v0.1.md §4, are IN Tier 0 scope — see §7.3; the exclusions originally read "contracts" and "NPC firms" unqualified.)*
 
 ### 7.5 Success Criteria
 
@@ -241,12 +242,14 @@ Tested against ~5–10 target-audience players (Expanse readers, Aurora 4X / KSP
 
 | Tier | Adds | Validates |
 |---|---|---|
-| **T1** | Multi-ship, cislunar fast layer, real local economy with physical stockpiles, scarcity-emitted contracts | Does the near loop stay interesting alongside the far bet? |
-| **T2** | Multiplayer, single world, cislunar only. Player-to-player trade and contracts. | Does a small population produce a breathing market in tight geography? |
+| **T1** | The cislunar bootstrap, solo: the contract loop (authored seed contracts + recurring-demand generators), multi-ship, physical stockpiles, hours-to-days cadence in the Earth-Moon zone (stations, lunar surface and orbital bases, mining, science, agriculture) | Does the contract loop carry the early game, solo? (H2) |
+| **T2** | Multiplayer, single world, cislunar only: the same contract loop with player-to-player trade and contracts | Does a small population produce a breathing market in tight geography — and does the contract loop still carry it with real counterparties? |
 | **T3** | Reputation (v1), brokerage, information as a tradeable good | Does asymmetry create roles rather than frustration? |
 | **T4** | Demand-gated lunar expansion, colony supply and decay, market-maker firms | Does the organic expansion premise actually fire? |
 | **T5** | Mars, conjunction blackouts, relay infrastructure, dynamic starting locations | Does the frontier-becomes-hub cycle land? |
 | **T6+** | Belt, outer system, propulsion tech compression, interception/conflict | — |
+
+*(T1/T2 rows amended 2026-08-08 by Overseer gate-2 ratification, longburn-52lr, per world-progression-v0.1.md §4: redefined around the cislunar contract loop — T1 absorbs the solo half of H2, T2 keeps its breathing-market question and adds the multiplayer half. Playtest cohorts at elevated timescale k are permitted at these tiers at Overseer discretion; production k=1 is pinned at world birth. Original rows: T1 "Multi-ship, cislunar fast layer, real local economy with physical stockpiles, scarcity-emitted contracts / Does the near loop stay interesting alongside the far bet?"; T2 "Multiplayer, single world, cislunar only. Player-to-player trade and contracts. / Does a small population produce a breathing market in tight geography?")*
 
 ---
 

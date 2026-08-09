@@ -2,8 +2,9 @@
 
 Status: design document, drafted by the Mayor 2026-08-08 from three Overseer design
 sessions. **Sections marked RULING record decisions the Overseer made on 2026-08-08 and
-are in force. Sections marked PROPOSAL await gate-2 action** (the GDD and tier ladder are
-Overseer-only; this doc proposes, it does not amend). This is a design doc, not a
+are in force. The §4 T1/T2 proposal was RATIFIED by the Overseer 2026-08-08 (gate 2,
+longburn-52lr) and the GDD tier table is amended accordingly** (the GDD and tier ladder
+are Overseer-only; this doc proposed, the Overseer amended). This is a design doc, not a
 governing spec: nothing here authorizes implementation beyond the current tier (SO 13).
 
 ## 1. The core principle
@@ -95,7 +96,7 @@ Deferred bead filed so the thinking is not lost.
   skin (payout floats with destination price) even its fiction survives into the settled
   world, and its price process is a candidate reference model for §4.7 market makers
   and newborn settlement markets. Nothing in T0 is discarded by this vision.
-- **T1/T2 (PROPOSAL, gate 2 pending): the cislunar bootstrap.** Redefine around the
+- **T1/T2 (RATIFIED 2026-08-08, gate 2, longburn-52lr): the cislunar bootstrap.** Redefine around the
   contract loop: authored seed contracts plus recurring-demand generators, solo then
   multiplayer, hours-to-days cadence, the vibrant earth-moon zone (stations, lunar
   surface and orbital bases, mining, science, agriculture). Absorbs T2's existing

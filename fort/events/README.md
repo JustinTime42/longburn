@@ -1,14 +1,14 @@
-# Proofdelve event stream
+# Farlantern event stream
 
-Append-only JSONL, one file per day (`events-YYYY-MM-DD.jsonl`), written by `fort/scripts/emit.sh`. This is the fort's replayable history: the data source for the future Dwarf-Fortress-style visualizer (bead ForgeOs-din) and for any digest/monitoring consumer. Daily files are **gitignored** (worktree-concurrent appends would make tracked files a merge hazard); this README and the schema are tracked.
+Append-only JSONL, one file per day (`events-YYYY-MM-DD.jsonl`), written by `fort/scripts/emit.sh`. This is the fort's replayable history: the data source for a future Dwarf-Fortress-style visualizer and for any digest/monitoring consumer. Daily files are **tracked in git since cycle 7** (the audit record is tamper-evident and rides the offsite backup; the Mayor stages them path-scoped at session close — see fort/seats/mayor.md). This README and the schema are tracked. *(Originally gitignored for worktree merge-hazard reasons; superseded 2026-08-08.)*
 
 ## Schema
 
 ```json
-{"ts":"2026-08-03T17:30:00-08:00","actor":"veyra","seat":"forge","category":"bead.claimed","target":"ForgeOs-mij","detail":"Veyra claims the CI bead","payload":null}
+{"ts":"2026-08-03T17:30:00-08:00","actor":"orin","seat":"forge","category":"bead.claimed","target":"longburn-mij","detail":"Orin claims the CI bead","payload":null}
 ```
 
-- **ts**: ISO-8601 with offset. **actor**: who did it (`marrek`, `veyra`, `tova`, `overseer`, `harness`, `watcher:<name>`). **seat**: office if applicable (`mayor|forge|warden`). **category**: dotted event type (below). **target**: bead ID, commit hash, seat, or path. **detail**: one human-readable line (this becomes the DF announcement text). **payload**: optional JSON (model used, tokens, verdicts, tallies).
+- **ts**: ISO-8601 with offset. **actor**: who did it (`vardis`, `orin`, `sereth`, `overseer`, `harness`, `regent`, `watcher:<name>`). **seat**: office if applicable (`mayor|forge|warden`). **category**: dotted event type (below). **target**: bead ID, commit hash, seat, or path. **detail**: one human-readable line (this becomes the DF announcement text). **payload**: optional JSON (model used, tokens, verdicts, tallies).
 
 ## Categories (extend freely; never rename existing ones)
 

@@ -1,7 +1,8 @@
-# Notification Product Surface v0.1 — DRAFT (pending Overseer approval)
+# Notification Product Surface v0.1
 
-Status: DRAFT, written by the Mayor 2026-08-08 (din.7.4's design half; Forge
-implements against it once approved). Parent: din.7 (GDD §6: for an async game
+Status: **APPROVED by the Overseer 2026-08-08** (§5's three questions answered
+yes-as-drafted; see §5). Written by the Mayor 2026-08-08 (din.7.4's design
+half; Forge implements against it). Parent: din.7 (GDD §6: for an async game
 the notification layer *is* the retention mechanic — product, not plumbing).
 Timing/derivation is din.7.1's contract (earliest-permissible instants from
 the emission gate); delivery is din.7.2; transport is din.7.3. This document
@@ -76,11 +77,12 @@ opens-per-class, open latency, and whether N4 warnings precede revision
 commands (the "mid-flight decisions ignored?" fail signal, measured rather
 than surveyed).
 
-## 5. Open questions for the Overseer
+## 5. Open questions for the Overseer — ANSWERED (Overseer, 2026-08-08)
 
-- **Q1 — the wake line (§1):** ratify push defaults for N1–N6. Cheapest to
-  change later; recorded so the 3-week run starts from a decided default.
-- **Q2 — N4 cadence:** two warnings (12 h / 1 h) as default — enough agency
-  without nagging?
-- **Q3 — email copy = push copy** at T0 (one template surface, transport-
-  agnostic). Any reason to want richer email?
+- **Q1 — the wake line (§1):** RATIFIED as drafted — push defaults for N1–N6,
+  N7 in-app only. Recorded so the 3-week run starts from a decided default;
+  remains the cheapest of the three to revisit.
+- **Q2 — N4 cadence:** RATIFIED — two warnings (12 h / 1 h) as the default,
+  player-tunable list.
+- **Q3 — email copy = push copy** at T0: RATIFIED — one transport-agnostic
+  template surface; no richer email at T0.
