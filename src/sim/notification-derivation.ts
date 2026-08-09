@@ -66,6 +66,12 @@ export interface LastRevisionWarning {
 export interface LastRevisionInstantInput {
   readonly executeAtMs: SimTimeMs;
   readonly hqPositionAt: (timeMs: SimTimeMs) => PositionMeters;
+  /**
+   * HQ's knowledge-consistent paper projection, derived only from command
+   * echoes and outcome reports that have reached HQ. This must never be the
+   * authoritative ship worldline: a deadline computed from unknown refusal
+   * state would reveal that refusal locally before its return signal arrives.
+   */
   readonly shipPositionAt: ObserverPositionAt;
 }
 
@@ -159,8 +165,10 @@ export const lastRevisionInstantMs = ({ executeAtMs, hqPositionAt, shipPositionA
 /** Computes one local warning per pending burn that remains revisable. */
 export const deriveLastRevisionWarnings = (
   nodes: readonly BurnNode[],
-  input: Omit<LastRevisionInstantInput, "executeAtMs">
+  input: Omit<LastRevisionInstantInput, "executeAtMs"> & { readonly nowMs: SimTimeMs }
 ): LastRevisionWarning[] => nodes.flatMap((node) => {
   const lastRevisionAtMs = lastRevisionInstantMs({ ...input, executeAtMs: node.executeAtMs });
-  return lastRevisionAtMs === undefined ? [] : [{ nodeId: node.nodeId, lastRevisionAtMs }];
+  return lastRevisionAtMs === undefined || lastRevisionAtMs <= input.nowMs
+    ? []
+    : [{ nodeId: node.nodeId, lastRevisionAtMs }];
 });
