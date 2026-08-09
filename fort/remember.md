@@ -39,3 +39,4 @@
   Operational consequence of `.git/config` RO: `git push -u`, `git remote
   add`, and `git config` fail inside the mask; plain `git push origin main`
   works.
+- **World-progression rulings (Overseer, 2026-08-08)**: recorded in `docs/design/world-progression-v0.1.md`. In force: T0 keeps its question unchanged; production timescale k=1 pinned at world birth (k is CONFIG for tests/playtests per SO 10, uniform-or-nothing — never per-domain); unique one-per-world-history firsts adopted (event log = the annals); settlements server-run only, player-founded settlements PARKED (b7ho); irreversibility-at-world-scale is a feature (DF-fun stance — which is why the sim must be spotless). PENDING gate 2: T1/T2 cislunar-bootstrap restructure (52lr). Contracts are two-regime: finite authored bootstrap + derived steady-state forever (the pillar-3 defense).
