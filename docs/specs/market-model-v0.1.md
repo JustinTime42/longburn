@@ -236,7 +236,14 @@ already computes for 2.4; no second light-time surface.
    pull toward μ; clamp floor/ceiling branches; Irwin-Hall endpoint centering;
    a fixed-seed 500-draw window must satisfy `|sum| ≤ 5σ`, where
    `σ = sqrt(500 · (M² − 1)) ≈ 1.47e6`. This is a stated plausibility bound,
-   not a price-history fixture.
+   not a price-history fixture (and with a fixed seed it is a deterministic
+   plausibility band, not a distribution test with statistical power — do not
+   credit it with more). One harvested fixed-seed price pin is deliberately
+   RETAINED as a determinism canary; the prohibition above is on harvested
+   fixtures standing in for property assertions, not on canaries. *(This item
+   reworded by the Forge under longburn-aq3n, faithful to the bead text;
+   ratified and clarified by the Mayor 2026-08-08 per Warden aq3n f3+f4+f6 —
+   spec wording stays the Mayor's lane.)*
 4. **Trade:** sell-at-arrival validation against the arrival-instant price
    (not issue-instant); typed refusals for each case in §4; integer proceeds
    exactness; duplicate-sale refusal.
