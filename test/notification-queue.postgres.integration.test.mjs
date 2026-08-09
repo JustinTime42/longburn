@@ -47,8 +47,8 @@ const psqlClient = {
   }
 };
 
-const warning = (nodeId, deliverAtMs) => ({
-  id: `notification:last-revision:${nodeId}`,
+const warning = (nodeId, executeAtMs, deliverAtMs) => ({
+  id: `notification:last-revision:${nodeId}:${executeAtMs}`,
   kind: "lastRevisionInstant",
   nodeId,
   deliverAtMs: simTimeMs(deliverAtMs)
@@ -67,8 +67,8 @@ integrationDescribe(
         id: `notification:stream:sol/event:${suffix}/kind:arrival`, kind: "arrival", destination: "mars",
         deliverAtMs: simTimeMs(3_000), sourceGlobalPosition: 1, eventTimeMs: simTimeMs(2_000)
       };
-      const later = warning(`later-${suffix}`, 4_000);
-      const earlier = warning(`earlier-${suffix}`, 2_000);
+      const later = warning(`later-${suffix}`, 5_000, 4_000);
+      const earlier = warning(`earlier-${suffix}`, 3_000, 2_000);
 
       await store.enqueue(report);
       await store.enqueue({ ...report, deliverAtMs: simTimeMs(1_000) });

@@ -43,6 +43,19 @@ describe("NotificationQueue", () => {
     await expect(store.dueAtOrBefore(simTimeMs(1_000))).resolves.toMatchObject([{ notification: { deliverAtMs: simTimeMs(1_000) } }]);
   });
 
+  it("rejects last-revision warnings from the immutable public enqueue path", async () => {
+    const queue = new NotificationQueue({
+      store: new InMemoryNotificationQueueStore(),
+      wallClockToSimTime: { simTimeAt: () => simTimeMs(1_000) },
+      deliver: async () => ({ delivered: true })
+    });
+    const warning: import("../sim/notification-derivation.js").NotificationMoment = {
+      id: "notification:last-revision:capture:10000", kind: "lastRevisionInstant", nodeId: "capture", deliverAtMs: simTimeMs(8_999)
+    };
+
+    await expect(queue.enqueue([warning])).rejects.toThrow("must be reconciled");
+  });
+
   it("keeps delivered records durable across a worker restart", async () => {
     const store = new InMemoryNotificationQueueStore();
     const firstSend = vi.fn(async () => ({ delivered: true as const }));
