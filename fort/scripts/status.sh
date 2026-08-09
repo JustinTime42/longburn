@@ -17,9 +17,12 @@ echo "── Worktrees (active Forge sessions) ──"
 git worktree list | tail -n +2
 echo
 echo "── Recent handoffs ──"
-find fort/handoffs -maxdepth 1 -name '*.md' -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -3 | cut -f2- | while read -r f; do
-  echo "  $f  ($(date -r "$f" '+%b %d %H:%M'))"
-done || echo "  (none yet)"
+recent=$(find fort/handoffs -maxdepth 1 -name '*.md' -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -3 | cut -f2-)
+if [ -n "$recent" ]; then
+  while read -r f; do echo "  $f  ($(date -r "$f" '+%b %d %H:%M'))"; done <<<"$recent"
+else
+  echo "  (none yet)"
+fi
 echo
 echo "── Git ──"
 AHEAD=$(git rev-list --count origin/main..main 2>/dev/null)

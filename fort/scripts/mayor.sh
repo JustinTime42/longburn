@@ -2,6 +2,15 @@
 # Talk to the Mayor. Usage: fort/scripts/mayor.sh  (add an alias: alias mayor-longburn='~/dev/longburn/fort/scripts/mayor.sh')
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || echo /home/justin/dev/longburn)"
 cd "$REPO" || exit 1
+# In-sandbox launch refusal (longburn-5v4): an unattended or read-only seat's
+# session must never launch a seat. The marker names the mask we are inside;
+# only an unmasked shell (or, harmlessly, the Mayor's own) proceeds.
+case "${FORT_MASKED:-}" in
+  ""|mayor) ;;
+  *)
+    echo "mayor.sh: REFUSED — running inside the '$FORT_MASKED' seat mask; launchers are the harness's lane (longburn-5v4)" >&2
+    exit 77 ;;
+esac
 fort/scripts/emit.sh session.start "The Overseer summons Vardis" -a vardis -s mayor 2>/dev/null || true
 trap 'fort/scripts/emit.sh session.end "Vardis'\''s audience with the Overseer ends" -a vardis -s mayor 2>/dev/null || true' EXIT
 # Kernel mask layer (civilization cycle 4). Permission rules bind a SPELLING,
@@ -39,6 +48,8 @@ require_bwrap || exit $?
 launch+=(--dangerously-skip-permissions)
 build_mask claude "$REPO"
 mask_env claude
-export FORT_MASKED=1
-mask+=(--setenv FORT_MASKED 1)
+# Seat-NAMED marker (longburn-5v4): launchers allow 'mayor' through — the
+# dispatch lane (longburn-1p9) is hers — and refuse 'forge'/'warden'.
+export FORT_MASKED=mayor
+mask+=(--setenv FORT_MASKED mayor)
 exec bwrap "${mask[@]}" -- "${launch[@]}"

@@ -23,7 +23,7 @@
 # shellcheck disable=SC2034  # mask is consumed by the sourcing script
 build_mask() {
   local seat="$1" root="$2"; shift 2
-  local CODEX_AUTH_RO=0
+  local CODEX_DIR_RW=0
   local extra_ro=("$@")
   local uid; uid="$(id -u)"
 
@@ -70,19 +70,29 @@ build_mask() {
 
   case "$seat" in
     codex)
-      # KNOWN EXCEPTION: ~/.codex stays readable — Codex reads its own auth.json
-      # from inside the sandbox, so masking it breaks the launch. config.toml is
-      # bound read-only below, closing the disarm-the-next-launch vector while
-      # leaving token refresh working. ~/.claude is masked entirely: the Forge
-      # has no business with the other runtime's credentials or memory.
+      # KNOWN EXCEPTION: ~/.codex stays reachable AND writable as a live
+      # directory bind — Codex reads its own auth.json from inside the sandbox
+      # and rotates the token by rename, so an RO bind breaks refresh the same
+      # way it did for the Mayor's dispatch lane (longburn-1p9): auth.json is
+      # deliberately writable under the live directory bind, for both seat
+      # types. config.toml is bound read-only below, closing the
+      # disarm-the-next-launch vector while leaving rotation working.
+      # ~/.claude is masked entirely: the Forge has no business with the other
+      # runtime's credentials or memory.
+      CODEX_DIR_RW=1
       MASK_DIRS+=("$HOME/.claude")
       RO_PATHS+=("$HOME/.codex/config.toml")
+      # The unattended seat gets no ssh signing path: the agent socket is
+      # masked at the inode and its env var is claude-only in mask_env — the
+      # Forge never pushes (lane rule 5), and here that is mechanical, not
+      # prose (parity with the inline forge.sh mask this branch replaced,
+      # longburn-kyl).
+      [ -n "${SSH_AUTH_SOCK:-}" ] && MASK_FILES+=("$SSH_AUTH_SOCK")
       # The cycle-7 prose gate on charter and seats applies to ATTENDED seats
       # only — an unattended seat cannot ask first, so a prose gate on it
       # guards nothing (cycle 6 ruling). The Forge keeps the mechanical lock.
-      # NOTE (Warden 8c9 finding 2): no launcher currently calls build_mask
-      # codex — every forge.sh still carries its own inline mask (fortkit-6jf)
-      # — so this branch is documentation of intent until that consolidation.
+      # Live since longburn-kyl: forge.sh sources this branch (the inline mask
+      # is retired; capital-side consolidation is fortkit-6jf).
       RO_PATHS+=("$root/fort/charter.md" "$root/fort/seats")
       ;;
     claude)
@@ -193,16 +203,18 @@ build_mask() {
 # GIT_SSH_COMMAND, and anything sourced from a secrets file in the launching
 # shell. Failure mode when a name is missing is loud (the CLI cannot auth or the
 # terminal misbehaves), never silently insecure.
-# NOTE: SSH_AUTH_SOCK is passed through deliberately. ~/.ssh is masked, so key
-# FILES are unreadable, but agent-held identities still sign — the session can
-# use a key it can never read. Load keys with `ssh-add` for agent-based push.
+# NOTE: SSH_AUTH_SOCK is passed through deliberately — for claude seats only.
+# ~/.ssh is masked, so key FILES are unreadable, but agent-held identities
+# still sign — an attended session can use a key it can never read (`ssh-add`
+# for agent-based push). The codex seat gets neither the env var nor the
+# socket (masked in build_mask): the unattended Forge never pushes.
 mask_env() {
   local seat="$1" v
   local common=(HOME USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM LANG LC_ALL
-                PATH TMPDIR XDG_RUNTIME_DIR SSH_AUTH_SOCK GIT_PAGER PAGER)
+                PATH TMPDIR XDG_RUNTIME_DIR GIT_PAGER PAGER)
   local codex_only=(CODEX_HOME OPENAI_API_KEY OPENAI_BASE_URL RUST_LOG NUGET_PACKAGES
                     DOTNET_CLI_TELEMETRY_OPTOUT DOTNET_NOLOGO npm_config_cache)
-  local claude_only=(ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR npm_config_cache)
+  local claude_only=(ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR npm_config_cache SSH_AUTH_SOCK)
   mask+=(--clearenv)
   for v in "${common[@]}"; do [ -n "${!v:-}" ] && mask+=(--setenv "$v" "${!v}"); done
   case "$seat" in
