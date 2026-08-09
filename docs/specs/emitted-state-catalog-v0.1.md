@@ -67,16 +67,18 @@ EmittedMessage {
 | # | Class | Source events | Lag |
 |---|-------|--------------|-----|
 | 2.1 | Ship report | burnStarted, burnEnded, arrivalRecorded, departureRecorded | c from stored event position to observer |
-| 2.2 | Command outcome report | planRevisionApplied, planRevisionRefused; cargoSold, sale refusals (ADDED 2026-08-08, market-model §4 — sale outcomes happen at the market and travel back at c, the same shape; Warden din.6.1 r1 f6) | c from the ship/market (the outcome happens at arrival) back to observer |
+| 2.2 | Command outcome report | planRevisionApplied, planRevisionRefused; cargoSold, sellRefused (ADDED 2026-08-08, market-model §4 — sale outcomes happen at the market and travel back at c, the same shape; concrete refusal type named per Warden r2 f5, din.6.4 implements it) | c from the ship/market (the outcome happens at arrival) back to observer |
 | 2.3 | Command echo | commandIssued | none — the event happens AT the observer's HQ (staleness 0) |
-| 2.4 | Market event | din.6's market events | c from the market's host body (reserved; din.6 fills in) |
+| 2.4 | Market event | marketQuoteUpdated, marketEventOccurred (filled 2026-08-09 by market-model-v0.1.md §3) | c from the market's host body |
 | 2.5 | Sim clock | current sim time at HQ | none — observer-local context, no remote information |
 | 2.6 | (not emitted) Body ephemerides | — | client-computed public math |
 | 2.7 | (not emitted) Live ship position | — | does not exist for the player, by design |
 
 - **2.2** is the flight-plan spec's ruling made mechanical: validity is judged at the ship
   at arrival; the applied/refused notice travels back at c. The player learns their
-  revision's fate one light-round-trip after issuing, never sooner.
+  revision's fate one light-round-trip after issuing, never sooner. (Sale outcomes from a
+  `sell-on-arrival` standing disposition are the one-way case: no issuing round trip —
+  the settlement happens at the market and its report travels back at c; Warden r2 f5.)
   - **Command-ID shape (ADDED 2026-08-08, longburn-xo9b; Warden xo9b f2):** outcome
     reports whose `commandId` begins with the reserved prefix `local-` correlate to no
     2.3 echo the client will ever hold — they are locally-originated (bootstrap/system)

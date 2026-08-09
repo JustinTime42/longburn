@@ -21,9 +21,9 @@ simulation — no order book, no depth, no NPC trading fleets (out of T0 scope,
 GDD §7.4). One NPC entity exists by Overseer ruling (Q4, 2026-08-08): the
 forward desk that quotes the hauling contract in §4. GDD §7.4's literal text
 still lists "contracts" and "NPC firms" as scope-out; the write-back amending
-§7.3/§7.4 to record this ruling is a pending gate-2 action (Warden din.6.1
-r1 f7; the v3t plan-and-burn precedent is the model). din.6.4 does not build
-until that write-back or an Overseer reversal lands.
+§7.3/§7.4 to record this ruling is a pending gate-2 action, **longburn-gfg4**
+(Warden din.6.1 r1 f7; the v3t plan-and-burn precedent is the model). din.6.4
+does not build until that write-back or an Overseer reversal lands.
 
 Non-goals, recorded so they are not accreted: multiple markets, arbitrage
 loops, price impact from the player's own trade, commodity interactions,
@@ -44,7 +44,8 @@ satisfy them:**
   hvx/d0c scars).
 - Therefore: the discretization coefficients are computed **once, outside the
   sim core** (config-build time) and pinned as **quantized fixed-point config
-  constants**. The sim core's per-step update is integer multiply/add/shift
+  constants**. The sim core's per-step update is integer
+  multiply/add/divide-by-power-of-two
   only. This is SO 16's planner/commitment split applied to the market: the
   math that derives the coefficients advises; the quantized constants commit.
 - The noise term is an **integer Irwin-Hall sum** (AMENDED per Warden din.6.1
@@ -53,7 +54,10 @@ satisfy them:**
   `Z_n` is then an exact integer with mean 0 and standard deviation
   `sqrt(M² − 1) ≈ M`, approximately normal in shape. **The normalisation is
   folded into the coefficient**: `b = round(2^s · σ_step / sqrt(M² − 1))`.
-  No Box-Muller anywhere.
+  No Box-Muller anywhere. **`M = 2^16` is load-bearing** (Warden r2): with a
+  uint32 source, drawing on `[0, 2^16)` is an exact high-bits truncation with
+  zero modulo bias; a different `M` requires re-deriving the unbiasedness
+  argument, not just retuning.
 
 **Per-step update (integer domain, AMENDED per Warden din.6.1 r1 f3+f4):**
 
@@ -147,7 +151,16 @@ lots:
 - **Contracted tonnage**: committed to an NPC hauling contract — a forward:
   fixed rate per ton (quoted from the price process's closed-form conditional
   expectation at the arrival planned **at composition time**, minus a config
-  spread; computed authoring-side, quantized, SO 16), payable on delivery.
+  spread), payable on delivery. **Quote mechanism (AMENDED per Warden r2 f2 —
+  the r1 text said "authoring-side", which is impossible: the expectation
+  `μ + (P_t − μ)·aᴺ/Sᴺ` depends on runtime spot and horizon):** the quote is
+  computed **planner-side at composition time** from the current spot and the
+  planned horizon, transcendental-free — `aᴺ` by integer
+  exponentiation-by-squaring on the already-pinned `a` — then **quantized
+  into the contract as a persisted fact** (SO 16's planner/commitment shape,
+  exactly like a burn parameter). The contracted rate is **never recomputed**:
+  replay and settlement read the persisted rate (the kg2 doctrine, §6 test 5,
+  applies to it explicitly — it is the number a dispute turns on).
   Certain, lower margin. **Two-sided risk by construction**: the holder is
   protected when spot crashes and locked out when spot spikes past the agreed
   rate (lock-in regret) — the forward converts price risk into opportunity
@@ -227,7 +240,16 @@ already computes for 2.4; no second light-time surface.
    exactness; duplicate-sale refusal.
 5. **Replay:** market state is reducer-replayable from the log like all sim
    state; quotes are facts once persisted (kg2's live-only ruling applies —
-   replay never re-runs the process to second-guess a persisted quote).
+   replay never re-runs the process to second-guess a persisted quote). The
+   **contracted forward rate is likewise a persisted fact, never recomputed**
+   (Warden r2 f2).
+6. **Overflow headroom pin (Warden r2 f4, promoted from §2 prose):** a test
+   pins the worst-case update numerator against the 2^53 exact-integer bound
+   **computed from the live config**, so a din.11 retune cannot silently
+   overflow.
+7. **`deriveStream` fixtures (Warden r2 f4):** the RNG substream derivation is
+   pinned by fixture tests (fixed worldSeed + streamId → pinned first draws),
+   so stream assignment can never silently change across refactors.
 
 ## 7. Initial parameters (all retunable config; product-tuning pass before din.11)
 
@@ -237,7 +259,7 @@ already computes for 2.4; no second light-time surface.
 | μ (mean price) | 1 000 cr/ton | |
 | P_min / P_max | 200 / 5 000 | clamp walls |
 | θ (reversion) | half-life ≈ 5 days | slow enough that mid-transit news matters |
-| σ_stat (stationary std) | 250 cr | the config-facing σ (Warden f9: §2's σ_diff derives from it, `σ_diff = σ_stat·sqrt(2θ)`; per-step `σ_step = σ_stat·sqrt(1 − e^{−2θΔt})` ≈ 27 cr/hour-step at these defaults). din.11 tuning note: at a 5-day half-life a 3-week transit is ≈ 4.2 half-lives, so arrival is essentially stationary and forward quotes ≈ μ − spread on nearly every run — the hedge is a pure risk-appetite dial, not a market read; lengthen the half-life if quotes should carry direction. |
+| σ_stat (stationary std) | 250 cr | the config-facing σ (Warden f9: §2's σ_diff derives from it, `σ_diff = σ_stat·sqrt(2θ)`; per-step `σ_step = σ_stat·sqrt(1 − e^{−2θΔt})` ≈ 27 cr/hour-step at these defaults). din.11 tuning note: at a 5-day half-life a 3-week transit is ≈ 4.2 half-lives, so arrival is essentially stationary and forward quotes ≈ μ − spread on nearly every run — the hedge is a pure risk-appetite dial, not a market read. **Lengthening the half-life requires quote-repricing-on-revision to land FIRST** (Warden r2 f3: at a 30-day half-life, quote-then-replan-to-a-far-arrival extracts ≈250 cr/ton risk-free under the rate-stands ruling — the T0 ruling is safe only at near-stationary tuning). |
 | Step | 1 sim-hour | |
 | Origin cost | 600 cr/ton | buys must be beatable but lose-able |
 | Starting capital | 10 000 cr | |
