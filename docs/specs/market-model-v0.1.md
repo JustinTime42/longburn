@@ -232,9 +232,11 @@ already computes for 2.4; no second light-time surface.
 2. **Causality:** market emissions asserted by the same causality suite as
    ship events (SO 12) — a quote reaches the observer no earlier than
    distance/c; the moving-Earth observer case included.
-3. **Statistics (fixed-seed pins, not distribution tests):** mean-reversion
-   pull toward μ; clamp floor/ceiling branches; Irwin-Hall centering (sum over
-   a pinned window ≈ 0).
+3. **Statistics (property assertions, not harvested fixtures):** mean-reversion
+   pull toward μ; clamp floor/ceiling branches; Irwin-Hall endpoint centering;
+   a fixed-seed 500-draw window must satisfy `|sum| ≤ 5σ`, where
+   `σ = sqrt(500 · (M² − 1)) ≈ 1.47e6`. This is a stated plausibility bound,
+   not a price-history fixture.
 4. **Trade:** sell-at-arrival validation against the arrival-instant price
    (not issue-instant); typed refusals for each case in §4; integer proceeds
    exactness; duplicate-sale refusal.

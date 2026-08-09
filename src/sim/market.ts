@@ -100,7 +100,7 @@ export const marketUpdateNumeratorBound = (config: MarketConfig): number => {
     config.noiseCoefficient * maximumNoise + config.fixedPointScale / 2;
 };
 
-export const centeredIrwinHall12 = (rng: SeededRng): number => {
+export const centeredIrwinHall12 = (rng: Pick<SeededRng, "nextInt">): number => {
   let sum = 0;
   for (let index = 0; index < MARKET_NOISE_DRAW_COUNT; index += 1) sum += rng.nextInt(MARKET_NOISE_UPPER_EXCLUSIVE);
   return sum - MARKET_NOISE_DRAW_COUNT / 2 * (MARKET_NOISE_UPPER_EXCLUSIVE - 1);
