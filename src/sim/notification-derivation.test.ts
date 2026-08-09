@@ -59,10 +59,16 @@ describe("notification derivation", () => {
     expect(last).toBe(8_999);
     expect(deriveLastRevisionWarnings([
       { nodeId: "capture", executeAtMs: simTimeMs(10_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }
-    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond })).toEqual([{ nodeId: "capture", lastRevisionAtMs: simTimeMs(8_999) }]);
+    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(0) })).toEqual([{ nodeId: "capture", lastRevisionAtMs: simTimeMs(8_999) }]);
   });
 
   it("does not invent a warning when a burn was already unreachable at simulation start", () => {
     expect(lastRevisionInstantMs({ executeAtMs: simTimeMs(500), hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond })).toBeUndefined();
+  });
+
+  it("does not schedule a last-revision warning whose deadline has passed", () => {
+    expect(deriveLastRevisionWarnings([
+      { nodeId: "capture", executeAtMs: simTimeMs(10_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }
+    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(8_999) })).toEqual([]);
   });
 });
