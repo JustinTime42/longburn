@@ -211,8 +211,8 @@ export const validateFlightPlanRevision = (
     }
   }
   const projectedPropellant = projectPropellantForBurns([
-    ...executedBurns.map(({ node }) => node.burn),
-    ...flightPlan.nodes.map(({ burn }) => burn)
+    ...executedBurns.map(({ node }) => ({ burn: node.burn, deltaVMmPerSecond: node.deltaVMmPerSecond })),
+    ...flightPlan.nodes.map(({ burn, deltaVMmPerSecond }) => ({ burn, deltaVMmPerSecond }))
   ]);
   if (projectedPropellant.kind === "exhausted") {
     throw new PlanRevisionValidationError(

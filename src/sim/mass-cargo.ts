@@ -89,11 +89,24 @@ export interface BurnParameters {
 }
 
 /**
- * The sole authoritative maneuver commitment. Delta-v is derived from this
- * duration and the fixed ship configuration; it is never committed separately.
+ * The authoritative scheduled firing duration. Each BurnNode also commits its
+ * quantized delta-v vector. Propellant accounting derives from that vector's
+ * full-throttle-equivalent duration, not this schedule slot.
  */
 export interface QuantizedBurnParameters {
   readonly burnDurationMs: BurnDurationMs;
+}
+
+/**
+ * A scheduled burn paired with its committed quantized delta-v. The schedule
+ * duration controls when the engine fires; propellant billing derives from
+ * delta-v as its conservative full-throttle-equivalent duration, per the
+ * 2026-08-09 Overseer ruling. A throttled burn therefore pays for the delta-v
+ * it ejects, not its longer schedule slot.
+ */
+export interface PropellantCommittedBurn {
+  readonly burn: QuantizedBurnParameters;
+  readonly deltaVMmPerSecond: QuantizedDeltaV;
 }
 
 /**
@@ -105,8 +118,8 @@ export interface QuantizedBurnParameters {
  * a ShipMassConfig. Tier 0 has one fixed ship; multi-ship parameterization is
  * future-tier work under standing order 13.
  *
- * A shorter vector is valid throttling. The duration remains the authoritative
- * propellant commitment for the constant-acceleration model.
+ * A shorter vector is valid throttling. Propellant is charged from that vector
+ * by fullThrottleEquivalentBurnDurationMs, rather than from the schedule slot.
  */
 export const assertTier0DeltaVConsistentWithBurn = (
   deltaV: QuantizedDeltaV,
@@ -150,7 +163,10 @@ export interface NonviableCargo {
 export type CargoAssessment = ViableCargo | NonviableCargo;
 
 export interface ProjectedBurnFuelState {
+  /** The scheduled engine-firing duration, retained for timeline readouts. */
   readonly burnDurationMs: BurnDurationMs;
+  /** Conservative full-throttle duration charged against propellant. */
+  readonly propellantDurationMs: BurnDurationMs;
   /** Wet mass immediately after this node's burn, in grams. */
   readonly wetMassGrams: number;
   /** Propellant available after this node's burn, in grams. */
@@ -272,22 +288,26 @@ export const dequantizeBurnParameters = (
  * a plan must retain propellant rather than spend the final gram.
  */
 export const projectPropellantForBurns = (
-  burns: readonly QuantizedBurnParameters[],
+  burns: readonly PropellantCommittedBurn[],
   ship: ShipMassConfig = TIER0_SHIP
 ): PropellantProjection => {
   validateShip(ship);
   const committedBurns = burns.map(assertBurnParameters);
-  const sufficient = hasSufficientCommittedPropellant(committedBurns, ship.maxViableBurnDurationMs);
+  const propellantDurationsMs = committedBurns.map(fullThrottleEquivalentBurnDurationMs);
+  const sufficient = hasSufficientCommittedPropellant(propellantDurationsMs, ship.maxViableBurnDurationMs);
 
   const structuralMassGrams = ship.wetMassGrams * ship.structuralMassFraction;
   let wetMassGrams = ship.wetMassGrams;
   const nodes: ProjectedBurnFuelState[] = [];
 
-  for (const burn of committedBurns) {
-    const { deltaVKmPerSecond } = dequantizeBurnParameters(burn, ship);
+  for (let index = 0; index < committedBurns.length; index += 1) {
+    const burn = committedBurns[index]!;
+    const propellantDurationMs = propellantDurationsMs[index]!;
+    const { deltaVKmPerSecond } = dequantizeBurnParameters({ burnDurationMs: propellantDurationMs }, ship);
     wetMassGrams /= massRatioForDeltaV(deltaVKmPerSecond, ship.exhaustVelocityKmPerSecond);
     nodes.push({
-      burnDurationMs: burn.burnDurationMs,
+      burnDurationMs: burn.burn.burnDurationMs,
+      propellantDurationMs,
       wetMassGrams,
       remainingPropellantGrams: wetMassGrams - structuralMassGrams
     });
@@ -302,19 +322,55 @@ export const projectPropellantForBurns = (
  * rocket-equation transcendentals cannot become authoritative by accident.
  */
 function hasSufficientCommittedPropellant(
-  burns: readonly QuantizedBurnParameters[],
+  propellantDurationsMs: readonly BurnDurationMs[],
   maxViableBurnDurationMs: BurnDurationMs
 ): boolean {
   let totalBurnDurationMs = 0;
-  for (const burn of burns) {
-    if (totalBurnDurationMs > Number.MAX_SAFE_INTEGER - burn.burnDurationMs) {
+  for (const propellantDurationMs of propellantDurationsMs) {
+    if (totalBurnDurationMs > Number.MAX_SAFE_INTEGER - propellantDurationMs) {
       throw new RangeError("Total burn duration must be a non-negative safe integer in milliseconds.");
     }
-    totalBurnDurationMs += burn.burnDurationMs;
+    totalBurnDurationMs += propellantDurationMs;
   }
   return totalBurnDurationMs <= maxViableBurnDurationMs;
 }
 
-const assertBurnParameters = (burn: QuantizedBurnParameters): QuantizedBurnParameters => ({
-  burnDurationMs: burnDurationMs(burn.burnDurationMs)
+/**
+ * Integer square root rounded upward. Delta-v components are quantized in
+ * mm/s, so this never undercharges a non-axial vector.
+ */
+const ceilSquareRoot = (value: bigint): bigint => {
+  if (value < 0n) throw new RangeError("Delta-v magnitude squared must be non-negative.");
+  if (value < 2n) return value;
+  let lower = 1n;
+  let upper = value;
+  while (lower < upper) {
+    const middle = (lower + upper) / 2n;
+    if (middle * middle < value) lower = middle + 1n;
+    else upper = middle;
+  }
+  return lower;
+};
+
+/**
+ * Converts committed |delta-v| into the integer full-throttle duration used
+ * for propellant billing. Both rounding steps go upward: vector magnitude to
+ * mm/s, then duration to ms.
+ */
+export const fullThrottleEquivalentBurnDurationMs = (burn: PropellantCommittedBurn): BurnDurationMs => {
+  const x = BigInt(burn.deltaVMmPerSecond.x);
+  const y = BigInt(burn.deltaVMmPerSecond.y);
+  const z = BigInt(burn.deltaVMmPerSecond.z);
+  const deltaVMmPerSecond = ceilSquareRoot(x * x + y * y + z * z);
+  const durationMs = (deltaVMmPerSecond * 1_000_000n + TIER0_ACCELERATION_MICROMETERS_PER_SECOND2 - 1n)
+    / TIER0_ACCELERATION_MICROMETERS_PER_SECOND2;
+  if (durationMs > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError("Full-throttle-equivalent burn duration must be a safe integer in milliseconds.");
+  }
+  return burnDurationMs(Number(durationMs));
+};
+
+const assertBurnParameters = (burn: PropellantCommittedBurn): PropellantCommittedBurn => ({
+  burn: { burnDurationMs: burnDurationMs(burn.burn.burnDurationMs) },
+  deltaVMmPerSecond: quantizedDeltaV(burn.deltaVMmPerSecond)
 });
