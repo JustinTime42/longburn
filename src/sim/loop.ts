@@ -3,6 +3,8 @@ import type { PositionMeters } from "./causality.js";
 import type { PersistedSimulationStream, SimulationEventStore, SimulationStream, StreamSequenceConflict, StoredSimEvent } from "./event-store.js";
 import { assertPlanRevisionRefusalReason, type ArrivalState, type DepartureState, type DestinationBody, type FlightPlan, type PlanRevisionRefusalReason, PlanRevisionValidationError, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
 import type { QuantizedDeltaV } from "./mass-cargo.js";
+import { advanceMarket, centeredIrwinHall12, TIER0_MARKET_CONFIG } from "./market.js";
+import { deriveStream, type SeededRng } from "./rng.js";
 import { shipPositionAt, shipWorldlineStateAt } from "./worldline.js";
 
 export interface AuthoritativeSimLoopOptions {
@@ -12,6 +14,8 @@ export interface AuthoritativeSimLoopOptions {
   readonly departureStateAt?: (time: SimTimeMs) => DepartureState;
   /** Live-only body resolver used to persist arrival and repeat-departure facts, never during replay. */
   readonly destinationStateAt?: (destination: DestinationBody, time: SimTimeMs) => TargetBodyState;
+  /** Live-only host-body resolver used to stamp persisted market facts. */
+  readonly marketPositionAt?: (marketBodyId: DestinationBody, time: SimTimeMs) => PositionMeters;
 }
 
 export interface TargetBodyState {
@@ -50,6 +54,9 @@ export class AuthoritativeSimLoop {
   readonly #streamId: string;
   readonly #departureStateAt: ((time: SimTimeMs) => DepartureState) | undefined;
   readonly #destinationStateAt: ((destination: DestinationBody, time: SimTimeMs) => TargetBodyState) | undefined;
+  readonly #marketPositionAt: ((marketBodyId: DestinationBody, time: SimTimeMs) => PositionMeters) | undefined;
+  readonly #marketRng: SeededRng;
+  readonly #marketStartTime: SimTimeMs;
   #streamSequence = 0;
   #writer: Promise<void> = Promise.resolve();
   #inboundPlanRevisions: {
@@ -61,12 +68,15 @@ export class AuthoritativeSimLoop {
     readonly replacedNodeIds: ReadonlySet<string>;
   }[] = [];
 
-  private constructor({ stream, store, departureStateAt, destinationStateAt }: AuthoritativeSimLoopOptions) {
+  private constructor({ stream, store, departureStateAt, destinationStateAt, marketPositionAt }: AuthoritativeSimLoopOptions) {
     this.#reducer = new SimEventReducer(stream.seed, stream.initialTime);
     this.#store = store;
     this.#streamId = stream.id;
     this.#departureStateAt = departureStateAt;
     this.#destinationStateAt = destinationStateAt;
+    this.#marketPositionAt = marketPositionAt;
+    this.#marketRng = deriveStream(stream.seed, `market:${TIER0_MARKET_CONFIG.commodityId}`);
+    this.#marketStartTime = stream.initialTime;
   }
 
   static async create(options: AuthoritativeSimLoopOptions): Promise<AuthoritativeSimLoop> {
@@ -77,7 +87,7 @@ export class AuthoritativeSimLoop {
   static async resume(
     store: SimulationEventStore,
     streamId: string,
-    liveResolvers: Pick<AuthoritativeSimLoopOptions, "departureStateAt" | "destinationStateAt"> = {}
+    liveResolvers: Pick<AuthoritativeSimLoopOptions, "departureStateAt" | "destinationStateAt" | "marketPositionAt"> = {}
   ): Promise<AuthoritativeSimLoop> {
     const persisted = await store.readStream(streamId);
     const loop = new AuthoritativeSimLoop({ stream: persisted, store, ...liveResolvers });
@@ -85,6 +95,9 @@ export class AuthoritativeSimLoop {
       loop.#assertRecordTime(record);
       loop.#reducer.apply(record.event);
     }
+    // The persisted quote facts reconstruct state; consume the independent
+    // substream only to resume the next live step at its historical offset.
+    for (let step = 0; step < loop.state.market.stepIndex; step += 1) centeredIrwinHall12(loop.#marketRng);
     const pending = new Map<string, Extract<SimEvent, { readonly type: "commandIssued" }>>();
     for (const { event } of persisted.events) {
       if (event.type === "commandIssued") pending.set(event.commandId, event);
@@ -241,9 +254,11 @@ export class AuthoritativeSimLoop {
     if (revisionBoundary !== undefined && revisionBoundary < 0) {
       throw new Error("Inbound plan-revision boundary is behind the authoritative simulation time.");
     }
-    if (burnBoundary === undefined) return revisionBoundary;
-    if (revisionBoundary === undefined) return burnBoundary;
-    return Math.min(burnBoundary, revisionBoundary);
+    const marketBoundary = this.#marketPositionAt === undefined ? undefined
+      : this.#nextMarketStepTime() - this.#reducer.time;
+    if (marketBoundary !== undefined && marketBoundary < 0) throw new Error("Market boundary is behind the authoritative simulation time.");
+    const boundaries = [burnBoundary, revisionBoundary, marketBoundary].filter((boundary): boundary is number => boundary !== undefined);
+    return boundaries.length === 0 ? undefined : Math.min(...boundaries);
   }
 
   /** Burns win equal timestamps: only a revision that arrived before a burn can supersede it. */
@@ -267,6 +282,20 @@ export class AuthoritativeSimLoop {
       }
       await this.#advanceDueBurns(eventPositionAt);
     }
+    await this.#advanceDueMarket();
+  }
+
+  async #advanceDueMarket(): Promise<void> {
+    if (this.#marketPositionAt === undefined || this.#reducer.time !== this.#nextMarketStepTime()) return;
+    const position = this.#marketPositionAt(TIER0_MARKET_CONFIG.marketBodyId, this.#reducer.time);
+    for (const event of advanceMarket(TIER0_MARKET_CONFIG, this.#reducer.state.market, this.#marketRng)) {
+      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: position });
+      this.#reducer.apply(event);
+    }
+  }
+
+  #nextMarketStepTime(): SimTimeMs {
+    return simTimeMs(this.#marketStartTime + (this.#reducer.state.market.stepIndex + 1) * TIER0_MARKET_CONFIG.marketStepMs);
   }
 
   async #advanceDueBurns(eventPositionAt: (time: SimTimeMs) => PositionMeters): Promise<void> {

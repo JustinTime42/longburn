@@ -72,6 +72,10 @@ export const projectStoredEvent = (
         };
       case "clockAdvanced":
       case "randomValueRequested":
+      case "marketQuoteUpdated":
+        // F2 persists market facts; F3 owns their catalog class 2.4 projection.
+        return undefined;
+      case "marketEventOccurred":
         return undefined;
       default: {
         const unhandled: never = stored.event.event;
