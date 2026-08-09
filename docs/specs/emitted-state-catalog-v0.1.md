@@ -67,7 +67,7 @@ EmittedMessage {
 | # | Class | Source events | Lag |
 |---|-------|--------------|-----|
 | 2.1 | Ship report | burnStarted, burnEnded, arrivalRecorded, departureRecorded | c from stored event position to observer |
-| 2.2 | Command outcome report | planRevisionApplied, planRevisionRefused | c from the ship (the outcome happens at arrival) back to observer |
+| 2.2 | Command outcome report | planRevisionApplied, planRevisionRefused; cargoSold, sale refusals (ADDED 2026-08-08, market-model §4 — sale outcomes happen at the market and travel back at c, the same shape; Warden din.6.1 r1 f6) | c from the ship/market (the outcome happens at arrival) back to observer |
 | 2.3 | Command echo | commandIssued | none — the event happens AT the observer's HQ (staleness 0) |
 | 2.4 | Market event | din.6's market events | c from the market's host body (reserved; din.6 fills in) |
 | 2.5 | Sim clock | current sim time at HQ | none — observer-local context, no remote information |

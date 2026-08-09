@@ -1,4 +1,4 @@
-# Market Model v0.1 — DRAFT (pending Overseer approval)
+# Market Model v0.1
 
 Status: **APPROVED by the Overseer 2026-08-08** (din.6.1; all §8 questions
 resolved in design session, including the Q4 cargo-composition refinement in
@@ -17,8 +17,13 @@ Earth→Mars run). It exists to make the cargo decision a bet: the player loads
 cargo before departure at a known cost, prices move stochastically during the
 weeks-long transit, and the sale settles at a price the player could not have
 observed when they committed. The market is a *process*, not a counterparty
-simulation — no order book, no depth, no NPC traders (all out of T0 scope,
-GDD §7.4).
+simulation — no order book, no depth, no NPC trading fleets (out of T0 scope,
+GDD §7.4). One NPC entity exists by Overseer ruling (Q4, 2026-08-08): the
+forward desk that quotes the hauling contract in §4. GDD §7.4's literal text
+still lists "contracts" and "NPC firms" as scope-out; the write-back amending
+§7.3/§7.4 to record this ruling is a pending gate-2 action (Warden din.6.1
+r1 f7; the v3t plan-and-burn precedent is the model). din.6.4 does not build
+until that write-back or an Overseer reversal lands.
 
 Non-goals, recorded so they are not accreted: multiple markets, arbitrage
 loops, price impact from the player's own trade, commodity interactions,
@@ -42,22 +47,41 @@ satisfy them:**
   constants**. The sim core's per-step update is integer multiply/add/shift
   only. This is SO 16's planner/commitment split applied to the market: the
   math that derives the coefficients advises; the quantized constants commit.
-- The noise term is an **Irwin-Hall sum of 12 uniform draws** from the seeded
-  sim RNG, shifted to mean 0 — approximately N(0,1), pure integer arithmetic,
-  bit-exact across engines. No Box-Muller anywhere.
+- The noise term is an **integer Irwin-Hall sum** (AMENDED per Warden din.6.1
+  r1 f2, which caught the unpinned normalisation): draw twelve uniform
+  integers on `[0, M)` with `M = 2^16`, sum them, and subtract `6·(M − 1)`.
+  `Z_n` is then an exact integer with mean 0 and standard deviation
+  `sqrt(M² − 1) ≈ M`, approximately normal in shape. **The normalisation is
+  folded into the coefficient**: `b = round(2^s · σ_step / sqrt(M² − 1))`.
+  No Box-Muller anywhere.
 
-**Per-step update (integer domain):**
+**Per-step update (integer domain, AMENDED per Warden din.6.1 r1 f3+f4):**
 
 ```
 P_{n+1} = clamp(P_min, P_max,
-          ( a·P_n + (S - a)·μ + b·Z_n ) >> s )
+          floor( ( a·P_n + (S − a)·μ + b·Z_n + S/2 ) / S ) )
 ```
 
-where `a = round(2^s · e^{-θΔt})`, `b = round(2^s · σ_step)`, `S = 2^s`
-are pinned config integers (scale shift `s`, e.g. 32); `μ`, `P_min`, `P_max`
-are integer prices; `Z_n` is the centered Irwin-Hall draw. `σ_step` is the
-exact discrete-step deviation `σ·sqrt((1 − e^{−2θΔt}) / 2θ)`, again computed at
-config time only.
+where `a = round(2^s · e^{-θΔt})`, `S = 2^s` (scale shift `s = 32`), and `b`
+as above are pinned config integers; `μ`, `P_min`, `P_max` are integer
+prices. `σ_step` is the exact discrete-step deviation
+`σ_diff·sqrt((1 − e^{−2θΔt}) / 2θ) = σ_stat·sqrt(1 − e^{−2θΔt})`, computed at
+config time only (see §7 for which σ the config carries).
+
+- **The `+ S/2` is load-bearing**: plain floor division truncates toward −∞
+  every step, and the constant ~0.5-credit bias equilibrates against the
+  mean-reversion pull at `μ − P* ≈ 0.5/(1 − a/S)` — about **87 credits below
+  μ** at the §7 defaults, a defect the fixed-seed pins would have recorded as
+  normal (Warden f3's arithmetic). Round-to-nearest removes the systematic
+  term; the residual per-step rounding is bounded by ±0.5 credits and carries
+  no constant sign. Any implementation change to this rounding is a
+  price-history-breaking change.
+- **Numeric domain (f4):** no `>>` anywhere — JS shift coerces to int32 and
+  silently corrupts at `s = 32`. All arithmetic in plain `Number` with
+  `Math.floor(x / 2**s)`: the worst-case numerator at the §7 defaults is
+  `a·P_max + (S−a)·μ + b·|Z_max| + S/2 ≈ 2.2e13`, comfortably inside the
+  2^53 exact-integer range (headroom verified in the r1 review). A test must
+  pin this bound against the config so a retune cannot silently overflow.
 
 - **Prices are integers** (credits, no subunits at T0). Negative prices are
   impossible by the clamp; a floor hit is an ordinary market state, not an
@@ -67,9 +91,18 @@ config time only.
   the event log; well inside j1av's known T0 headroom.
 - **Sim time is the input** — the process advances only when the loop advances
   it; nothing here reads a wall clock.
-- **Seed:** dedicated named stream from the sim's seeded RNG (whatever
-  substream convention `src/sim/rng` uses), so market noise is independent of
-  any other consumer and replays identically.
+- **Seed (AMENDED per Warden din.6.1 r1 f5 — the substream facility does not
+  yet exist and must be built by din.6.2):** `src/sim/rng.ts` today is a
+  single mulberry32 stream with no derivation facility. din.6.2 adds
+  `deriveStream(worldSeed, streamId)`: fold the stream name (`"market:" +
+  commodityId`) to a uint32 via FNV-1a, mix with the world seed through
+  splitmix32, and seed an independent mulberry32 — deterministic, documented,
+  pinned by fixture tests. Stream independence is determinism-critical: it is
+  what stops any future RNG consumer from silently reshaping every historical
+  price series. (Also f5's minor: the existing `nextInt` routes through an
+  IEEE-754 float multiply — exactly specified operations, not SO 16
+  transcendentals, but "pure integer arithmetic" claims are scoped to the
+  price update itself, not the RNG internals.)
 - Tuning target (product, not physics): parameters chosen so a 3-week transit
   sees swings large enough to flip a typical cargo bet's sign — the bet must
   be *tense* (GDD §7.5 crit. 4). Initial values proposed in §7; retunable
@@ -113,12 +146,25 @@ lots:
 
 - **Contracted tonnage**: committed to an NPC hauling contract — a forward:
   fixed rate per ton (quoted from the price process's closed-form conditional
-  expectation at planned arrival, minus a config spread; computed
-  authoring-side, quantized, SO 16), payable on delivery. Certain, lower
-  margin. **Two-sided risk by construction**: the holder is protected when
-  spot crashes and locked out when spot spikes past the agreed rate
-  (lock-in regret) — the forward converts price risk into opportunity cost
-  plus a delivery obligation, it does not eliminate risk.
+  expectation at the arrival planned **at composition time**, minus a config
+  spread; computed authoring-side, quantized, SO 16), payable on delivery.
+  Certain, lower margin. **Two-sided risk by construction**: the holder is
+  protected when spot crashes and locked out when spot spikes past the agreed
+  rate (lock-in regret) — the forward converts price risk into opportunity
+  cost plus a delivery obligation, it does not eliminate risk.
+  - **Re-planning vs the quote (Warden f8; T0 ruling flagged for the
+    Overseer's veto):** the plan is paper (pillar 2) and arrival may be
+    re-planned after composition. At T0 **the quoted rate stands regardless
+    of actual arrival time** — the desk honors it whenever delivery occurs.
+    The theoretical exploit (quote against a near arrival, then arrive when
+    spot is favorable) is nil at T0 tuning: at a 5-day half-life the arrival
+    distribution is essentially stationary, so quotes sit at ≈ μ − spread
+    with almost no timing information to game. Delivery windows,
+    quote-repricing on revision, and non-delivery penalties are market-genesis
+    design (longburn-yitm) — deferred there because the solo world has **no
+    counterparty to harm** (f8's correction: not because arrival is
+    "deterministic"; a player can re-plan or never arrive, which at T0 is
+    self-cheating).
 - **Spot tonnage**: owned outright, sold at the destination's then-current
   price (§ sell side below). Full exposure, full upside.
 
@@ -191,7 +237,7 @@ already computes for 2.4; no second light-time surface.
 | μ (mean price) | 1 000 cr/ton | |
 | P_min / P_max | 200 / 5 000 | clamp walls |
 | θ (reversion) | half-life ≈ 5 days | slow enough that mid-transit news matters |
-| σ | ≈ 25% of μ over a 3-week horizon | tuned for sign-flipping swings |
+| σ_stat (stationary std) | 250 cr | the config-facing σ (Warden f9: §2's σ_diff derives from it, `σ_diff = σ_stat·sqrt(2θ)`; per-step `σ_step = σ_stat·sqrt(1 − e^{−2θΔt})` ≈ 27 cr/hour-step at these defaults). din.11 tuning note: at a 5-day half-life a 3-week transit is ≈ 4.2 half-lives, so arrival is essentially stationary and forward quotes ≈ μ − spread on nearly every run — the hedge is a pure risk-appetite dial, not a market read; lengthen the half-life if quotes should carry direction. |
 | Step | 1 sim-hour | |
 | Origin cost | 600 cr/ton | buys must be beatable but lose-able |
 | Starting capital | 10 000 cr | |
@@ -207,15 +253,9 @@ already computes for 2.4; no second light-time surface.
   `commodityId` for N later.
 - **Q3 — money: RESOLVED.** Integer credits, starting capital, fixed origin
   cost — every transit ends in a signed profit/loss number, for T0.
-- **Q4 — hedging: RESOLVED (with the Overseer's refinement).** The hedge
-  decision is cargo composition, not a financial ratio: contracted tonnage
-  (NPC forward, two-sided risk) vs spot tonnage, both physically loaded (§4).
-  Physical delivery only at every tier. Contract non-delivery penalties are
-  out of T0 scope (solo world, deterministic arrival); designed at market
-  genesis (longburn-yitm).
-- **Q4 — hedging: RATIFIED 2026-08-08 (with the Overseer's refinement).** The
+- **Q4 — hedging: RESOLVED 2026-08-08 (with the Overseer's refinement).** The
   hedge decision is cargo composition, not a financial ratio: contracted
   tonnage (NPC forward, two-sided risk) vs spot tonnage, both physically
   loaded (§4). Physical delivery only at every tier. Contract non-delivery
-  penalties are out of T0 scope (solo world, deterministic arrival); designed
-  at market genesis.
+  penalties are out of T0 scope (solo world, **no counterparty to harm**);
+  designed at market genesis (longburn-yitm).
