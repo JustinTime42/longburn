@@ -57,12 +57,16 @@ build_mask() {
   # .beads hooks below).
   local RO_PATHS=("$root/.claude" "$root/fort/profiles" "$root/fort/scripts"
                   "$root/.git/config" "$root/.git/hooks")
-  # Host-executed civilization surface, present only in the capital: the
-  # Regent's and factory's bin/, the civ launchers, and the civ profiles.
+  # Host-executed civilization surface. Guarded on the covenant, not bare
+  # existence (Warden suti finding 6): an ordinary fort growing a bin/ of its
+  # own must not find it silently read-only — only the capital, which hosts
+  # bin/regent and the civ launchers, carries this surface.
   local hostpath
-  for hostpath in "$root/bin" "$root/civ/scripts" "$root/civ/profiles"; do
-    [ -e "$hostpath" ] && RO_PATHS+=("$hostpath")
-  done
+  if [ -e "$root/civ/covenant.md" ]; then
+    for hostpath in "$root/bin" "$root/civ/scripts" "$root/civ/profiles"; do
+      [ -e "$hostpath" ] && RO_PATHS+=("$hostpath")
+    done
+  fi
 
   case "$seat" in
     codex)
@@ -76,6 +80,9 @@ build_mask() {
       # The cycle-7 prose gate on charter and seats applies to ATTENDED seats
       # only — an unattended seat cannot ask first, so a prose gate on it
       # guards nothing (cycle 6 ruling). The Forge keeps the mechanical lock.
+      # NOTE (Warden 8c9 finding 2): no launcher currently calls build_mask
+      # codex — every forge.sh still carries its own inline mask (fortkit-6jf)
+      # — so this branch is documentation of intent until that consolidation.
       RO_PATHS+=("$root/fort/charter.md" "$root/fort/seats")
       ;;
     claude)
@@ -135,12 +142,16 @@ build_mask() {
   # paths, extra_ro, hooks dirs — therefore go HERE, and the per-file dev-null
   # masks and per-dir tmpfs masks go LAST.
   local p
-  for p in "${RO_PATHS[@]}" "${extra_ro[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
-  # Cycle 7 re-grant: verify.sh is the one session-run tool inside the now-RO
-  # fort/scripts — the fort evolves it through beads, and a malicious edit to
-  # it executes INSIDE this mask and lands in git. Stacked after the RO bind
-  # per the ordering invariant, so the rw file bind wins for that one path.
+  for p in "${RO_PATHS[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
+  # Cycle 7 re-grant, r2 (Warden findings suti-1 / 8c9-4): verify.sh is the one
+  # session-run tool inside the now-RO fort/scripts — the fort evolves it
+  # through beads, and a malicious edit to it executes INSIDE this mask and
+  # lands in git. Stacked after the RO_PATHS binds but BEFORE extra_ro, so a
+  # caller that passes the checkout read-only (the Warden, read-only by
+  # construction) re-masks it: the grant reaches the Mayor and no seat
+  # stricter than the Mayor.
   [ -e "$root/fort/scripts/verify.sh" ] && mask+=(--bind "$root/fort/scripts/verify.sh" "$root/fort/scripts/verify.sh")
+  for p in "${extra_ro[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
   # SSH inside a user namespace (cycle 6). bwrap's userns maps root-owned files
   # to 'nobody', and OpenSSH refuses any config owned by neither root nor the
   # invoking user, so it aborts before authenticating: "Bad owner or permissions

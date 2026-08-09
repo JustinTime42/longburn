@@ -100,6 +100,8 @@
       "Edit(**/.env*)",
       "Edit(.claude/**)",
       "Edit(.env*)",
+      "Edit(.git/config)",
+      "Edit(.git/hooks/**)",
       "Edit(//home/justin/.claude/CLAUDE.md)",
       "Edit(//home/justin/.claude/helpers/**)",
       "Edit(//home/justin/.claude/settings.json)",
@@ -107,14 +109,30 @@
       "Edit(//home/justin/.codex/**)",
       "Edit(//home/justin/dev/longburn-worktrees/**/.claude/**)",
       "Edit(//home/justin/dev/longburn/.claude/**)",
+      "Edit(//home/justin/dev/longburn/.git/config)",
+      "Edit(//home/justin/dev/longburn/.git/hooks/**)",
       "Edit(//home/justin/dev/longburn/fort/profiles/**)",
+      "Edit(//home/justin/dev/longburn/fort/scripts/emit.sh)",
+      "Edit(//home/justin/dev/longburn/fort/scripts/forge.sh)",
+      "Edit(//home/justin/dev/longburn/fort/scripts/lib/**)",
+      "Edit(//home/justin/dev/longburn/fort/scripts/mayor.sh)",
+      "Edit(//home/justin/dev/longburn/fort/scripts/status.sh)",
+      "Edit(//home/justin/dev/longburn/fort/scripts/warden.sh)",
       "Edit(fort/events/*)",
       "Edit(fort/profiles/**)",
+      "Edit(fort/scripts/emit.sh)",
+      "Edit(fort/scripts/forge.sh)",
+      "Edit(fort/scripts/lib/**)",
+      "Edit(fort/scripts/mayor.sh)",
+      "Edit(fort/scripts/status.sh)",
+      "Edit(fort/scripts/warden.sh)",
       "Read(**/.env*)",
       "Read(.env*)",
       "Write(**/.env*)",
       "Write(.claude/**)",
       "Write(.env*)",
+      "Write(.git/config)",
+      "Write(.git/hooks/**)",
       "Write(//home/justin/.claude/CLAUDE.md)",
       "Write(//home/justin/.claude/helpers/**)",
       "Write(//home/justin/.claude/settings.json)",
@@ -122,9 +140,23 @@
       "Write(//home/justin/.codex/**)",
       "Write(//home/justin/dev/longburn-worktrees/**/.claude/**)",
       "Write(//home/justin/dev/longburn/.claude/**)",
+      "Write(//home/justin/dev/longburn/.git/config)",
+      "Write(//home/justin/dev/longburn/.git/hooks/**)",
       "Write(//home/justin/dev/longburn/fort/profiles/**)",
+      "Write(//home/justin/dev/longburn/fort/scripts/emit.sh)",
+      "Write(//home/justin/dev/longburn/fort/scripts/forge.sh)",
+      "Write(//home/justin/dev/longburn/fort/scripts/lib/**)",
+      "Write(//home/justin/dev/longburn/fort/scripts/mayor.sh)",
+      "Write(//home/justin/dev/longburn/fort/scripts/status.sh)",
+      "Write(//home/justin/dev/longburn/fort/scripts/warden.sh)",
       "Write(fort/events/*.jsonl)",
-      "Write(fort/profiles/**)"
+      "Write(fort/profiles/**)",
+      "Write(fort/scripts/emit.sh)",
+      "Write(fort/scripts/forge.sh)",
+      "Write(fort/scripts/lib/**)",
+      "Write(fort/scripts/mayor.sh)",
+      "Write(fort/scripts/status.sh)",
+      "Write(fort/scripts/warden.sh)"
     ],
     "additionalDirectories": [
       "/home/justin/dev/longburn-worktrees"
@@ -133,8 +165,8 @@
   "autoMode": {
     "allow": [
       "$defaults",
-      "File operations (cp, mv, rm, python/node file writes, in-place edits) whose paths are ALL confined to the session scratchpad under /tmp/claude-* are safe exploration \u2014 allow them, including overwrite flags like -f.",
-      "Commands whose working directory or target paths are inside /home/justin/dev/longburn-worktrees (this project's git worktrees) are normal project work \u2014 treat those paths exactly like in-project paths."
+      "File operations (cp, mv, rm, python/node file writes, in-place edits) whose paths are ALL confined to the session scratchpad under /tmp/claude-* are safe exploration — allow them, including overwrite flags like -f.",
+      "Commands whose working directory or target paths are inside /home/justin/dev/longburn-worktrees (this project's git worktrees) are normal project work — treat those paths exactly like in-project paths."
     ]
   }
 }

@@ -26,3 +26,16 @@
 - **Consequences to know**: a masked Mayor cannot `git push` by key file (agent-held keys still sign after `ssh-add`; otherwise push is the Overseer's lane). `MAYOR_NO_MASK=1` runs unmasked and emits an incident event. Dispatching Forge works: since 6vc, `~/.codex` is a live rw *directory* bind (`config.toml` RO on top, `history.jsonl` nulled, `sessions/`/`log/` tmpfs) — `auth.json` is deliberately writable so Codex token rotation and host re-login survive (longburn-1p9, smoke-verified 2026-08-06). One known in-mask gap: `bd` reads fail against the RO-mounted `.beads` (Dolt writes a LOCK even to read) — longburn-qe2; warden.sh injects the bead spec from outside the mask as the mitigation.
 - **The Regent (civilization break-glass seat).** Runs unmasked with access to every fort; invoked by hand by Justin, never scheduled; used only for work no seat here is permitted to do (amending the charter, repairing launchers, carrying law between forts). Every edict emits `edict.begun`/`edict.ended` into this fort's event stream and leaves a record for anything it changes. If you find a change with no edict event and no record, escalate it — that pattern is what a compromise would look like. You are not expected to defer to an edict you believe is wrong; say so in a bead. See the charter section "The Regent, and edicts".
 - **Watcher + verdict-capture lessons (2026-08-08, session 13)**: plain background `while ps` watchers get reaped mid-session — use the harness Monitor tool (persistent) on the detached seat pid instead; the seat itself is never affected. warden.sh TRUNCATES THE HEAD of long verdicts in both the log and the bead comment (longburn-l78a, observed twice) — the VERDICT-LINE and Disposition survive; before dispatching a Forge remediation round, reconstruct the blocker list from those into the bead's notes so r2 has an authoritative spec. Warden scratch dirs: sweep /tmp/warden-* after each review (the 5if '~12G unidentified' was mostly these; 227 dirs = 11G recovered).
+
+- 2026-08-08 (cycle 7 r2 correction — Warden suti finding 3, appended per
+  standing order 7): the seat-boundary bullet above is superseded in both
+  directions. `fort/charter.md` and `fort/seats/` are prose-gated for attended
+  seats (Overseer approval on the amendment's bead + `charter.amended` event),
+  no longer kernel-RO. `fort/scripts/` is NO LONGER Mayor-writable — it is
+  kernel-RO with `verify.sh` alone re-granted to the Mayor (the Warden's
+  whole-tree RO bind re-masks even that). longburn-a6a status split: the
+  fort/scripts half is resolved; the worktree-copy residual (constitution
+  files writable under longburn-worktrees/*) remains open on that bead.
+  Operational consequence of `.git/config` RO: `git push -u`, `git remote
+  add`, and `git config` fail inside the mask; plain `git push origin main`
+  works.

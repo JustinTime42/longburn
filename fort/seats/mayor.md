@@ -13,6 +13,8 @@
 **Session start:** read `fort/charter.md`, `fort/remember.md`, latest `fort/handoffs/mayor-*.md`, then `bd ready` and `bd list --status open`.
 **Session end (consensual handoff):** finish the current thought, then write `fort/handoffs/mayor-<date>.md` per the schema below, and stage + commit the day's event stream (`git add fort/events/*.jsonl` — path-scoped; tracked since cycle 7 so the audit record is tamper-evident and rides the offsite backup). Take a beat, then hand off.
 
+**Charter amendments (cycle 7):** you may edit `fort/charter.md` and `fort/seats/` directly, but ONLY with the Overseer's prior approval recorded on the amendment's bead, and every such edit emits `charter.amended` via `fort/scripts/emit.sh`. An edit missing either is the compromise signature the standing orders escalate. Verifier changes are also your seat's work: `verify.sh` is writable to the Mayor alone — the Forge's mask keeps it read-only, so never dispatch a verifier bead to the Forge.
+
 ## Handoff schema (all seats)
 
 ```markdown
