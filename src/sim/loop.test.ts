@@ -50,9 +50,10 @@ describe("authoritative simulation loop", () => {
   it("does not settle cargo at a non-market arrival body", async () => {
     const loop = await tradeLoop("trade-moon-no-settlement");
     await loop.applyPlanRevision(arrivalPlan("moon"), () => dock.positionMeters);
-    await loop.composeCargo({ contractedTons: 2, spotTons: 3, spotDisposition: "sell-on-arrival" }, () => dock.positionMeters);
+    await expect(loop.composeCargo({ contractedTons: 2, spotTons: 3, spotDisposition: "sell-on-arrival" }, () => dock.positionMeters)).rejects.toMatchObject({ reason: "forward-market-destination-mismatch" });
+    await loop.composeCargo({ contractedTons: 0, spotTons: 3, spotDisposition: "sell-on-arrival" }, () => dock.positionMeters);
     await loop.advance(2, () => dock.positionMeters);
-    expect(loop.state.cargo).toMatchObject({ contractedTons: 2, spotTons: 3 });
+    expect(loop.state.cargo).toMatchObject({ contractedTons: 0, spotTons: 3 });
     expect((await loop.persistedStream()).events.some(({ event }) => event.type === "cargoSold")).toBe(false);
   });
 
