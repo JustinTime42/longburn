@@ -2,21 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 
 import { simTimeMs } from "../sim/clock.js";
 import { NotificationTransport, PostgresPushSubscriptionStore, type NotificationMessage, type PostgresNotificationRouteClient, type WebPushSubscription } from "./notification-transport.js";
+import { defaultNotificationPreferences, InMemoryNotificationPreferenceStore } from "./notification-product.js";
 
 const notification = { id: "notification:arrival", kind: "arrival" as const, destination: "mars" as const, deliverAtMs: simTimeMs(1_000), sourceGlobalPosition: 1, eventTimeMs: simTimeMs(500) };
 const subscription: WebPushSubscription = { endpoint: "https://push.example.test/subscription", p256dh: "public", auth: "auth" };
 const message: NotificationMessage = { title: "LONGBURN", body: "Report received.", data: { route: "/flight" } };
 
-const buildTransport = ({ subscriptions = [] as readonly WebPushSubscription[], emailAddress }: { readonly subscriptions?: readonly WebPushSubscription[]; readonly emailAddress?: string } = {}) => {
+const buildTransport = ({ subscriptions = [] as readonly WebPushSubscription[], emailAddress, emailPreference = false }: { readonly subscriptions?: readonly WebPushSubscription[]; readonly emailAddress?: string; readonly emailPreference?: boolean } = {}) => {
   const routes = { pushSubscriptionsFor: vi.fn(async () => subscriptions), emailAddressFor: vi.fn(async () => emailAddress) };
   const push = { deliver: vi.fn(async () => ({ delivered: true as const })) };
   const email = { deliver: vi.fn(async () => ({ delivered: true as const })) };
+  const preferences = new InMemoryNotificationPreferenceStore();
+  const configured = emailPreference ? preferences.save("tester-1", { ...defaultNotificationPreferences(), channels: { ...defaultNotificationPreferences().channels, N5: "email" } }) : Promise.resolve();
   return {
     transport: new NotificationTransport({
       observerId: "tester-1", routes,
       vapid: { subject: "mailto:ops@example.test", publicKey: "public-key", privateKey: "private-key" },
-      push, email, render: () => message
-    }), routes, push, email
+      push, email, render: () => message, preferences
+    }), routes, push, email, configured
   };
 };
 
@@ -34,7 +37,8 @@ describe("NotificationTransport", () => {
   });
 
   it("uses email only for a tester without a push subscription", async () => {
-    const { transport, push, email } = buildTransport({ emailAddress: "tester@example.test" });
+    const { transport, push, email, configured } = buildTransport({ emailAddress: "tester@example.test", emailPreference: true });
+    await configured;
 
     await expect(transport.deliver(notification)).resolves.toEqual({ delivered: true });
     expect(push.deliver).not.toHaveBeenCalled();

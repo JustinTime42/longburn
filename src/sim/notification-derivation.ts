@@ -74,6 +74,8 @@ export interface LastRevisionWarning {
   /** Identifies the pending burn whose revision deadline this warning describes. */
   readonly executeAtMs: SimTimeMs;
   readonly lastRevisionAtMs: SimTimeMs;
+  /** Player-selected amount of agency before the same deadline. */
+  readonly leadTimeMs: number;
 }
 
 export interface LastRevisionInstantInput {
@@ -144,11 +146,11 @@ export const deriveLocalNotifications = (
     windowId,
     deliverAtMs: simTimeMs(opensAtMs)
   })),
-  ...revisionWarnings.map(({ nodeId, executeAtMs, lastRevisionAtMs }) => ({
-    id: `notification:last-revision:${encodeURIComponent(nonEmpty(nodeId, "Burn node ID"))}:${executeAtMs}`,
+  ...revisionWarnings.map(({ nodeId, executeAtMs, lastRevisionAtMs, leadTimeMs }) => ({
+    id: `notification:last-revision:${encodeURIComponent(nonEmpty(nodeId, "Burn node ID"))}:${executeAtMs}:lead:${leadTimeMs}`,
     kind: "lastRevisionInstant" as const,
     nodeId,
-    deliverAtMs: simTimeMs(lastRevisionAtMs)
+    deliverAtMs: simTimeMs(lastRevisionAtMs - leadTimeMs)
   }))
 ];
 
@@ -184,10 +186,19 @@ export const lastRevisionInstantMs = ({ executeAtMs, hqPositionAt, shipPositionA
 /** Computes one local warning per pending burn that remains revisable. */
 export const deriveLastRevisionWarnings = (
   nodes: readonly BurnNode[],
-  input: Omit<LastRevisionInstantInput, "executeAtMs"> & { readonly nowMs: SimTimeMs }
+  input: Omit<LastRevisionInstantInput, "executeAtMs"> & { readonly nowMs: SimTimeMs; readonly leadTimesMs?: readonly number[] }
 ): LastRevisionWarning[] => nodes.flatMap((node) => {
   const lastRevisionAtMs = lastRevisionInstantMs({ ...input, executeAtMs: node.executeAtMs });
-  return lastRevisionAtMs === undefined || lastRevisionAtMs <= input.nowMs
+  const leadTimesMs = input.leadTimesMs ?? [12 * 60 * 60 * 1_000, 60 * 60 * 1_000];
+  if (leadTimesMs.length === 0 || new Set(leadTimesMs).size !== leadTimesMs.length || leadTimesMs.some((leadTimeMs) => !Number.isSafeInteger(leadTimeMs) || leadTimeMs <= 0)) {
+    throw new RangeError("Last-revision warning lead times must be distinct positive safe integers.");
+  }
+  return lastRevisionAtMs === undefined
     ? []
-    : [{ nodeId: node.nodeId, executeAtMs: node.executeAtMs, lastRevisionAtMs }];
+    : leadTimesMs.flatMap((leadTimeMs) => {
+      const warningAtMs = lastRevisionAtMs - leadTimeMs;
+      return warningAtMs <= input.nowMs || warningAtMs < 0
+        ? []
+        : [{ nodeId: node.nodeId, executeAtMs: node.executeAtMs, lastRevisionAtMs, leadTimeMs }];
+    });
 });
