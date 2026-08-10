@@ -2,19 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import { hasAcknowledged, InMemoryDeliveryCursorStore, PostgresDeliveryCursorStore, type PostgresCursorQueryClient, type PostgresCursorSession } from "./delivery-cursor.js";
 
-const acknowledgement = (deliverySequence: number, messageId = `message-${deliverySequence}`) => ({ deliverySequence, messageId });
+const acknowledgement = (deliverySequence: number, messageId = `message-${deliverySequence}`, sourceGlobalPosition = deliverySequence) => ({ deliverySequence, messageId, sourceGlobalPosition });
 
 const assertCursorContract = (makeStore: () => import("./delivery-cursor.js").DeliveryCursorStore): void => {
   it("starts empty, preserves sparse delivered messages, and compacts a contiguous prefix", async () => {
     const store = makeStore();
     expect(await store.read("hq-player")).toBeUndefined();
     await store.acknowledge("hq-player", acknowledgement(3));
-    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 0, delivered: [acknowledgement(3)] });
+    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 0, acknowledgedThroughPosition: 3, delivered: [acknowledgement(3)] });
     await store.acknowledge("hq-player", acknowledgement(1));
-    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 1, delivered: [acknowledgement(3)] });
+    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 1, acknowledgedThroughPosition: 3, delivered: [acknowledgement(3)] });
     await store.acknowledge("hq-player", acknowledgement(2));
     const compacted = await store.read("hq-player");
-    expect(compacted).toEqual({ observerId: "hq-player", lowWatermark: 3, delivered: [] });
+    expect(compacted).toEqual({ observerId: "hq-player", lowWatermark: 3, acknowledgedThroughPosition: 3, delivered: [] });
     expect(hasAcknowledged(compacted, acknowledgement(3))).toBe(true);
     await expect(store.acknowledge("hq-player", acknowledgement(3))).rejects.toThrow("already acknowledged");
   });
@@ -29,8 +29,9 @@ const postgresCursorDouble = (): {
   readonly calls: { sql: string; values: readonly unknown[] | undefined }[];
   readonly transactions: { committed: boolean }[];
 } => {
-  type StoredAcknowledgement = { readonly deliverySequence: number; readonly messageId: string };
-  type State = { cursors: Map<string, number>; acknowledgements: Map<string, StoredAcknowledgement[]> };
+  type StoredAcknowledgement = { readonly deliverySequence: number; readonly messageId: string; readonly sourceGlobalPosition: number };
+  type StoredCursor = { readonly lowWatermark: number; readonly acknowledgedThroughPosition: number };
+  type State = { cursors: Map<string, StoredCursor>; acknowledgements: Map<string, StoredAcknowledgement[]> };
   const copyState = (state: State): State => ({
     cursors: new Map(state.cursors),
     acknowledgements: new Map([...state.acknowledgements].map(([observerId, acknowledgements]) => [observerId, acknowledgements.map((acknowledgement) => ({ ...acknowledgement }))]))
@@ -44,16 +45,18 @@ const postgresCursorDouble = (): {
   });
   const state = (): State => transaction ?? committed;
   const cursorRows = (observerId: string): Record<string, unknown>[] => {
-    const lowWatermark = state().cursors.get(observerId);
-    if (lowWatermark === undefined) return [];
+    const cursor = state().cursors.get(observerId);
+    if (cursor === undefined) return [];
     const acknowledgements = state().acknowledgements.get(observerId) ?? [];
     return acknowledgements.length === 0
-      ? [{ observer_id: observerId, low_watermark: lowWatermark, delivery_sequence: null, message_id: null }]
+      ? [{ observer_id: observerId, low_watermark: cursor.lowWatermark, acknowledged_through_position: cursor.acknowledgedThroughPosition, delivery_sequence: null, message_id: null, source_global_position: null }]
       : acknowledgements.sort((a, b) => a.deliverySequence - b.deliverySequence).map((acknowledgement) => ({
         observer_id: observerId,
-        low_watermark: lowWatermark,
+        low_watermark: cursor.lowWatermark,
+        acknowledged_through_position: cursor.acknowledgedThroughPosition,
         delivery_sequence: acknowledgement.deliverySequence,
-        message_id: acknowledgement.messageId
+        message_id: acknowledgement.messageId,
+        source_global_position: acknowledgement.sourceGlobalPosition
       }));
   };
   const query: PostgresCursorSession["query"] = async <Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) => {
@@ -63,22 +66,26 @@ const postgresCursorDouble = (): {
       if (sql.includes("INSERT INTO delivery_acknowledgements")) {
         const deliverySequence = values?.[1];
         const messageId = values?.[2];
-        if (typeof deliverySequence !== "number" || typeof messageId !== "string") throw new Error("Expected acknowledgement values.");
+        const sourceGlobalPosition = values?.[3];
+        if (typeof deliverySequence !== "number" || typeof messageId !== "string" || typeof sourceGlobalPosition !== "number") throw new Error("Expected acknowledgement values.");
         const acknowledgements = state().acknowledgements.get(observerId) ?? [];
         if (acknowledgements.some((acknowledgement) => acknowledgement.deliverySequence === deliverySequence || acknowledgement.messageId === messageId)) {
           return result<Row>([]);
         }
-        state().acknowledgements.set(observerId, [...acknowledgements, { deliverySequence, messageId }]);
+        state().acknowledgements.set(observerId, [...acknowledgements, { deliverySequence, messageId, sourceGlobalPosition }]);
         return result<Row>([{ observer_id: observerId }]);
       }
       if (sql.includes("INSERT INTO delivery_cursors")) {
-        state().cursors.set(observerId, state().cursors.get(observerId) ?? 0);
+        state().cursors.set(observerId, state().cursors.get(observerId) ?? { lowWatermark: 0, acknowledgedThroughPosition: 0 });
         return result<Row>([]);
       }
       if (sql.startsWith("UPDATE delivery_cursors")) {
         const lowWatermark = values?.[1];
-        if (typeof lowWatermark !== "number") throw new Error("Expected low watermark.");
-        state().cursors.set(observerId, lowWatermark);
+        const acknowledgedThroughPosition = values?.[2];
+        if (typeof lowWatermark !== "number" || typeof acknowledgedThroughPosition !== "number") throw new Error("Expected cursor watermarks.");
+        const cursor = state().cursors.get(observerId);
+        if (cursor === undefined) throw new Error("Expected cursor before update.");
+        state().cursors.set(observerId, { lowWatermark, acknowledgedThroughPosition: Math.max(cursor.acknowledgedThroughPosition, acknowledgedThroughPosition) });
         return result<Row>([]);
       }
       if (sql.startsWith("DELETE FROM delivery_acknowledgements")) {
@@ -114,6 +121,15 @@ const postgresCursorDouble = (): {
 
 describe("PostgresDeliveryCursorStore", () => {
   assertCursorContract(() => new PostgresDeliveryCursorStore(postgresCursorDouble().client));
+
+  it("retains the highest immutable source position across sparse acknowledgements", async () => {
+    const store = new PostgresDeliveryCursorStore(postgresCursorDouble().client);
+    await store.acknowledge("hq-player", acknowledgement(3, "message-3", 30));
+    await store.acknowledge("hq-player", acknowledgement(1, "message-1", 10));
+    await expect(store.acknowledge("hq-player", acknowledgement(2, "message-2", 20))).resolves.toMatchObject({
+      lowWatermark: 3, acknowledgedThroughPosition: 30, delivered: []
+    });
+  });
 
   it("acknowledges through one transaction-bound session and rolls back duplicates", async () => {
     const database = postgresCursorDouble();

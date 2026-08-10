@@ -189,14 +189,16 @@ const deserializeRows = (sql, stdout) => {
     };
   } else if (sql.includes("FROM delivery_cursors")) {
     deserialize = (fields) => {
-      if (fields.length !== 4) {
-        throw new Error(`Expected 4 delivery cursor fields from psql, received ${fields.length}.`);
+      if (fields.length !== 6) {
+        throw new Error(`Expected 6 delivery cursor fields from psql, received ${fields.length}.`);
       }
       return {
         observer_id: fields[0],
         low_watermark: Number(fields[1]),
-        delivery_sequence: fields[2] === "" ? null : Number(fields[2]),
-        message_id: fields[3] === "" ? null : fields[3]
+        acknowledged_through_position: Number(fields[2]),
+        delivery_sequence: fields[3] === "" ? null : Number(fields[3]),
+        message_id: fields[4] === "" ? null : fields[4],
+        source_global_position: fields[5] === "" ? null : Number(fields[5])
       };
     };
   } else {
@@ -253,15 +255,15 @@ integrationDescribe(
       const store = new PostgresDeliveryCursorStore(psqlClient);
       const observerId = `delivery-${randomUUID()}`;
       await expect(store.read(observerId)).resolves.toBeUndefined();
-      await expect(store.acknowledge(observerId, { deliverySequence: 3, messageId: "message-3" })).resolves.toEqual({
-        observerId, lowWatermark: 0, delivered: [{ deliverySequence: 3, messageId: "message-3" }]
+      await expect(store.acknowledge(observerId, { deliverySequence: 3, messageId: "message-3", sourceGlobalPosition: 30 })).resolves.toEqual({
+        observerId, lowWatermark: 0, acknowledgedThroughPosition: 30, delivered: [{ deliverySequence: 3, messageId: "message-3", sourceGlobalPosition: 30 }]
       });
-      await store.acknowledge(observerId, { deliverySequence: 1, messageId: "message-1" });
-      await expect(store.acknowledge(observerId, { deliverySequence: 2, messageId: "message-2" })).resolves.toEqual({
-        observerId, lowWatermark: 3, delivered: []
+      await store.acknowledge(observerId, { deliverySequence: 1, messageId: "message-1", sourceGlobalPosition: 10 });
+      await expect(store.acknowledge(observerId, { deliverySequence: 2, messageId: "message-2", sourceGlobalPosition: 20 })).resolves.toEqual({
+        observerId, lowWatermark: 3, acknowledgedThroughPosition: 30, delivered: []
       });
-      await expect(store.read(observerId)).resolves.toEqual({ observerId, lowWatermark: 3, delivered: [] });
-      await expect(store.acknowledge(observerId, { deliverySequence: 3, messageId: "message-3" })).rejects.toThrow("already acknowledged");
+      await expect(store.read(observerId)).resolves.toEqual({ observerId, lowWatermark: 3, acknowledgedThroughPosition: 30, delivered: [] });
+      await expect(store.acknowledge(observerId, { deliverySequence: 3, messageId: "message-3", sourceGlobalPosition: 30 })).rejects.toThrow("already acknowledged");
     });
 
     it("enforces the two-key sequence and optimistic-concurrency contract", async () => {

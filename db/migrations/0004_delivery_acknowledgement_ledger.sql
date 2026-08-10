@@ -5,13 +5,15 @@ DROP TABLE IF EXISTS delivery_cursors;
 
 CREATE TABLE delivery_cursors (
   observer_id TEXT PRIMARY KEY CHECK (length(observer_id) > 0),
-  low_watermark BIGINT NOT NULL DEFAULT 0 CHECK (low_watermark >= 0)
+  low_watermark BIGINT NOT NULL DEFAULT 0 CHECK (low_watermark >= 0),
+  acknowledged_through_position BIGINT NOT NULL DEFAULT 0 CHECK (acknowledged_through_position >= 0)
 );
 
 CREATE TABLE delivery_acknowledgements (
   observer_id TEXT NOT NULL,
   delivery_sequence BIGINT NOT NULL CHECK (delivery_sequence > 0),
   message_id TEXT NOT NULL CHECK (length(message_id) > 0),
+  source_global_position BIGINT NOT NULL CHECK (source_global_position > 0),
   PRIMARY KEY (observer_id, delivery_sequence),
   UNIQUE (observer_id, message_id)
 );

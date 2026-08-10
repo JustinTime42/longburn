@@ -40,3 +40,7 @@ Model: gpt-5.6-terra
 - The first full verifier run failed because an existing host test passed only its malformed record on a later call. That is an invalid partial durable projection under the new contract; the test now supplies the complete projection and the bare rerun exits 0.
 
 Unrequested behavior changes: none
+
+## R3 correction (2026-08-10)
+
+The R2 claim that every above-watermark-only query receives a typed refusal was false. Its count-only guard missed the minimal one-acknowledged, one-new projection and the alternating-loss trace. R3 replaces that claim with a persisted acknowledged-source-position horizon and a guard that refuses a candidate assigned inside the compacted delivery prefix when its immutable source global position is newer than that horizon.

@@ -76,7 +76,7 @@ describe("EmissionScheduler", () => {
 
   it("counts acknowledged-message suppression so duplicate presentation is observable", async () => {
     const cursors = new InMemoryDeliveryCursorStore();
-    await cursors.acknowledge("hq-player", { deliverySequence: 1, messageId: "observer:hq-player/stream:sol/event:3/class:shipReport" });
+    await cursors.acknowledge("hq-player", { deliverySequence: 1, messageId: "observer:hq-player/stream:sol/event:3/class:shipReport", sourceGlobalPosition: 3 });
     const emit = vi.fn(gateEmitter([]));
     const incrementDeliveryIntegrityCounter = vi.fn();
     const scheduler = new EmissionScheduler({
@@ -108,6 +108,59 @@ describe("EmissionScheduler", () => {
     await expect(scheduler.run("hq-player", simTimeMs(2_000), [deferred]))
       .rejects.toThrow(DeliveryProjectionViolation);
     expect(sent).toHaveLength(2);
+  });
+
+  it("refuses a new message presented alone after one compacted acknowledgement", async () => {
+    const cursors = new InMemoryDeliveryCursorStore();
+    const sent: string[] = [];
+    const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
+
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)])).resolves.toMatchObject({ emitted: [expect.any(String)] });
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(20)])).rejects.toThrow(DeliveryProjectionViolation);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("refuses a backlog that omits the compacted acknowledgement prefix", async () => {
+    const cursors = new InMemoryDeliveryCursorStore();
+    const sent: string[] = [];
+    const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
+
+    await scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)]);
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(20), scheduled(30), scheduled(40)])).rejects.toThrow(DeliveryProjectionViolation);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("refuses every pass in the alternating-loss trace after a compacted acknowledgement", async () => {
+    const cursors = new InMemoryDeliveryCursorStore();
+    const sent: string[] = [];
+    const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
+    await scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)]);
+
+    for (const positions of [[20], [20, 40], [20, 40, 60], [20, 40, 80]]) {
+      await expect(scheduler.run("hq-player", simTimeMs(1_000), positions.map((position) => scheduled(position))))
+        .rejects.toThrow(DeliveryProjectionViolation);
+      expect(sent).toHaveLength(1);
+    }
+  });
+
+  it("sweeps presented-subset shapes without silently suppressing a new message", async () => {
+    for (let shape = 1; shape < 16; shape += 1) {
+      const cursors = new InMemoryDeliveryCursorStore();
+      const sent: string[] = [];
+      const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
+      await scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)]);
+      const positions = [10, 20, 30, 40].filter((_position, index) => (shape & (1 << index)) !== 0);
+      const presented = positions.map((position) => scheduled(position));
+
+      if (!positions.includes(10)) {
+        await expect(scheduler.run("hq-player", simTimeMs(1_000), presented)).rejects.toThrow(DeliveryProjectionViolation);
+        expect(sent).toHaveLength(1);
+      } else {
+        const result = await scheduler.run("hq-player", simTimeMs(1_000), presented);
+        expect(result.emitted).toHaveLength(positions.length - 1);
+        expect(sent).toHaveLength(positions.length);
+      }
+    }
   });
 
   it("delivers later-arriving events without head-of-line blocking and uses global position only for ties", async () => {
