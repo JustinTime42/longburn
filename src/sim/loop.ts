@@ -211,6 +211,7 @@ export class AuthoritativeSimLoop {
       const commandId = `command-${this.#streamSequence + 1}`;
       const arrivalPosition = arrivalPositionAt(arrivalAtMs);
       const command: SimEvent = { type: "commandIssued", commandId, issuedAtMs, arrivalAtMs, hqPosition, arrivalPosition, commandKind, ...(spotDisposition === undefined ? {} : { spotDisposition }) };
+      this.#dryRunInboundCommand(command);
       await this.#append({ event: command, eventTime: issuedAtMs, eventPosition: hqPosition });
       this.#reducer.apply(command);
       this.#inboundCommands.push({ commandId, commandKind, arrivalAtMs, arrivalPosition, ...(spotDisposition === undefined ? {} : { spotDisposition }), replacedNodeIds: new Set() });
@@ -244,6 +245,7 @@ export class AuthoritativeSimLoop {
         type: "commandIssued", commandId, issuedAtMs, arrivalAtMs,
         hqPosition, arrivalPosition, replacedNodeIds, flightPlan
       };
+      this.#dryRunInboundCommand(command);
       await this.#append({ event: command, eventTime: issuedAtMs, eventPosition: hqPosition });
       this.#reducer.apply(command);
       this.#inboundCommands.push({
@@ -509,6 +511,15 @@ export class AuthoritativeSimLoop {
     const result = await this.#store.append(this.#streamId, event, this.#streamSequence);
     if (result.kind === "conflict") throw new AuthoritativeSimLoopConflictError(result);
     this.#streamSequence = result.event.streamSequence;
+  }
+
+  /**
+   * commandIssued validates against the reducer but does not change reducer
+   * state. Run that exact transition before persistence so an invalid inbound
+   * command cannot make the durable event log unreplayable.
+   */
+  #dryRunInboundCommand(command: Extract<SimEvent, { readonly type: "commandIssued" }>): void {
+    this.#reducer.apply(command);
   }
 
   #assertRecordTime(record: StoredSimEvent): void {

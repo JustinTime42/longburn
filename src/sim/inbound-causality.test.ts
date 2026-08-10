@@ -46,6 +46,29 @@ describe("inbound causality invariant", () => {
     ), { seed: 0x1ab0ad, numRuns: 400 });
   });
 
+  it("rejects faster-than-light commands before any inbound writer appends them", async () => {
+    const store = new InMemorySimulationEventStore();
+    const loop = await AuthoritativeSimLoop.create({
+      store, stream: { id: "pre-append-inbound-causality", seed: 1, initialTime: simTimeMs(0) }
+    });
+    const hqPosition = () => ({ x: 0, y: 0, z: 0 });
+    const shipPosition = () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
+    const oneMillisecondEarly = () => simTimeMs(999);
+
+    await expect(loop.scheduleInboundPlanRevision(
+      { destination: "earth", nodes: [] }, oneMillisecondEarly, hqPosition, shipPosition
+    )).rejects.toThrow("Causality invariant violated");
+    await expect(loop.scheduleInboundSellOrder(
+      oneMillisecondEarly, hqPosition, shipPosition
+    )).rejects.toThrow("Causality invariant violated");
+    await expect(loop.scheduleInboundSpotDispositionRevision(
+      "manual", oneMillisecondEarly, hqPosition, shipPosition
+    )).rejects.toThrow("Causality invariant violated");
+
+    expect((await loop.persistedStream()).events).toEqual([]);
+    await expect(AuthoritativeSimLoop.resume(store, "pre-append-inbound-causality")).resolves.toBeDefined();
+  });
+
   it("replays generated inbound revision races from live, durable, and resumed paths", async () => {
     await fc.assert(fc.asyncProperty(
       fc.integer({ min: 1, max: 1_000 }),
