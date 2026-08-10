@@ -10,7 +10,7 @@ const subscription: WebPushSubscription = { endpoint: "https://push.example.test
 const message: NotificationMessage = { title: "LONGBURN", body: "Report received.", data: { route: "/flight", notificationId: "renderer-controlled" } };
 const transportMessage: NotificationMessage = { ...message, data: { ...message.data, notificationId: notification.id } };
 
-const buildTransport = ({ subscriptions = [] as readonly WebPushSubscription[], emailAddress, emailPreference = false, instrumentation }: { readonly subscriptions?: readonly WebPushSubscription[]; readonly emailAddress?: string; readonly emailPreference?: boolean; readonly instrumentation?: PostgresNotificationInstrumentation } = {}) => {
+const buildTransport = ({ subscriptions = [] as readonly WebPushSubscription[], emailAddress, emailPreference = false, instrumentation, inApp }: { readonly subscriptions?: readonly WebPushSubscription[]; readonly emailAddress?: string; readonly emailPreference?: boolean; readonly instrumentation?: PostgresNotificationInstrumentation; readonly inApp?: { deliver: ReturnType<typeof vi.fn> } } = {}) => {
   const routes = { pushSubscriptionsFor: vi.fn(async () => subscriptions), emailAddressFor: vi.fn(async () => emailAddress) };
   const push = { deliver: vi.fn(async () => ({ delivered: true as const })) };
   const email = { deliver: vi.fn(async () => ({ delivered: true as const })) };
@@ -20,7 +20,7 @@ const buildTransport = ({ subscriptions = [] as readonly WebPushSubscription[], 
     transport: new NotificationTransport({
       observerId: "tester-1", routes,
       vapid: { subject: "mailto:ops@example.test", publicKey: "public-key", privateKey: "private-key" },
-      push, email, render: () => message, preferences, instrumentation
+      push, email, render: () => message, preferences, instrumentation, inApp
     }), routes, push, email, configured
   };
 };
@@ -47,7 +47,20 @@ describe("NotificationTransport", () => {
     expect(email.deliver).toHaveBeenCalledWith({ recipient: "tester@example.test", idempotencyKey: notification.id, message: transportMessage });
   });
 
-  it("leaves the queue retryable when the tester has no registered route", async () => {
+  it("falls back from a push default with no subscriptions to in-app, never email", async () => {
+    const inApp = { deliver: vi.fn(async () => ({ delivered: true as const })) };
+    const query = vi.fn(async () => ({ rows: [] }));
+    const instrumentation = new PostgresNotificationInstrumentation({ query: query as unknown as PostgresNotificationInstrumentationClient["query"] });
+    const { transport, push, email } = buildTransport({ emailAddress: "tester@example.test", inApp, instrumentation });
+
+    await expect(transport.deliver(notification, 2_000)).resolves.toEqual({ delivered: true });
+    expect(push.deliver).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
+    expect(inApp.deliver).toHaveBeenCalledWith({ idempotencyKey: notification.id, message: transportMessage });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING"), ["notificationDelivered", notification.id, "N5", "in-app", 500, 1_000, 2_000]);
+  });
+
+  it("leaves the queue retryable when the tester has no registered route or in-app surface", async () => {
     const { transport, push, email } = buildTransport();
 
     await expect(transport.deliver(notification)).resolves.toEqual({ delivered: false });

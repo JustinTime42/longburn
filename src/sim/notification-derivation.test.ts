@@ -84,6 +84,27 @@ describe("notification derivation", () => {
     ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(8_999), leadTimesMs: [1_000] })).toEqual([]);
   });
 
+  it("adds exactly one immediate floor warning when every selected lead is already past", () => {
+    const warnings = deriveLastRevisionWarnings([
+      { nodeId: "capture", executeAtMs: simTimeMs(10_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }
+    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(8_000), leadTimesMs: [2_000, 1_000] });
+
+    expect(warnings).toEqual([{
+      nodeId: "capture", executeAtMs: simTimeMs(10_000), lastRevisionAtMs: simTimeMs(8_999), leadTimeMs: 1_000, deliverAtMs: simTimeMs(8_000)
+    }]);
+    expect(deriveLocalNotifications([], warnings)).toMatchObject([{ deliverAtMs: simTimeMs(8_000) }]);
+  });
+
+  it("does not add a floor warning when a selected lead remains in the future", () => {
+    const warnings = deriveLastRevisionWarnings([
+      { nodeId: "capture", executeAtMs: simTimeMs(10_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }
+    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(7_500), leadTimesMs: [2_000, 1_000] });
+
+    expect(warnings).toEqual([{
+      nodeId: "capture", executeAtMs: simTimeMs(10_000), lastRevisionAtMs: simTimeMs(8_999), leadTimeMs: 1_000
+    }]);
+  });
+
   it("schedules ratified N4 lead times as distinct warnings for the same deadline", () => {
     const warnings = deriveLastRevisionWarnings([
       { nodeId: "capture", executeAtMs: simTimeMs(100_000_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }

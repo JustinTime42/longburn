@@ -76,6 +76,12 @@ export interface LastRevisionWarning {
   readonly lastRevisionAtMs: SimTimeMs;
   /** Player-selected amount of agency before the same deadline. */
   readonly leadTimeMs: number;
+  /**
+   * Present only for the short-horizon floor warning.  Its intended lead
+   * remains the player's shortest selected lead, but its delivery must occur
+   * immediately instead of retroactively before `nowMs`.
+   */
+  readonly deliverAtMs?: SimTimeMs;
 }
 
 export interface LastRevisionInstantInput {
@@ -146,11 +152,11 @@ export const deriveLocalNotifications = (
     windowId,
     deliverAtMs: simTimeMs(opensAtMs)
   })),
-  ...revisionWarnings.map(({ nodeId, executeAtMs, lastRevisionAtMs, leadTimeMs }) => ({
+  ...revisionWarnings.map(({ nodeId, executeAtMs, lastRevisionAtMs, leadTimeMs, deliverAtMs }) => ({
     id: `notification:last-revision:${encodeURIComponent(nonEmpty(nodeId, "Burn node ID"))}:${executeAtMs}:lead:${leadTimeMs}`,
     kind: "lastRevisionInstant" as const,
     nodeId,
-    deliverAtMs: simTimeMs(lastRevisionAtMs - leadTimeMs)
+    deliverAtMs: deliverAtMs ?? simTimeMs(lastRevisionAtMs - leadTimeMs)
   }))
 ];
 
@@ -183,7 +189,7 @@ export const lastRevisionInstantMs = ({ executeAtMs, hqPositionAt, shipPositionA
   return simTimeMs(lower);
 };
 
-/** Computes one local warning per pending burn that remains revisable. */
+/** Computes local warnings for each pending burn that remains revisable. */
 export const deriveLastRevisionWarnings = (
   nodes: readonly BurnNode[],
   input: Omit<LastRevisionInstantInput, "executeAtMs"> & { readonly nowMs: SimTimeMs; readonly leadTimesMs?: readonly number[] }
@@ -193,12 +199,21 @@ export const deriveLastRevisionWarnings = (
   if (leadTimesMs.length === 0 || new Set(leadTimesMs).size !== leadTimesMs.length || leadTimesMs.some((leadTimeMs) => !Number.isSafeInteger(leadTimeMs) || leadTimeMs <= 0)) {
     throw new RangeError("Last-revision warning lead times must be distinct positive safe integers.");
   }
-  return lastRevisionAtMs === undefined
-    ? []
-    : leadTimesMs.flatMap((leadTimeMs) => {
-      const warningAtMs = lastRevisionAtMs - leadTimeMs;
-      return warningAtMs <= input.nowMs || warningAtMs < 0
-        ? []
-        : [{ nodeId: node.nodeId, executeAtMs: node.executeAtMs, lastRevisionAtMs, leadTimeMs }];
-    });
+  if (lastRevisionAtMs === undefined || lastRevisionAtMs <= input.nowMs) return [];
+  const scheduled = leadTimesMs.flatMap((leadTimeMs) => {
+    const warningAtMs = lastRevisionAtMs - leadTimeMs;
+    return warningAtMs <= input.nowMs || warningAtMs < 0
+      ? []
+      : [{ nodeId: node.nodeId, executeAtMs: node.executeAtMs, lastRevisionAtMs, leadTimeMs }];
+  });
+  if (scheduled.length > 0) return scheduled;
+
+  const shortestLeadMs = Math.min(...leadTimesMs);
+  return [{
+    nodeId: node.nodeId,
+    executeAtMs: node.executeAtMs,
+    lastRevisionAtMs,
+    leadTimeMs: shortestLeadMs,
+    deliverAtMs: simTimeMs(Math.max(input.nowMs, lastRevisionAtMs - shortestLeadMs))
+  }];
 });
