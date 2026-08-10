@@ -136,10 +136,10 @@ export class CausalStateHost {
   }
 
   /**
-   * Runs the complete durable stored-event projection for this observer. The
-   * light-lagged subset must retain acknowledged entries in immutable durable
-   * global-position order so the scheduler can refuse a partial projection
-   * before it suppresses a newer event inside the compacted prefix.
+   * Runs a durable stored-event projection for this observer. The scheduler
+   * assigns a sequence durably on first sight, so later projections may be
+   * incomplete, gapped, reordered, or include a backfill without renumbering
+   * or suppressing a light-lagged message.
    */
   async run(now: SimTimeMs, storedEvents: readonly StoredEventForEmission[]): Promise<SchedulerRunResult> {
     const scheduled: ScheduledEmission[] = [];

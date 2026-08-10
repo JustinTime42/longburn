@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CausalEmissionGate, SPEED_OF_LIGHT_METERS_PER_SECOND } from "./causality.js";
 import { simTimeMs } from "./clock.js";
 import { InMemoryDeliveryCursorStore } from "./delivery-cursor.js";
-import { DeliveryProjectionViolation, EmissionScheduler, type ScheduledEmission } from "./emission-scheduler.js";
+import { EmissionScheduler, type ScheduledEmission } from "./emission-scheduler.js";
 
 const observerPositionAt = () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
 const scheduled = (globalPosition: number, eventTime = 0): ScheduledEmission => ({
@@ -49,7 +49,7 @@ describe("EmissionScheduler", () => {
     const work = [scheduled(1), scheduled(3)];
     const failed = new EmissionScheduler({ cursors, emit: firstAttempt, recordIncident: () => {}, incrementCausalityFailure: () => {}, incrementDeliveryIntegrityCounter: () => {} });
     await expect(failed.run("hq-player", simTimeMs(1_000), work)).resolves.toMatchObject({ blocked: [expect.any(String), expect.any(String)] });
-    expect(await cursors.read("hq-player")).toBeUndefined();
+    expect(await cursors.read("hq-player")).toMatchObject({ lowWatermark: 0, nextDeliverySequence: 3, delivered: [] });
 
     const redelivered: string[] = [];
     const restarted = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(redelivered)));
@@ -76,7 +76,8 @@ describe("EmissionScheduler", () => {
 
   it("counts acknowledged-message suppression so duplicate presentation is observable", async () => {
     const cursors = new InMemoryDeliveryCursorStore();
-    await cursors.acknowledge("hq-player", { deliverySequence: 1, messageId: "observer:hq-player/stream:sol/event:3/class:shipReport", sourceGlobalPosition: 3 });
+    const assignment = await cursors.assign("hq-player", "observer:hq-player/stream:sol/event:3/class:shipReport", 3);
+    await cursors.acknowledge("hq-player", assignment);
     const emit = vi.fn(gateEmitter([]));
     const incrementDeliveryIntegrityCounter = vi.fn();
     const scheduler = new EmissionScheduler({
@@ -88,79 +89,25 @@ describe("EmissionScheduler", () => {
     expect(incrementDeliveryIntegrityCounter).toHaveBeenCalledOnce();
   });
 
-  it("refuses a later pass that omits the acknowledged projection prefix", async () => {
+  it("assigns a later message presented alone after compaction instead of suppressing it", async () => {
     const cursors = new InMemoryDeliveryCursorStore();
     const sent: string[] = [];
     const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
-    const deferred = {
-      ...scheduled(30),
-      message: {
-        ...scheduled(30).message,
-        event: { ...scheduled(30).message.event, eventPosition: { x: SPEED_OF_LIGHT_METERS_PER_SECOND * 3, y: 0, z: 0 } }
-      }
-    };
-
-    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10), scheduled(20), deferred])).resolves.toMatchObject({
-      emitted: [expect.any(String), expect.any(String)], deferred: [expect.any(String)]
-    });
-    expect(await cursors.read("hq-player")).toMatchObject({ lowWatermark: 2, delivered: [] });
-
-    await expect(scheduler.run("hq-player", simTimeMs(2_000), [deferred]))
-      .rejects.toThrow(DeliveryProjectionViolation);
+    await scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)]);
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(20)]))
+      .resolves.toMatchObject({ emitted: [expect.any(String)] });
     expect(sent).toHaveLength(2);
   });
 
-  it("refuses a new message presented alone after one compacted acknowledgement", async () => {
+  it("delivers a gapped candidate when it appears after later sequences were acknowledged", async () => {
     const cursors = new InMemoryDeliveryCursorStore();
     const sent: string[] = [];
     const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
 
-    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)])).resolves.toMatchObject({ emitted: [expect.any(String)] });
-    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(20)])).rejects.toThrow(DeliveryProjectionViolation);
-    expect(sent).toHaveLength(1);
-  });
-
-  it("refuses a backlog that omits the compacted acknowledgement prefix", async () => {
-    const cursors = new InMemoryDeliveryCursorStore();
-    const sent: string[] = [];
-    const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
-
-    await scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)]);
-    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(20), scheduled(30), scheduled(40)])).rejects.toThrow(DeliveryProjectionViolation);
-    expect(sent).toHaveLength(1);
-  });
-
-  it("refuses every pass in the alternating-loss trace after a compacted acknowledgement", async () => {
-    const cursors = new InMemoryDeliveryCursorStore();
-    const sent: string[] = [];
-    const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
-    await scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)]);
-
-    for (const positions of [[20], [20, 40], [20, 40, 60], [20, 40, 80]]) {
-      await expect(scheduler.run("hq-player", simTimeMs(1_000), positions.map((position) => scheduled(position))))
-        .rejects.toThrow(DeliveryProjectionViolation);
-      expect(sent).toHaveLength(1);
-    }
-  });
-
-  it("sweeps presented-subset shapes without silently suppressing a new message", async () => {
-    for (let shape = 1; shape < 16; shape += 1) {
-      const cursors = new InMemoryDeliveryCursorStore();
-      const sent: string[] = [];
-      const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
-      await scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10)]);
-      const positions = [10, 20, 30, 40].filter((_position, index) => (shape & (1 << index)) !== 0);
-      const presented = positions.map((position) => scheduled(position));
-
-      if (!positions.includes(10)) {
-        await expect(scheduler.run("hq-player", simTimeMs(1_000), presented)).rejects.toThrow(DeliveryProjectionViolation);
-        expect(sent).toHaveLength(1);
-      } else {
-        const result = await scheduler.run("hq-player", simTimeMs(1_000), presented);
-        expect(result.emitted).toHaveLength(positions.length - 1);
-        expect(sent).toHaveLength(positions.length);
-      }
-    }
+    const delayed = { ...scheduled(20), message: { ...scheduled(20).message, event: { ...scheduled(20).message.event, eventPosition: { x: SPEED_OF_LIGHT_METERS_PER_SECOND * 3, y: 0, z: 0 } } } };
+    await scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10), delayed, scheduled(30)]);
+    expect(await scheduler.run("hq-player", simTimeMs(2_000), [delayed])).toMatchObject({ emitted: [expect.any(String)] });
+    expect(sent).toHaveLength(3);
   });
 
   it("delivers later-arriving events without head-of-line blocking and uses global position only for ties", async () => {

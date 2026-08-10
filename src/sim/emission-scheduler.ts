@@ -1,6 +1,6 @@
 import { CausalityInvariantViolation, earliestLegalEmissionTimeMs, type CausalityIncident, type EmissionResult } from "./causality.js";
 import type { SimTimeMs } from "./clock.js";
-import { hasAcknowledged, type DeliveryAcknowledgement, type DeliveryCursorStore } from "./delivery-cursor.js";
+import { hasAcknowledged, type DeliveryAssignment, type DeliveryCursorStore } from "./delivery-cursor.js";
 import { buildEmittedMessage, type BuildEmittedMessage, type EmissionCandidate } from "./emitted-message.js";
 
 export type LightLaggedMessageClass = "shipReport" | "commandOutcomeReport" | "marketEvent";
@@ -16,9 +16,9 @@ export interface ScheduledEmission {
 
 /**
  * Dependencies for one scheduler writer. The host must serialize `run` calls
- * per observer; acknowledgement persistence is not a transport lock. Every
- * pass must receive the observer's complete durable light-lagged projection,
- * including acknowledged messages, in immutable global-position order.
+ * per observer; acknowledgement persistence is not a transport lock. Each
+ * light-lagged message receives an immutable observer-local delivery sequence
+ * the first time this scheduler sees it, independent of later batch shape.
  */
 export interface EmissionSchedulerOptions {
   readonly cursors: DeliveryCursorStore;
@@ -35,14 +35,6 @@ export interface SchedulerRunResult {
   readonly emitted: readonly string[];
   readonly deferred: readonly string[];
   readonly blocked: readonly string[];
-}
-
-/** The caller omitted or renumbered part of the durable delivery projection. */
-export class DeliveryProjectionViolation extends RangeError {
-  constructor(message: string) {
-    super(message);
-    this.name = "DeliveryProjectionViolation";
-  }
 }
 
 const validSourcePosition = (emission: ScheduledEmission): void => {
@@ -78,11 +70,9 @@ export class EmissionScheduler {
   /**
    * Runs one serialized delivery pass for an observer.
    *
-   * The caller must supply the observer's complete durable light-lagged
-   * projection on every pass, including acknowledged messages, in the durable
-   * log's append-only global-position order. A candidate assigned inside the
-   * compacted delivery prefix but newer than the persisted acknowledgement
-   * horizon is refused, so an incomplete projection cannot silently suppress it.
+   * A light-lagged candidate receives a durable per-observer sequence when it
+   * is first projected. Later passes look up that fact, so incomplete, gapped,
+   * reordered, or backfilled projections cannot renumber or suppress it.
    * Presentation order is not a delivery dependency:
    * each event is independently released at its own earliest legal tick. When
    * two are first releasable on the same tick, globalPosition breaks the tie.
@@ -101,25 +91,7 @@ export class EmissionScheduler {
         lightLaggedPositions.add(emission.sourceGlobalPosition);
       }
     }
-    // The host supplies the complete durable projection on each pass.  Ranking
-    // only light-lagged candidates makes this sequence observer-local: global
-    // log entries that can never be delivered cannot leave a compaction gap.
-    const deliverySequenceByPosition = new Map(
-      scheduled.filter((emission) => isLightLaggedMessageClass(emission.message.class))
-        .sort((left, right) => left.sourceGlobalPosition - right.sourceGlobalPosition)
-        .map((emission, index) => [emission.sourceGlobalPosition, index + 1] as const)
-    );
     let cursor = await this.#cursors.read(observerId);
-    if (cursor !== undefined && deliverySequenceByPosition.size < cursor.lowWatermark) {
-      throw new DeliveryProjectionViolation("Delivery projection omits part of the compacted acknowledgement prefix.");
-    }
-    if (cursor !== undefined) {
-      for (const [sourceGlobalPosition, deliverySequence] of deliverySequenceByPosition) {
-        if (deliverySequence <= cursor.lowWatermark && sourceGlobalPosition > cursor.acknowledgedThroughPosition) {
-          throw new DeliveryProjectionViolation("Delivery projection assigned a newer event inside the compacted acknowledgement prefix.");
-        }
-      }
-    }
     const emitted: string[] = [];
     const deferred: string[] = [];
     const blocked: string[] = [];
@@ -139,34 +111,31 @@ export class EmissionScheduler {
           : { reason: "invalid-position" as const, provenance: { eventTime: emission.message.event.eventTime, eventPosition: emission.message.event.eventPosition } };
       }
       return { emission, candidate, earliest, incident };
-    }).sort((left, right) => {
+    });
+    const assignmentsByPosition = new Map<number, DeliveryAssignment>();
+    for (const { emission, candidate, incident } of prepared) {
+      if (!isLightLaggedMessageClass(emission.message.class) || candidate === undefined || incident !== undefined) continue;
+      assignmentsByPosition.set(emission.sourceGlobalPosition, await this.#cursors.assign(observerId, candidate.messageId, emission.sourceGlobalPosition));
+    }
+    const ordered = prepared.sort((left, right) => {
       if (left.earliest === undefined && right.earliest !== undefined) return 1;
       if (left.earliest !== undefined && right.earliest === undefined) return -1;
       if (left.earliest !== undefined && right.earliest !== undefined && left.earliest !== right.earliest) return left.earliest - right.earliest;
       return left.emission.sourceGlobalPosition - right.emission.sourceGlobalPosition;
     });
 
-    for (const { emission, candidate, earliest, incident } of prepared) {
+    for (const { emission, candidate, earliest, incident } of ordered) {
       const local = !isLightLaggedMessageClass(emission.message.class);
-      const deliverySequence = deliverySequenceByPosition.get(emission.sourceGlobalPosition);
-      const acknowledgement: DeliveryAcknowledgement | undefined = local ? undefined : deliverySequence === undefined ? undefined : {
-        deliverySequence, messageId: candidate?.messageId ?? `position:${emission.sourceGlobalPosition}`, sourceGlobalPosition: emission.sourceGlobalPosition
-      };
-      if (!local && acknowledgement === undefined) throw new Error("Light-lagged emission has no delivery sequence.");
-      const priorAcknowledgement = acknowledgement !== undefined && cursor !== undefined
-        ? cursor.delivered.find((delivered) => delivered.deliverySequence === acknowledgement.deliverySequence || delivered.messageId === acknowledgement.messageId)
-        : undefined;
-      if (acknowledgement !== undefined && priorAcknowledgement !== undefined && (priorAcknowledgement.deliverySequence !== acknowledgement.deliverySequence || priorAcknowledgement.messageId !== acknowledgement.messageId)) {
-        throw new DeliveryProjectionViolation("Delivery projection changed an acknowledged message's delivery sequence.");
-      }
-      if (acknowledgement !== undefined && hasAcknowledged(cursor, acknowledgement)) {
-        this.#incrementDeliveryIntegrityCounter();
-        continue;
-      }
+      const assignment = local ? undefined : assignmentsByPosition.get(emission.sourceGlobalPosition);
       if (incident !== undefined) {
         try { this.#recordIncident(incident); } catch { /* closed even if reporting fails */ }
         try { this.#incrementCausalityFailure(); } catch { /* closed even if alerting fails */ }
         blocked.push(`position:${emission.sourceGlobalPosition}`);
+        continue;
+      }
+      if (!local && assignment === undefined) throw new Error("Light-lagged emission has no durable delivery assignment.");
+      if (assignment !== undefined && hasAcknowledged(cursor, assignment)) {
+        this.#incrementDeliveryIntegrityCounter();
         continue;
       }
       if (candidate === undefined || earliest === undefined) throw new Error("Prepared scheduler entry is incomplete.");
@@ -182,8 +151,8 @@ export class EmissionScheduler {
         continue;
       }
       emitted.push(candidate.messageId);
-      if (acknowledgement !== undefined) {
-        cursor = await this.#cursors.acknowledge(observerId, acknowledgement);
+      if (assignment !== undefined) {
+        cursor = await this.#cursors.acknowledge(observerId, assignment);
       }
     }
     return { emitted, deferred, blocked };

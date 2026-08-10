@@ -2,143 +2,76 @@ import { describe, expect, it } from "vitest";
 
 import { hasAcknowledged, InMemoryDeliveryCursorStore, PostgresDeliveryCursorStore, type PostgresCursorQueryClient, type PostgresCursorSession } from "./delivery-cursor.js";
 
-const acknowledgement = (deliverySequence: number, messageId = `message-${deliverySequence}`, sourceGlobalPosition = deliverySequence) => ({ deliverySequence, messageId, sourceGlobalPosition });
+const assign = (store: import("./delivery-cursor.js").DeliveryCursorStore, sequence: number) =>
+  store.assign("hq-player", `message-${sequence}`, sequence * 10);
 
 const assertCursorContract = (makeStore: () => import("./delivery-cursor.js").DeliveryCursorStore): void => {
-  it("starts empty, preserves sparse delivered messages, and compacts a contiguous prefix", async () => {
+  it("assigns sequences durably before acknowledgement and compacts only receipts", async () => {
     const store = makeStore();
-    expect(await store.read("hq-player")).toBeUndefined();
-    await store.acknowledge("hq-player", acknowledgement(3));
-    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 0, acknowledgedThroughPosition: 3, delivered: [acknowledgement(3)] });
-    await store.acknowledge("hq-player", acknowledgement(1));
-    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 1, acknowledgedThroughPosition: 3, delivered: [acknowledgement(3)] });
-    await store.acknowledge("hq-player", acknowledgement(2));
-    const compacted = await store.read("hq-player");
-    expect(compacted).toEqual({ observerId: "hq-player", lowWatermark: 3, acknowledgedThroughPosition: 3, delivered: [] });
-    expect(hasAcknowledged(compacted, acknowledgement(3))).toBe(true);
-    await expect(store.acknowledge("hq-player", acknowledgement(3))).rejects.toThrow("already acknowledged");
+    const first = await assign(store, 1);
+    const second = await assign(store, 2);
+    const third = await assign(store, 3);
+    expect(await store.read("hq-player")).toMatchObject({ lowWatermark: 0, nextDeliverySequence: 4 });
+    await store.acknowledge("hq-player", third);
+    await store.acknowledge("hq-player", first);
+    expect(await store.read("hq-player")).toMatchObject({ lowWatermark: 1, delivered: [third] });
+    await store.acknowledge("hq-player", second);
+    expect(await store.read("hq-player")).toEqual({ observerId: "hq-player", lowWatermark: 3, nextDeliverySequence: 4, delivered: [] });
+    expect(hasAcknowledged(await store.read("hq-player"), third)).toBe(true);
+    expect(await store.assign("hq-player", third.messageId, third.sourceGlobalPosition)).toEqual(third);
+    await expect(store.acknowledge("hq-player", third)).rejects.toThrow("already acknowledged");
   });
 };
 
 describe("InMemoryDeliveryCursorStore", () => {
   assertCursorContract(() => new InMemoryDeliveryCursorStore());
+
+  it("rejects one message identity assigned to another source position", async () => {
+    const store = new InMemoryDeliveryCursorStore();
+    await store.assign("hq-player", "message", 10);
+    await expect(store.assign("hq-player", "message", 20)).rejects.toThrow("another source position");
+  });
 });
 
-const postgresCursorDouble = (): {
-  readonly client: PostgresCursorQueryClient;
-  readonly calls: { sql: string; values: readonly unknown[] | undefined }[];
-  readonly transactions: { committed: boolean }[];
-} => {
-  type StoredAcknowledgement = { readonly deliverySequence: number; readonly messageId: string; readonly sourceGlobalPosition: number };
-  type StoredCursor = { readonly lowWatermark: number; readonly acknowledgedThroughPosition: number };
-  type State = { cursors: Map<string, StoredCursor>; acknowledgements: Map<string, StoredAcknowledgement[]> };
-  const copyState = (state: State): State => ({
-    cursors: new Map(state.cursors),
-    acknowledgements: new Map([...state.acknowledgements].map(([observerId, acknowledgements]) => [observerId, acknowledgements.map((acknowledgement) => ({ ...acknowledgement }))]))
-  });
-  let committed: State = { cursors: new Map(), acknowledgements: new Map() };
+/** A small stateful SQL double, deliberately exercising the adapter transaction shape. */
+const postgresDouble = (): { client: PostgresCursorQueryClient; calls: string[] } => {
+  type Assignment = { deliverySequence: number; messageId: string; sourceGlobalPosition: number };
+  type State = { cursors: Map<string, { low: number; next: number }>; assignments: Map<string, Assignment[]>; acknowledgements: Map<string, number[]> };
+  const copy = (state: State): State => ({ cursors: new Map(state.cursors), assignments: new Map([...state.assignments].map(([key, value]) => [key, value.map((item) => ({ ...item }))])), acknowledgements: new Map([...state.acknowledgements].map(([key, value]) => [key, [...value]])) });
+  let committed: State = { cursors: new Map(), assignments: new Map(), acknowledgements: new Map() };
   let transaction: State | undefined;
-  const calls: { sql: string; values: readonly unknown[] | undefined }[] = [];
-  const transactions: { committed: boolean }[] = [];
-  const result = <Row extends Record<string, unknown>>(rows: readonly Record<string, unknown>[]): { readonly rows: readonly Row[] } => ({
-    rows: rows as readonly Row[]
-  });
+  const calls: string[] = [];
   const state = (): State => transaction ?? committed;
-  const cursorRows = (observerId: string): Record<string, unknown>[] => {
-    const cursor = state().cursors.get(observerId);
-    if (cursor === undefined) return [];
-    const acknowledgements = state().acknowledgements.get(observerId) ?? [];
-    return acknowledgements.length === 0
-      ? [{ observer_id: observerId, low_watermark: cursor.lowWatermark, acknowledged_through_position: cursor.acknowledgedThroughPosition, delivery_sequence: null, message_id: null, source_global_position: null }]
-      : acknowledgements.sort((a, b) => a.deliverySequence - b.deliverySequence).map((acknowledgement) => ({
-        observer_id: observerId,
-        low_watermark: cursor.lowWatermark,
-        acknowledged_through_position: cursor.acknowledgedThroughPosition,
-        delivery_sequence: acknowledgement.deliverySequence,
-        message_id: acknowledgement.messageId,
-        source_global_position: acknowledgement.sourceGlobalPosition
-      }));
+  const rows = <Row extends Record<string, unknown>>(items: readonly Record<string, unknown>[]) => ({ rows: items as readonly Row[] });
+  const cursorRows = (observerId: string) => {
+    const cursor = state().cursors.get(observerId); if (cursor === undefined) return [];
+    const assigned = state().assignments.get(observerId) ?? []; const acked = state().acknowledgements.get(observerId) ?? [];
+    const delivered = assigned.filter((item) => acked.includes(item.deliverySequence));
+    return (delivered.length === 0 ? [null] : delivered).map((item) => ({ observer_id: observerId, low_watermark: cursor.low, next_delivery_sequence: cursor.next, delivery_sequence: item?.deliverySequence ?? null, message_id: item?.messageId ?? null, source_global_position: item?.sourceGlobalPosition ?? null }));
   };
-  const query: PostgresCursorSession["query"] = async <Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) => {
-      calls.push({ sql, values });
-      const observerId = values?.[0];
-      if (typeof observerId !== "string") throw new Error("Expected observer ID.");
-      if (sql.includes("INSERT INTO delivery_acknowledgements")) {
-        const deliverySequence = values?.[1];
-        const messageId = values?.[2];
-        const sourceGlobalPosition = values?.[3];
-        if (typeof deliverySequence !== "number" || typeof messageId !== "string" || typeof sourceGlobalPosition !== "number") throw new Error("Expected acknowledgement values.");
-        const acknowledgements = state().acknowledgements.get(observerId) ?? [];
-        if (acknowledgements.some((acknowledgement) => acknowledgement.deliverySequence === deliverySequence || acknowledgement.messageId === messageId)) {
-          return result<Row>([]);
-        }
-        state().acknowledgements.set(observerId, [...acknowledgements, { deliverySequence, messageId, sourceGlobalPosition }]);
-        return result<Row>([{ observer_id: observerId }]);
-      }
-      if (sql.includes("INSERT INTO delivery_cursors")) {
-        state().cursors.set(observerId, state().cursors.get(observerId) ?? { lowWatermark: 0, acknowledgedThroughPosition: 0 });
-        return result<Row>([]);
-      }
-      if (sql.startsWith("UPDATE delivery_cursors")) {
-        const lowWatermark = values?.[1];
-        const acknowledgedThroughPosition = values?.[2];
-        if (typeof lowWatermark !== "number" || typeof acknowledgedThroughPosition !== "number") throw new Error("Expected cursor watermarks.");
-        const cursor = state().cursors.get(observerId);
-        if (cursor === undefined) throw new Error("Expected cursor before update.");
-        state().cursors.set(observerId, { lowWatermark, acknowledgedThroughPosition: Math.max(cursor.acknowledgedThroughPosition, acknowledgedThroughPosition) });
-        return result<Row>([]);
-      }
-      if (sql.startsWith("DELETE FROM delivery_acknowledgements")) {
-        const lowWatermark = values?.[1];
-        if (typeof lowWatermark !== "number") throw new Error("Expected low watermark.");
-        state().acknowledgements.set(observerId, (state().acknowledgements.get(observerId) ?? []).filter(
-          (acknowledgement) => acknowledgement.deliverySequence > lowWatermark
-        ));
-        return result<Row>([]);
-      }
-      if (sql.includes("FROM delivery_cursors")) return result<Row>(cursorRows(observerId));
-      throw new Error(`Unexpected SQL: ${sql}`);
+  const query: PostgresCursorSession["query"] = async <Row extends Record<string, unknown>>(sql: string, values: readonly unknown[] = []) => {
+    calls.push(sql); const observerId = values[0]; if (typeof observerId !== "string") throw new Error("Expected observer ID.");
+    if (sql.startsWith("INSERT INTO delivery_cursors")) { state().cursors.set(observerId, state().cursors.get(observerId) ?? { low: 0, next: 1 }); return rows<Row>([]); }
+    if (sql.startsWith("SELECT next_delivery_sequence")) { const cursor = state().cursors.get(observerId); return rows<Row>(cursor === undefined ? [] : [{ next_delivery_sequence: cursor.next }]); }
+    if (sql.startsWith("SELECT delivery_sequence") && sql.includes("delivery_assignments")) { const item = (state().assignments.get(observerId) ?? []).find((entry) => entry.messageId === values[1]); return rows<Row>(item === undefined ? [] : [{ delivery_sequence: item.deliverySequence, message_id: item.messageId, source_global_position: item.sourceGlobalPosition }]); }
+    if (sql.startsWith("INSERT INTO delivery_assignments")) { const item = { deliverySequence: values[1] as number, messageId: values[2] as string, sourceGlobalPosition: values[3] as number }; state().assignments.set(observerId, [...(state().assignments.get(observerId) ?? []), item]); return rows<Row>([]); }
+    if (sql.startsWith("UPDATE delivery_cursors SET next")) { const cursor = state().cursors.get(observerId); if (cursor === undefined) throw new Error("missing cursor"); state().cursors.set(observerId, { ...cursor, next: cursor.next + 1 }); return rows<Row>([]); }
+    if (sql.startsWith("INSERT INTO delivery_acknowledgements")) { const sequence = values[1] as number; const acked = state().acknowledgements.get(observerId) ?? []; if (acked.includes(sequence)) return rows<Row>([]); state().acknowledgements.set(observerId, [...acked, sequence]); return rows<Row>([{ observer_id: observerId }]); }
+    if (sql.startsWith("UPDATE delivery_cursors SET low")) { const cursor = state().cursors.get(observerId); if (cursor === undefined) throw new Error("missing cursor"); state().cursors.set(observerId, { ...cursor, low: values[1] as number }); return rows<Row>([]); }
+    if (sql.startsWith("DELETE FROM delivery_acknowledgements")) { const low = values[1] as number; state().acknowledgements.set(observerId, (state().acknowledgements.get(observerId) ?? []).filter((sequence) => sequence > low)); return rows<Row>([]); }
+    if (sql.includes("FROM delivery_cursors")) return rows<Row>(cursorRows(observerId));
+    throw new Error(`Unexpected SQL: ${sql}`);
   };
-  const client: PostgresCursorQueryClient = {
-    query,
-    async withTransaction<Result>(callback: (session: PostgresCursorSession) => Promise<Result>): Promise<Result> {
-      if (transaction !== undefined) throw new Error("Nested cursor transactions are unsupported.");
-      transaction = copyState(committed);
-      const record = { committed: false };
-      transactions.push(record);
-      try {
-        const value = await callback({ query });
-        committed = transaction;
-        record.committed = true;
-        return value;
-      } finally {
-        transaction = undefined;
-      }
-    }
-  };
-  return { client, calls, transactions };
+  return { calls, client: { query, async withTransaction<Result>(callback: (session: PostgresCursorSession) => Promise<Result>) { transaction = copy(committed); try { const result = await callback({ query }); committed = transaction; return result; } finally { transaction = undefined; } } } };
 };
 
 describe("PostgresDeliveryCursorStore", () => {
-  assertCursorContract(() => new PostgresDeliveryCursorStore(postgresCursorDouble().client));
+  assertCursorContract(() => new PostgresDeliveryCursorStore(postgresDouble().client));
 
-  it("retains the highest immutable source position across sparse acknowledgements", async () => {
-    const store = new PostgresDeliveryCursorStore(postgresCursorDouble().client);
-    await store.acknowledge("hq-player", acknowledgement(3, "message-3", 30));
-    await store.acknowledge("hq-player", acknowledgement(1, "message-1", 10));
-    await expect(store.acknowledge("hq-player", acknowledgement(2, "message-2", 20))).resolves.toMatchObject({
-      lowWatermark: 3, acknowledgedThroughPosition: 30, delivered: []
-    });
-  });
-
-  it("acknowledges through one transaction-bound session and rolls back duplicates", async () => {
-    const database = postgresCursorDouble();
-    const store = new PostgresDeliveryCursorStore(database.client);
-    await store.acknowledge("hq-player", acknowledgement(1));
-    await expect(store.acknowledge("hq-player", acknowledgement(1))).rejects.toThrow("already acknowledged");
-    expect(database.calls.some(({ sql }) => sql.includes("FOR UPDATE OF c"))).toBe(true);
-    expect(database.calls.some(({ sql }) => sql.startsWith("DELETE FROM delivery_acknowledgements"))).toBe(true);
-    expect(database.transactions).toEqual([{ committed: true }, { committed: false }]);
-    expect(database.calls.some(({ sql }) => sql.includes("WITH RECURSIVE"))).toBe(false);
+  it("allocates with a locked persisted counter and deletes compacted receipts", async () => {
+    const database = postgresDouble(); const store = new PostgresDeliveryCursorStore(database.client);
+    const first = await assign(store, 1); await store.acknowledge("hq-player", first);
+    expect(database.calls.some((sql) => sql.includes("FOR UPDATE"))).toBe(true);
+    expect(database.calls.some((sql) => sql.startsWith("DELETE FROM delivery_acknowledgements"))).toBe(true);
   });
 });
