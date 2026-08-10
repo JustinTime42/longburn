@@ -1,9 +1,9 @@
 # Persistent Time Anchor v0.1
 
-Status: **DRAFT by the Mayor 2026-08-10 (session 15)** — §2's genesis-facts
-ruling is already Overseer-decided (longburn-9j0 notes, 2026-08-10); the
-mechanism sections (§3–§6) await Overseer approval before implementation
-dispatches. Bead: longburn-9j0 (blocks din.11). Origin: Warden r6g r1 f4
+Status: **APPROVED by the Overseer 2026-08-10 (session 15)** — §2's
+genesis-facts ruling decided earlier the same day (longburn-9j0 notes); the
+mechanism sections (§3–§6) approved as drafted, same session. Implementation
+dispatches against this document. Bead: longburn-9j0 (blocks din.11). Origin: Warden r6g r1 f4
 (their highest-priority follow-up before din.11) + Warden 4khr f6 (the
 genesis-facts one-way door).
 
