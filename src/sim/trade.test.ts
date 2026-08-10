@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { simTimeMs } from "./clock.js";
 import { marketInitialState, TIER0_MARKET_CONFIG } from "./market.js";
-import { composeCargo, forwardQuotePerTon, initialCargoState, reduceTradeEvent, settlement, TIER0_TRADE_CONFIG } from "./trade.js";
+import { CargoCompositionValidationError, composeCargo, forwardQuoteInformationBound, forwardQuotePerTon, initialCargoState, reduceTradeEvent, settlement, TIER0_TRADE_CONFIG } from "./trade.js";
 
 describe("cargo composition and settlement", () => {
   it("persists a planner-side forward quote and never reprices it at settlement", () => {
     const composed = composeCargo(TIER0_TRADE_CONFIG, TIER0_MARKET_CONFIG, marketInitialState(TIER0_MARKET_CONFIG),
-      { contractedTons: 4, spotTons: 1, spotDisposition: "manual" }, simTimeMs(9 * TIER0_MARKET_CONFIG.marketStepMs), simTimeMs(0));
+      { contractedTons: 4, spotTons: 1, spotDisposition: "manual" }, simTimeMs(9 * TIER0_MARKET_CONFIG.marketStepMs), simTimeMs(0), "mars");
     const loaded = reduceTradeEvent(initialCargoState(), composed);
     expect(composed.forwardRatePerTon).toBe(forwardQuotePerTon(TIER0_MARKET_CONFIG, 1_000, simTimeMs(9 * TIER0_MARKET_CONFIG.marketStepMs), simTimeMs(0), 50));
     expect(reduceTradeEvent(loaded, settlement("contracted", 4, composed.forwardRatePerTon))).toMatchObject({ credits: 10_000 - 3_000 + 4 * composed.forwardRatePerTon, contractedTons: 0 });
@@ -15,7 +15,7 @@ describe("cargo composition and settlement", () => {
 
   it("uses exact integer proceeds and rejects duplicate or repriced settlement", () => {
     const composition = composeCargo(TIER0_TRADE_CONFIG, TIER0_MARKET_CONFIG, marketInitialState(TIER0_MARKET_CONFIG),
-      { contractedTons: 0, spotTons: 3, spotDisposition: "sell-on-arrival" }, simTimeMs(0), simTimeMs(0));
+      { contractedTons: 0, spotTons: 3, spotDisposition: "sell-on-arrival" }, simTimeMs(0), simTimeMs(0), "mars");
     const loaded = reduceTradeEvent(initialCargoState(), composition);
     const sold = reduceTradeEvent(loaded, settlement("spot", 3, 1_234));
     expect(sold.credits).toBe(10_000 - 1_800 + 3_702);
@@ -27,5 +27,29 @@ describe("cargo composition and settlement", () => {
     for (const reason of ["not-arrived-or-docked", "no-cargo", "duplicate-sale"] as const) {
       expect(reduceTradeEvent(initialCargoState(), { type: "sellRefused", reason })).toEqual(initialCargoState());
     }
+  });
+
+  it("refuses contracted cargo for a plan outside the forward market, while allowing spot cargo", () => {
+    const compose = (contractedTons: number, spotTons: number) => composeCargo(
+      TIER0_TRADE_CONFIG, TIER0_MARKET_CONFIG, marketInitialState(TIER0_MARKET_CONFIG),
+      { contractedTons, spotTons, spotDisposition: "manual" }, simTimeMs(0), simTimeMs(0), "moon"
+    );
+    expect(() => compose(1, 0)).toThrow(CargoCompositionValidationError);
+    try {
+      compose(1, 0);
+    } catch (error) {
+      expect(error).toMatchObject({ reason: "forward-market-destination-mismatch" });
+    }
+    expect(compose(0, 1).composition).toMatchObject({ spotTons: 1 });
+  });
+
+  it("clamps every shorter forward quote to the configured minimum horizon and pins its live-config information bound", () => {
+    const atFloor = forwardQuotePerTon(TIER0_MARKET_CONFIG, TIER0_MARKET_CONFIG.maximumPrice,
+      simTimeMs(TIER0_MARKET_CONFIG.minimumQuoteHorizonSteps * TIER0_MARKET_CONFIG.marketStepMs), simTimeMs(0), 50);
+    for (let steps = 0; steps < TIER0_MARKET_CONFIG.minimumQuoteHorizonSteps; steps += 1) {
+      expect(forwardQuotePerTon(TIER0_MARKET_CONFIG, TIER0_MARKET_CONFIG.maximumPrice,
+        simTimeMs(steps * TIER0_MARKET_CONFIG.marketStepMs), simTimeMs(0), 50)).toBe(atFloor);
+    }
+    expect(forwardQuoteInformationBound(TIER0_MARKET_CONFIG)).toBeLessThanOrEqual(250);
   });
 });

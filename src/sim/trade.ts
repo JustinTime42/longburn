@@ -3,6 +3,17 @@ import type { MarketConfig, MarketState } from "./market.js";
 
 export type SpotDisposition = "manual" | "sell-on-arrival";
 export type SellRefusalReason = "not-arrived-or-docked" | "no-cargo" | "duplicate-sale";
+export type CargoCompositionRefusalReason = "forward-market-destination-mismatch";
+
+/** A typed local refusal. Invalid compositions are never appended to the event log. */
+export class CargoCompositionValidationError extends Error {
+  readonly reason: CargoCompositionRefusalReason;
+
+  constructor(reason: CargoCompositionRefusalReason, message: string) {
+    super(message);
+    this.reason = reason;
+  }
+}
 
 export interface TradeConfig {
   readonly originCostPerTon: number;
@@ -82,6 +93,12 @@ const coefficientPower = (coefficient: number, scale: number, steps: number): bi
   return result;
 };
 
+/** Largest price information a minimum quote horizon can carry, in whole credits. */
+export const forwardQuoteInformationBound = (market: MarketConfig): number => {
+  const power = coefficientPower(market.meanReversionCoefficient, market.fixedPointScale, market.minimumQuoteHorizonSteps);
+  return Number((BigInt(market.maximumPrice - market.meanPrice) * power) / BigInt(market.fixedPointScale));
+};
+
 /** Planner-side conditional expectation, quantized before it crosses into the sim. */
 export const forwardQuotePerTon = (
   market: MarketConfig,
@@ -93,7 +110,8 @@ export const forwardQuotePerTon = (
   safe(spotPrice, "Spot price");
   safe(spreadPerTon, "Forward spread");
   if (plannedArrivalAtMs < composedAtMs) throw new RangeError("Forward quote arrival cannot precede composition.");
-  const steps = Math.ceil((plannedArrivalAtMs - composedAtMs) / market.marketStepMs);
+  const plannedSteps = Math.ceil((plannedArrivalAtMs - composedAtMs) / market.marketStepMs);
+  const steps = Math.max(plannedSteps, market.minimumQuoteHorizonSteps);
   const power = coefficientPower(market.meanReversionCoefficient, market.fixedPointScale, steps);
   const expected = BigInt(market.meanPrice) + (BigInt(spotPrice - market.meanPrice) * power) / BigInt(market.fixedPointScale);
   const quote = expected - BigInt(spreadPerTon);
@@ -107,9 +125,13 @@ export const composeCargo = (
   marketState: MarketState,
   composition: CargoComposition,
   plannedArrivalAtMs: SimTimeMs,
-  composedAtMs: SimTimeMs
+  composedAtMs: SimTimeMs,
+  plannedDestination: MarketConfig["marketBodyId"]
 ): Extract<TradeEvent, { readonly type: "cargoComposed" }> => {
   const validated = validateComposition(composition);
+  if (validated.contractedTons > 0 && plannedDestination !== market.marketBodyId) {
+    throw new CargoCompositionValidationError("forward-market-destination-mismatch", "Forward cargo requires a flight plan to the forward market body.");
+  }
   const totalCost = product(validated.contractedTons + validated.spotTons, nonNegative(config.originCostPerTon, "Origin cost"), "Cargo purchase");
   return {
     type: "cargoComposed", composition: validated, originCostPerTon: config.originCostPerTon, totalCost,

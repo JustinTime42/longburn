@@ -167,9 +167,9 @@ export class AuthoritativeSimLoop {
         : ship.executedBurns.length === 0);
       if (!atHq) throw new RangeError("Cargo can be composed only while docked at HQ.");
       const lastNode = ship?.flightPlan.nodes.at(-1);
-      if (lastNode === undefined) throw new RangeError("Cargo composition requires an authoritative planned arrival.");
+      if (ship === undefined || lastNode === undefined) throw new RangeError("Cargo composition requires an authoritative planned arrival.");
       const plannedArrivalAtMs = simTimeMs(lastNode.executeAtMs + lastNode.burn.burnDurationMs);
-      const event = composeCargo(TIER0_TRADE_CONFIG, TIER0_MARKET_CONFIG, this.#reducer.state.market, composition, plannedArrivalAtMs, this.#reducer.time);
+      const event = composeCargo(TIER0_TRADE_CONFIG, TIER0_MARKET_CONFIG, this.#reducer.state.market, composition, plannedArrivalAtMs, this.#reducer.time, ship.flightPlan.destination);
       // Validate the exact reducer transition before durable append. A rejected
       // local action must never become an unreplayable persisted fact.
       reduceTradeEvent(this.#reducer.state.cargo, event);

@@ -18,6 +18,8 @@ export interface MarketConfig {
   readonly noiseCoefficient: number;
   readonly fixedPointScale: number;
   readonly marketStepMs: number;
+  /** Minimum market steps used by a forward quote, even for a shorter paper plan. */
+  readonly minimumQuoteHorizonSteps: number;
   /** Percentage threshold expressed as basis points, avoiding fractional prices. */
   readonly notificationThresholdBasisPoints: number;
 }
@@ -33,6 +35,7 @@ export const TIER0_MARKET_CONFIG: MarketConfig = {
   noiseCoefficient: 1_755_917,
   fixedPointScale: MARKET_FIXED_POINT_SCALE,
   marketStepMs: MARKET_STEP_MS,
+  minimumQuoteHorizonSteps: 480,
   notificationThresholdBasisPoints: 1_500
 };
 
@@ -80,6 +83,9 @@ export const assertMarketConfig = (config: MarketConfig): MarketConfig => {
   const b = assertSafeInteger(config.noiseCoefficient, "Market noise coefficient");
   if (b < 0) throw new RangeError("Market noise coefficient must be non-negative.");
   if (!Number.isSafeInteger(config.marketStepMs) || config.marketStepMs <= 0) throw new RangeError("Market cadence must be a positive safe integer.");
+  if (!Number.isSafeInteger(config.minimumQuoteHorizonSteps) || config.minimumQuoteHorizonSteps < 0) {
+    throw new RangeError("Market minimum quote horizon must be a non-negative safe integer.");
+  }
   if (!Number.isSafeInteger(config.notificationThresholdBasisPoints) || config.notificationThresholdBasisPoints <= 0 || config.notificationThresholdBasisPoints >= 10_000) {
     throw new RangeError("Market notification threshold must be between 1 and 9,999 basis points.");
   }
