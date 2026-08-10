@@ -63,6 +63,19 @@ Per trigger class (N1–N6): `push | email | in-app only | off`. Plus:
   2026-08-09, longburn-kqop: computed from HQ's knowledge-consistent paper
   projection, never the authoritative worldline, so the zero-lag warning
   leaks nothing; expired deadlines filtered; "burn executed" = burnStarted.)**
+  **(Short-horizon floor RULED — Overseer 2026-08-10, longburn-5kxx, Warden
+  din.7.4 f8): when the lead-time list yields zero warnings for a burn (the
+  last-revision instant is nearer than the shortest lead at scheduling time),
+  append exactly one floor warning at `max(now, deadline − shortest lead)`.
+  The agency mechanic never goes silent at short horizons.**
+- **Zero-subscription fallback (RULED — Overseer 2026-08-10, longburn-5kxx,
+  Warden din.7.4 f2): in-app, never email.** When a class's effective channel
+  is push and the player has zero registered push subscriptions, delivery
+  falls back to **in-app** — the wake survives on a surface the player never
+  refused, and no channel they didn't choose is drafted in (the auto-email
+  fallback stays rejected; a channel refusal is honoured even when it costs
+  the mechanic). The client shell (din.8) surfaces undelivered wakes;
+  onboarding prompts for push permission but never blocks on it.
 - Defaults are the table in §1; a fresh tester gets the designed experience
   without touching settings.
 

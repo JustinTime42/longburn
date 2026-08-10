@@ -165,19 +165,39 @@ lots:
   protected when spot crashes and locked out when spot spikes past the agreed
   rate (lock-in regret) — the forward converts price risk into opportunity
   cost plus a delivery obligation, it does not eliminate risk.
-  - **Re-planning vs the quote (Warden f8; T0 ruling flagged for the
-    Overseer's veto):** the plan is paper (pillar 2) and arrival may be
-    re-planned after composition. At T0 **the quoted rate stands regardless
-    of actual arrival time** — the desk honors it whenever delivery occurs.
-    The theoretical exploit (quote against a near arrival, then arrive when
-    spot is favorable) is nil at T0 tuning: at a 5-day half-life the arrival
-    distribution is essentially stationary, so quotes sit at ≈ μ − spread
-    with almost no timing information to game. Delivery windows,
-    quote-repricing on revision, and non-delivery penalties are market-genesis
-    design (longburn-yitm) — deferred there because the solo world has **no
-    counterparty to harm** (f8's correction: not because arrival is
-    "deterministic"; a player can re-plan or never arrive, which at T0 is
-    self-cheating).
+  - **Re-planning vs the quote (Warden f8; REOPENED by Warden din.6.4 r2 f1
+    with worked numbers; RULED by the Overseer 2026-08-10, longburn-gll3 —
+    the T0 fence below is in force):** the plan is paper (pillar 2) and
+    arrival may be re-planned after composition. At T0 **the quoted rate
+    stands regardless of actual arrival time** — the desk honors it whenever
+    delivery occurs. The earlier justification ("at a 5-day half-life the
+    arrival distribution is essentially stationary, so quotes carry almost no
+    timing information") was FALSE for a degenerate paper plan: at shipped
+    constants a throwaway 1-hour plan quoted ≈ spot − spread (a¹ ≈ 0.994),
+    and re-planning to the real transit afterwards converted the forward into
+    a guaranteed sale at today's spot — ≈ 1,880 cr/ton risk-free at spot
+    3,000, 7.5× §7's ~250 cr/ton safety bar. The T0 fence makes the
+    justification true by construction instead of by assumption:
+    1. **Destination check (typed refusal):** `composeCargo` refuses
+       contracted tonnage unless the flight plan's destination is the
+       forward's market body. A contract for delivery at a body requires a
+       plan that goes there.
+    2. **Quote-horizon floor (an information clamp, never a refusal):** the
+       quote exponent uses `N_q = max(N_planned, N_min)`, `N_min` config
+       (§7). Below the floor the quote is the near-stationary quote, so a
+       short-horizon plan carries no timing information worth re-planning
+       around. Default derivation: worst-case extractable timing information
+       is `(P_max − μ)·a^N_min`; setting it equal to the §7 bar gives
+       `4000·2^(−N_min/120) = 250 → N_min = 480` sim-hours (20 days). An
+       honest 3-week transit (504 h) sits above the floor and quotes
+       unchanged. A refusal-shaped floor was considered and rejected: it
+       would refuse honest fast transits outright, where the clamp only
+       denies them timing information.
+    Delivery windows, quote-repricing on revision, and non-delivery penalties
+    remain market-genesis design (longburn-yitm) — deferred there because the
+    solo world has **no counterparty to harm** (f8's correction stands: not
+    because arrival is "deterministic"; a player can re-plan or never arrive,
+    which at T0 is self-cheating).
 - **Spot tonnage**: owned outright, sold at the destination's then-current
   price (§ sell side below). Full exposure, full upside.
 
@@ -259,6 +279,12 @@ already computes for 2.4; no second light-time surface.
 7. **`deriveStream` fixtures (Warden r2 f4):** the RNG substream derivation is
    pinned by fixture tests (fixed worldSeed + streamId → pinned first draws),
    so stream assignment can never silently change across refactors.
+8. **Forward fence (longburn-gll3):** typed refusal when the plan's
+   destination is not the forward's market body; the floor clamp pinned
+   (quote at any `N < N_min` equals the quote at `N_min`); and the
+   extractable-information bound `(P_max − μ)·a^N_min ≤ 250` asserted **from
+   the live config**, so a din.11 retune of walls, half-life, or floor cannot
+   silently reopen the exploit.
 
 ## 7. Initial parameters (all retunable config; product-tuning pass before din.11)
 
@@ -270,6 +296,7 @@ already computes for 2.4; no second light-time surface.
 | θ (reversion) | half-life ≈ 5 days | slow enough that mid-transit news matters |
 | σ_stat (stationary std) | 250 cr | the config-facing σ (Warden f9: §2's σ_diff derives from it, `σ_diff = σ_stat·sqrt(2θ)`; per-step `σ_step = σ_stat·sqrt(1 − e^{−2θΔt})` ≈ 27 cr/hour-step at these defaults). din.11 tuning note: at a 5-day half-life a 3-week transit is ≈ 4.2 half-lives, so arrival is essentially stationary and forward quotes ≈ μ − spread on nearly every run — the hedge is a pure risk-appetite dial, not a market read. **Lengthening the half-life requires quote-repricing-on-revision to land FIRST** (Warden r2 f3: at a 30-day half-life, quote-then-replan-to-a-far-arrival extracts ≈250 cr/ton risk-free under the rate-stands ruling — the T0 ruling is safe only at near-stationary tuning). |
 | Step | 1 sim-hour | |
+| N_min (quote-horizon floor) | 480 sim-hours (20 days) | gll3 fence: chosen so `(P_max−μ)·a^N_min` equals the ~250 cr/ton bar exactly at these walls and half-life; retune together with the walls and θ, and §6 test 8 asserts the bound from live config |
 | Origin cost | 600 cr/ton | buys must be beatable but lose-able |
 | Starting capital | 10 000 cr | |
 | Notify threshold | ±15% from last notified | |
