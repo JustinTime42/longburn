@@ -203,7 +203,14 @@ lots:
 
 This is not a financial slider: both lots are loaded mass, so carrying a spare
 speculative ton costs real delta-v and transit time — **optionality has a fuel
-price** (pillar 1). Settlement is physical delivery only; no cash-settled
+price** (pillar 1). **Mass accounting (su0j, Mayor decision 2026-08-10 under
+Overseer delegation; governing memo
+`docs/design/cargo-capital-tuning-v0.1.md`):** composed tonnage is mass inside
+the fixed 1,000 t departure wet mass and displaces propellant (propellant
+budget = wet − structure − cargo); the delta-v ceiling is derived
+planner-side at composition, quantized, and persisted as the authoritative
+commitment input (SO 16). Total composed tonnage above the hold capacity (§7)
+is a typed refusal. Settlement is physical delivery only; no cash-settled
 instruments exist at any tier (anti-degenerate-finance guardrail, recorded for
 market genesis as well). din.10 records the chosen composition per transit —
 revealed risk appetite is a first-class measurement of the live run, and the
@@ -297,8 +304,9 @@ already computes for 2.4; no second light-time surface.
 | σ_stat (stationary std) | 250 cr | the config-facing σ (Warden f9: §2's σ_diff derives from it, `σ_diff = σ_stat·sqrt(2θ)`; per-step `σ_step = σ_stat·sqrt(1 − e^{−2θΔt})` ≈ 27 cr/hour-step at these defaults). din.11 tuning note: at a 5-day half-life a 3-week transit is ≈ 4.2 half-lives, so arrival is essentially stationary and forward quotes ≈ μ − spread on nearly every run — the hedge is a pure risk-appetite dial, not a market read. **Lengthening the half-life requires quote-repricing-on-revision to land FIRST** (Warden r2 f3: at a 30-day half-life, quote-then-replan-to-a-far-arrival extracts ≈250 cr/ton risk-free under the rate-stands ruling — the T0 ruling is safe only at near-stationary tuning). |
 | Step | 1 sim-hour | |
 | N_min (quote-horizon floor) | 480 sim-hours (20 days) | gll3 fence: chosen so `(P_max−μ)·a^N_min` equals the ~250 cr/ton bar exactly at these walls and half-life; retune together with the walls and θ, and §6 test 8 asserts the bound from live config |
-| Origin cost | 600 cr/ton | buys must be beatable but lose-able |
-| Starting capital | 10 000 cr | |
+| Origin cost | 600 cr/ton | buys must be beatable but lose-able (P_min=200 caps the worst sale; origin must sit well above it — do not retune below ~500 without revisiting the loss floor) |
+| Starting capital | 200 000 cr | su0j (was 10 000, which priced the mass coupling out of play): an all-in load is 333 t ≈ 1.0× capital, the games-research tension band; derivation in `docs/design/cargo-capital-tuning-v0.1.md` |
+| Cargo hold capacity | 600 t | su0j: 1.8× starting capital to fill; binding constraint flips with geometry (hold binds close, propellant binds far) |
 | Notify threshold | ±15% from last notified | |
 
 ## 8. Questions — all resolved by the Overseer, 2026-08-08
