@@ -61,6 +61,16 @@ simTimeTargetMs(wallMs) = (wallMs − anchorWallClockMs) × rateK
   code, same event ordering as live operation. There is no separate
   "catch-up mode" in the sim; only the host's pacing differs (as fast as it
   can, instead of paced to wall time).
+- **Fixed-quantum advancement, both paths (made explicit 2026-08-10 by the
+  Mayor after Warden 9j0 r1 B1 — the §4.1 gate wording and §5 already
+  implied it):** sim time advances only in whole `intervalMs` quanta.
+  `steps = floor((target − persisted) / intervalMs)`; each advance is
+  exactly `intervalMs`; the sub-quantum remainder is carried, never
+  appended. This holds identically for live ticks and catch-up — a live
+  tick never hands a variable-size elapsed to the loop, and a catch-up
+  never emits a short remainder step. This is what makes §5 true: restart
+  instants and host timer jitter are both invisible in the durable log
+  because the log only ever contains whole quanta.
 - **Monotonicity guard:** if the target ever computes *behind* persisted sim
   time (host clock stepped backwards — NTP correction, operator error), the
   driver holds sim time still, emits an `incident` event with both readings,
