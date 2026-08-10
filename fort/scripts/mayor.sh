@@ -2,15 +2,13 @@
 # Talk to the Mayor. Usage: fort/scripts/mayor.sh  (add an alias: alias mayor-longburn='~/dev/longburn/fort/scripts/mayor.sh')
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || echo /home/justin/dev/longburn)"
 cd "$REPO" || exit 1
-# In-sandbox launch refusal (longburn-5v4): an unattended or read-only seat's
-# session must never launch a seat. The marker names the mask we are inside;
-# only an unmasked shell (or, harmlessly, the Mayor's own) proceeds.
-case "${FORT_MASKED:-}" in
-  ""|mayor) ;;
-  *)
-    echo "mayor.sh: REFUSED — running inside the '$FORT_MASKED' seat mask; launchers are the harness's lane (longburn-5v4)" >&2
-    exit 77 ;;
-esac
+# In-sandbox launch refusal (longburn-5v4, amended on the Mayor's finding):
+# no seat launches another Mayor — any marker at all, including the Mayor's
+# own and the legacy '1', refuses. Only an unmasked shell launches this.
+if [ -n "${FORT_MASKED:-}" ]; then
+  echo "mayor.sh: REFUSED — already inside the '$FORT_MASKED' seat mask; no seat launches another Mayor (longburn-5v4)" >&2
+  exit 77
+fi
 fort/scripts/emit.sh session.start "The Overseer summons Vardis" -a vardis -s mayor 2>/dev/null || true
 trap 'fort/scripts/emit.sh session.end "Vardis'\''s audience with the Overseer ends" -a vardis -s mayor 2>/dev/null || true' EXIT
 # Kernel mask layer (civilization cycle 4). Permission rules bind a SPELLING,

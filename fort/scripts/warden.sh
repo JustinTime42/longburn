@@ -29,11 +29,16 @@
 set -euo pipefail
 
 # In-sandbox launch refusal (longburn-5v4): only the attended Mayor's dispatch
-# lane (longburn-1p9) may launch seats from within a mask.
+# lane (longburn-1p9) may launch seats from within a mask — in this fort the
+# Mayor IS the harness that drives the mill. '1' is the LEGACY Mayor marker:
+# pre-edict-8 mayor.sh exported the boolean form, launcher edits bind at
+# dispatch, and only mayor.sh ever exported it — so a live session carrying
+# '1' can only be a Mayor. Retire the alternate once no pre-2026-08-09 Mayor
+# sessions remain.
 case "${FORT_MASKED:-}" in
-  ""|mayor) ;;
+  ""|mayor|1) ;;
   *)
-    echo "warden.sh: REFUSED — running inside the '$FORT_MASKED' seat mask; launchers are the harness's lane (longburn-5v4)" >&2
+    echo "warden.sh: REFUSED — running inside the '$FORT_MASKED' seat mask; launchers are the lane of the harness (the Mayor, or the Overseer's shell) (longburn-5v4)" >&2
     exit 77 ;;
 esac
 
