@@ -23,8 +23,8 @@ export type ShipReportPayload =
 export type CommandOutcomeReportPayload =
   | { readonly outcome: "applied"; readonly commandId: string }
   | { readonly outcome: "refused"; readonly commandId: string; readonly reason: PlanRevisionRefusalReason }
-  | { readonly outcome: "cargo-sold"; readonly lot: "contracted" | "spot"; readonly tons: number; readonly proceeds: number }
-  | { readonly outcome: "sell-refused"; readonly reason: SellRefusalReason };
+  | { readonly outcome: "cargo-sold"; readonly lot: "contracted" | "spot"; readonly tons: number; readonly proceeds: number; readonly commandId?: string }
+  | { readonly outcome: "sell-refused"; readonly reason: SellRefusalReason; readonly commandId?: string };
 
 export interface CommandEchoPayload {
   readonly commandId: string;
@@ -142,10 +142,12 @@ const commandOutcomePayload = (payload: unknown): CommandOutcomeReportPayload =>
   }
   if (outcome.outcome === "cargo-sold" && (outcome.lot === "contracted" || outcome.lot === "spot") &&
     isSafeInteger(outcome.tons) && outcome.tons > 0 && isSafeInteger(outcome.proceeds) && outcome.proceeds >= 0) {
-    return { outcome: outcome.outcome, lot: outcome.lot, tons: outcome.tons, proceeds: outcome.proceeds };
+    if (outcome.commandId !== undefined && !isNonEmptyString(outcome.commandId)) throw new RangeError("Cargo-sale outcomes require a non-empty command ID when supplied.");
+    return { outcome: outcome.outcome, lot: outcome.lot, tons: outcome.tons, proceeds: outcome.proceeds, ...(outcome.commandId === undefined ? {} : { commandId: outcome.commandId }) };
   }
   if (outcome.outcome === "sell-refused" && (outcome.reason === "not-arrived-or-docked" || outcome.reason === "no-cargo" || outcome.reason === "duplicate-sale")) {
-    return { outcome: outcome.outcome, reason: outcome.reason };
+    if (outcome.commandId !== undefined && !isNonEmptyString(outcome.commandId)) throw new RangeError("Sell-refusal outcomes require a non-empty command ID when supplied.");
+    return { outcome: outcome.outcome, reason: outcome.reason, ...(outcome.commandId === undefined ? {} : { commandId: outcome.commandId }) };
   }
   throw new RangeError("Command outcome reports require a catalog outcome payload.");
 };

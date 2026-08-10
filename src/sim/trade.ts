@@ -37,8 +37,9 @@ export const initialCargoState = (config: TradeConfig = TIER0_TRADE_CONFIG): Car
 
 export type TradeEvent =
   | { readonly type: "cargoComposed"; readonly composition: CargoComposition; readonly originCostPerTon: number; readonly totalCost: number; readonly forwardRatePerTon: number }
-  | { readonly type: "cargoSold"; readonly lot: "contracted" | "spot"; readonly tons: number; readonly pricePerTon: number; readonly proceeds: number }
-  | { readonly type: "sellRefused"; readonly reason: SellRefusalReason };
+  | { readonly type: "cargoSold"; readonly lot: "contracted" | "spot"; readonly tons: number; readonly pricePerTon: number; readonly proceeds: number; readonly commandId?: string }
+  | { readonly type: "sellRefused"; readonly reason: SellRefusalReason; readonly commandId?: string }
+  | { readonly type: "spotDispositionRevised"; readonly spotDisposition: SpotDisposition; readonly commandId: string };
 
 const safe = (value: number, label: string): number => {
   if (!Number.isSafeInteger(value)) throw new RangeError(`${label} must be a safe integer.`);
@@ -141,8 +142,14 @@ export const reduceTradeEvent = (state: CargoState, event: TradeEvent): CargoSta
     case "sellRefused":
       if (event.reason !== "not-arrived-or-docked" && event.reason !== "no-cargo" && event.reason !== "duplicate-sale") throw new RangeError("Sell refusal requires a known reason.");
       return state;
+    case "spotDispositionRevised":
+      if (event.commandId.length === 0 || (event.spotDisposition !== "manual" && event.spotDisposition !== "sell-on-arrival")) {
+        throw new RangeError("Spot disposition revisions require a command ID and known disposition.");
+      }
+      if (state.spotTons === 0) throw new RangeError("Spot disposition requires loaded spot cargo.");
+      return { ...state, spotDisposition: event.spotDisposition };
   }
 };
 
-export const settlement = (lot: "contracted" | "spot", tons: number, pricePerTon: number): Extract<TradeEvent, { readonly type: "cargoSold" }> =>
-  ({ type: "cargoSold", lot, tons, pricePerTon, proceeds: product(nonNegative(tons, "Sold tons"), nonNegative(pricePerTon, "Sale price"), "Cargo proceeds") });
+export const settlement = (lot: "contracted" | "spot", tons: number, pricePerTon: number, commandId?: string): Extract<TradeEvent, { readonly type: "cargoSold" }> =>
+  ({ type: "cargoSold", lot, tons, pricePerTon, proceeds: product(nonNegative(tons, "Sold tons"), nonNegative(pricePerTon, "Sale price"), "Cargo proceeds"), ...(commandId === undefined ? {} : { commandId }) });

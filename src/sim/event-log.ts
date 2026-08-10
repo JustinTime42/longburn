@@ -100,8 +100,19 @@ export type SimEvent =
     readonly arrivalAtMs: SimTimeMs;
     readonly hqPosition: PositionMeters;
     readonly arrivalPosition: PositionMeters;
+    readonly commandKind?: "plan-revision";
     readonly replacedNodeIds: readonly string[];
     readonly flightPlan: FlightPlan;
+  }
+  | {
+    readonly type: "commandIssued";
+    readonly commandId: string;
+    readonly issuedAtMs: SimTimeMs;
+    readonly arrivalAtMs: SimTimeMs;
+    readonly hqPosition: PositionMeters;
+    readonly arrivalPosition: PositionMeters;
+    readonly commandKind: "sell-order" | "spot-disposition-revision";
+    readonly spotDisposition?: "manual" | "sell-on-arrival";
   }
   | { readonly type: "planRevisionApplied"; readonly flightPlan: FlightPlan; readonly commandId: string; readonly replacedNodeIds?: readonly string[] }
   | { readonly type: "planRevisionRefused"; readonly flightPlan: FlightPlan; readonly reason: PlanRevisionRefusalReason; readonly commandId: string }
@@ -318,6 +329,9 @@ export class SimEventReducer {
           throw new RangeError("Issued commands require a non-empty identity and a non-past arrival time.");
         }
         assertInboundCausalityInvariant(event.issuedAtMs, event.arrivalAtMs, event.hqPosition, event.arrivalPosition);
+        if (event.commandKind === "spot-disposition-revision" && event.spotDisposition !== "manual" && event.spotDisposition !== "sell-on-arrival") {
+          throw new RangeError("Spot-disposition commands require a known disposition.");
+        }
         return;
       case "planRevisionRefused":
         if (event.commandId.length === 0) throw new RangeError("Plan revision outcomes require a non-empty command ID.");
@@ -357,6 +371,7 @@ export class SimEventReducer {
       case "cargoComposed":
       case "cargoSold":
       case "sellRefused":
+      case "spotDispositionRevised":
         this.#cargo = reduceTradeEvent(this.#cargo, event);
         return;
     }

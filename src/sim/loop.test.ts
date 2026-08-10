@@ -5,6 +5,8 @@ import { simTimeMs } from "./clock.js";
 import { InMemorySimulationEventStore } from "./event-store.js";
 import { replayPersistedSegment } from "./event-log.js";
 import { AuthoritativeSimLoop, AuthoritativeSimLoopConflictError } from "./loop.js";
+import { burnDurationMs } from "./mass-cargo.js";
+import { TIER0_MARKET_CONFIG } from "./market.js";
 
 const actionArbitrary = fc.oneof(
   fc.record({ kind: fc.constant<"advance">("advance"), elapsedMs: fc.integer({ min: 0, max: 10_000 }) }),
@@ -14,6 +16,76 @@ const actionArbitrary = fc.oneof(
 const eventPosition = { x: 0, y: 0, z: 0 };
 
 describe("authoritative simulation loop", () => {
+  const dock = { positionMeters: { x: 149_597_870_700, y: 0, z: 0 }, velocityMmPerSecond: { x: 0, y: 29_780_000, z: 0 } };
+  const marketPosition = { x: 9, y: 8, z: 7 };
+  const arrivalPlan = (destination: "earth" | "moon" | "mars", at = 2) => ({
+    destination,
+    nodes: [{ nodeId: `arrive-${destination}-${at}`, executeAtMs: simTimeMs(at - 1), kind: "decel" as const,
+      burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }]
+  });
+  const tradeLoop = async (id: string) => AuthoritativeSimLoop.create({
+    store: new InMemorySimulationEventStore(), stream: { id, seed: 7, initialTime: simTimeMs(0) },
+    departureStateAt: (time) => ({ departureAtMs: time, ...dock }),
+    destinationStateAt: () => dock,
+    marketPositionAt: () => marketPosition
+  });
+
+  it("binds composition to Earth HQ, derives its quote horizon, and never appends an invalid purchase", async () => {
+    const loop = await tradeLoop("trade-hq-and-append");
+    await loop.applyPlanRevision(arrivalPlan("mars", 2), () => dock.positionMeters);
+    await loop.composeCargo({ contractedTons: 0, spotTons: 1, spotDisposition: "manual" }, () => dock.positionMeters);
+    const composed = (await loop.persistedStream()).events.find(({ event }) => event.type === "cargoComposed");
+    expect(composed?.event).toMatchObject({ type: "cargoComposed" });
+    if (composed?.event.type !== "cargoComposed") throw new Error("Expected composition.");
+    // The only horizon accepted by the loop is its final planned burn boundary (2 ms).
+    expect(composed.event.forwardRatePerTon).toBeGreaterThan(0);
+    const beforeFailures = (await loop.persistedStream()).events.length;
+    await expect(loop.composeCargo({ contractedTons: 17, spotTons: 0, spotDisposition: "manual" }, () => dock.positionMeters)).rejects.toThrow("unfunded purchase");
+    await expect(loop.composeCargo({ contractedTons: 0, spotTons: 1, spotDisposition: "manual" }, () => dock.positionMeters)).rejects.toThrow("must be settled");
+    expect((await loop.persistedStream()).events).toHaveLength(beforeFailures);
+    await loop.advance(2, () => dock.positionMeters);
+    await expect(loop.composeCargo({ contractedTons: 0, spotTons: 1, spotDisposition: "manual" }, () => dock.positionMeters)).rejects.toThrow("docked at HQ");
+  });
+
+  it("does not settle cargo at a non-market arrival body", async () => {
+    const loop = await tradeLoop("trade-moon-no-settlement");
+    await loop.applyPlanRevision(arrivalPlan("moon"), () => dock.positionMeters);
+    await loop.composeCargo({ contractedTons: 2, spotTons: 3, spotDisposition: "sell-on-arrival" }, () => dock.positionMeters);
+    await loop.advance(2, () => dock.positionMeters);
+    expect(loop.state.cargo).toMatchObject({ contractedTons: 2, spotTons: 3 });
+    expect((await loop.persistedStream()).events.some(({ event }) => event.type === "cargoSold")).toBe(false);
+  });
+
+  it("executes a sell command at the market arrival instant, not its issue price", async () => {
+    const loop = await tradeLoop("trade-command-arrival-price");
+    const arrivalAt = TIER0_MARKET_CONFIG.marketStepMs;
+    await loop.applyPlanRevision(arrivalPlan("mars", arrivalAt), () => dock.positionMeters);
+    await loop.composeCargo({ contractedTons: 0, spotTons: 2, spotDisposition: "manual" }, () => dock.positionMeters);
+    await loop.advance(arrivalAt - 2_000, () => dock.positionMeters);
+    const issuePrice = loop.state.market.price;
+    await loop.scheduleInboundSellOrder(
+      (issuedAt) => simTimeMs(issuedAt + 2_000), () => ({ x: 0, y: 0, z: 0 }), () => ({ x: 1, y: 0, z: 0 })
+    );
+    await loop.advance(2_000, () => dock.positionMeters);
+    const sold = (await loop.persistedStream()).events.find(({ event }) => event.type === "cargoSold")!;
+    expect(sold.event).toMatchObject({ type: "cargoSold", lot: "spot" });
+    if (sold.event.type !== "cargoSold") throw new Error("Expected spot settlement.");
+    expect(sold.event.commandId).toMatch(/^command-/);
+    expect(sold.event.pricePerTon).toBe(loop.state.market.price);
+    expect(sold.event.pricePerTon).not.toBe(issuePrice);
+    expect(sold.eventPosition).toEqual(marketPosition);
+  });
+
+  it("records typed sell refusals and en-route disposition revisions through commandIssued", async () => {
+    const loop = await tradeLoop("trade-command-refusals");
+    await loop.scheduleInboundSellOrder((at) => at, () => ({ x: 0, y: 0, z: 0 }), () => ({ x: 0, y: 0, z: 0 }));
+    expect((await loop.persistedStream()).events.map(({ event }) => event.type)).toEqual(["commandIssued", "sellRefused"]);
+    await loop.applyPlanRevision(arrivalPlan("mars", 10), () => dock.positionMeters);
+    await loop.composeCargo({ contractedTons: 0, spotTons: 1, spotDisposition: "manual" }, () => dock.positionMeters);
+    await loop.scheduleInboundSpotDispositionRevision("sell-on-arrival", (at) => at, () => ({ x: 0, y: 0, z: 0 }), () => ({ x: 0, y: 0, z: 0 }));
+    expect(loop.state.cargo.spotDisposition).toBe("sell-on-arrival");
+    expect((await loop.persistedStream()).events.some(({ event }) => event.type === "spotDispositionRevised")).toBe(true);
+  });
   it("persists append-only provenance and resumes to the same state", async () => {
     const store = new InMemorySimulationEventStore();
     const loop = await AuthoritativeSimLoop.create({

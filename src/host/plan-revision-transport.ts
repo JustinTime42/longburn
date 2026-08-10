@@ -3,6 +3,7 @@ import { simTimeMs, type SimTimeMs } from "../sim/clock.js";
 import { hqPositionAt } from "../sim/headquarters.js";
 import type { UtDaysSinceJ2000 } from "../sim/ephemerides.js";
 import type { FlightPlan } from "../sim/event-log.js";
+import type { SpotDisposition } from "../sim/trade.js";
 
 export interface InboundPlanRevisionLoop {
   readonly state: { readonly time: SimTimeMs };
@@ -13,6 +14,17 @@ export interface InboundPlanRevisionLoop {
     arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
   ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }>;
   shipPositionAt?(timeMs: number): PositionMeters;
+  scheduleInboundSellOrder?(
+    arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
+    hqPositionAt: (issuedAtMs: SimTimeMs) => PositionMeters,
+    arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
+  ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }>;
+  scheduleInboundSpotDispositionRevision?(
+    spotDisposition: SpotDisposition,
+    arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
+    hqPositionAt: (issuedAtMs: SimTimeMs) => PositionMeters,
+    arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
+  ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }>;
 }
 
 export interface PlanRevisionTransportOptions {
@@ -52,6 +64,27 @@ export class PlanRevisionTransport {
       this.#hqPositionAt,
       (arrivalAtMs) => this.#shipPositionAt(arrivalAtMs)
     );
+  }
+
+  issueSellOrder(): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }> {
+    if (this.#loop.scheduleInboundSellOrder === undefined) throw new Error("Trade command transport requires sell-order support from the loop.");
+    return this.#loop.scheduleInboundSellOrder(
+      (issuedAtMs) => this.#arrivalTimeForIssue(issuedAtMs), this.#hqPositionAt, (arrivalAtMs) => this.#shipPositionAt(arrivalAtMs)
+    );
+  }
+
+  reviseSpotDisposition(spotDisposition: SpotDisposition): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }> {
+    if (this.#loop.scheduleInboundSpotDispositionRevision === undefined) throw new Error("Trade command transport requires disposition-revision support from the loop.");
+    return this.#loop.scheduleInboundSpotDispositionRevision(
+      spotDisposition, (issuedAtMs) => this.#arrivalTimeForIssue(issuedAtMs), this.#hqPositionAt, (arrivalAtMs) => this.#shipPositionAt(arrivalAtMs)
+    );
+  }
+
+  #arrivalTimeForIssue(issuedAtMs: SimTimeMs): SimTimeMs {
+    return simTimeMs(earliestLegalEmissionTimeMs({
+      eventTime: issuedAtMs, emissionTime: issuedAtMs,
+      eventPosition: this.#hqPositionAt(issuedAtMs), observerPositionAt: this.#shipPositionAt
+    }));
   }
 }
 
