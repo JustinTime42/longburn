@@ -34,6 +34,17 @@ export type NotificationMoment =
   }
   | {
     readonly id: string;
+    readonly kind: "marketEventOccurred";
+    readonly commodityId: string;
+    readonly price: number;
+    readonly eventKind: "surge" | "crash";
+    readonly referencePrice: number;
+    readonly deliverAtMs: SimTimeMs;
+    readonly sourceGlobalPosition: number;
+    readonly eventTimeMs: SimTimeMs;
+  }
+  | {
+    readonly id: string;
     readonly kind: "transferWindowOpened";
     readonly windowId: string;
     readonly deliverAtMs: SimTimeMs;
@@ -111,6 +122,12 @@ export const deriveReportNotifications = (
       return [{ id: storedId(stored, "revisionRefused"), kind: "revisionRefused" as const, commandId: event.event.commandId, deliverAtMs: deliverAtMs(), sourceGlobalPosition: event.globalPosition, eventTimeMs: event.eventTime }];
     case "arrivalRecorded":
       return [{ id: storedId(stored, "arrival"), kind: "arrival" as const, destination: event.event.arrivalState.destination, deliverAtMs: deliverAtMs(), sourceGlobalPosition: event.globalPosition, eventTimeMs: event.eventTime }];
+    case "marketEventOccurred":
+      return [{
+        id: storedId(stored, "marketEventOccurred"), kind: "marketEventOccurred" as const,
+        commodityId: event.event.commodityId, price: event.event.price, eventKind: event.event.kind,
+        referencePrice: event.event.referencePrice, deliverAtMs: deliverAtMs(), sourceGlobalPosition: event.globalPosition, eventTimeMs: event.eventTime
+      }];
     default:
       return [];
   }

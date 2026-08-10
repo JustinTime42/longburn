@@ -5,8 +5,9 @@ import { simTimeMs } from "./clock.js";
 import { InMemorySimulationEventStore } from "./event-store.js";
 import { utDaysSinceJ2000 } from "./ephemerides.js";
 import { burnDurationMs } from "./mass-cargo.js";
-import { createTier0AuthoritativeSimLoop } from "./tier0-worldline.js";
+import { createTier0AuthoritativeSimLoop, resumeTier0AuthoritativeSimLoop } from "./tier0-worldline.js";
 import { AuthoritativeSimLoop } from "./loop.js";
+import { TIER0_MARKET_CONFIG } from "./market.js";
 
 describe("Tier 0 live worldline composition", () => {
   it("stamps Earth departure and does not treat an empty mid-transit plan as arrival", async () => {
@@ -68,5 +69,16 @@ describe("Tier 0 live worldline composition", () => {
     const departures = (await loop.persistedStream()).events.filter(({ event }) => event.type === "departureRecorded");
     expect(departures).toHaveLength(2);
     expect(departures[1]).toMatchObject({ eventTime: 3, event: { departureState: { departureAtMs: 3 } } });
+  });
+
+  it("wires the market resolver on both live creation and resume", async () => {
+    const store = new InMemorySimulationEventStore();
+    const epoch = utDaysSinceJ2000(9_496.5);
+    const loop = await createTier0AuthoritativeSimLoop({ id: "tier0-market", seed: 1, initialTime: simTimeMs(0) }, store, epoch);
+    await loop.advance(TIER0_MARKET_CONFIG.marketStepMs, () => ({ x: 0, y: 0, z: 0 }));
+    expect((await loop.persistedStream()).events.some(({ event }) => event.type === "marketQuoteUpdated")).toBe(true);
+
+    const resumed = await resumeTier0AuthoritativeSimLoop(store, "tier0-market", epoch);
+    await expect(resumed.advance(TIER0_MARKET_CONFIG.marketStepMs, () => ({ x: 0, y: 0, z: 0 }))).resolves.toBe(2 * TIER0_MARKET_CONFIG.marketStepMs);
   });
 });

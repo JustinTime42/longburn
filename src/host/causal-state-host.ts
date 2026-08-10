@@ -70,12 +70,13 @@ export const projectStoredEvent = (
           payload: { outcome: "refused" as const, commandId: stored.event.event.commandId, reason: stored.event.event.reason },
           observerPositionAt
         };
+      case "marketQuoteUpdated":
+      case "marketEventOccurred":
+        // F3: Both durable market variants are class 2.4 and use the same
+        // stored-position causal gate and per-message ledger as ship reports.
+        return { ...base, class: "marketEvent" as const, payload: stored.event.event, observerPositionAt };
       case "clockAdvanced":
       case "randomValueRequested":
-      case "marketQuoteUpdated":
-        // F2 persists market facts; F3 owns their catalog class 2.4 projection.
-        return undefined;
-      case "marketEventOccurred":
         return undefined;
       default: {
         const unhandled: never = stored.event.event;
