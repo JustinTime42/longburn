@@ -18,7 +18,7 @@ export interface CausalStateHostOptions extends CausalEgressHooks {
   readonly observerPositionAt: ObserverPositionAt;
   /** Captured only while the observer-bound egress subscription is created. */
   readonly socket: WebSocketStateConnection;
-  readonly incrementBelowCursorSuppression: () => void;
+  readonly incrementDeliveryIntegrityCounter: () => void;
 }
 
 const storedEnvelope = (observerId: string, stored: StoredEventForEmission): Omit<BuildEmittedMessage, "class" | "payload" | "emissionTimeMs" | "observerPositionAt"> => ({
@@ -114,7 +114,7 @@ export class CausalStateHost {
    */
   readonly #reportedProjectionFailures = new Set<number | string>();
 
-  constructor({ cursors, observerId, observerPositionAt, socket, recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression }: CausalStateHostOptions) {
+  constructor({ cursors, observerId, observerPositionAt, socket, recordIncident, incrementCausalityFailure, incrementDeliveryIntegrityCounter }: CausalStateHostOptions) {
     const egress = new CausalStateEgress({ recordIncident, incrementCausalityFailure });
     const subscription = egress.subscribe(observerId, socket);
     this.#observerId = observerId;
@@ -131,10 +131,16 @@ export class CausalStateHost {
       },
       recordIncident,
       incrementCausalityFailure,
-      incrementBelowCursorSuppression
+      incrementDeliveryIntegrityCounter
     });
   }
 
+  /**
+   * Runs a durable stored-event projection for this observer. The scheduler
+   * assigns a sequence durably on first sight, so later projections may be
+   * incomplete, gapped, reordered, or include a backfill without renumbering
+   * or suppressing a light-lagged message.
+   */
   async run(now: SimTimeMs, storedEvents: readonly StoredEventForEmission[]): Promise<SchedulerRunResult> {
     const scheduled: ScheduledEmission[] = [];
     const blocked: string[] = [];

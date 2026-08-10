@@ -1,6 +1,6 @@
 import { CausalityInvariantViolation, earliestLegalEmissionTimeMs, type CausalityIncident, type EmissionResult } from "./causality.js";
 import type { SimTimeMs } from "./clock.js";
-import { hasAcknowledged, type DeliveryAcknowledgement, type DeliveryCursorStore } from "./delivery-cursor.js";
+import { hasAcknowledged, type DeliveryAssignment, type DeliveryCursorStore } from "./delivery-cursor.js";
 import { buildEmittedMessage, type BuildEmittedMessage, type EmissionCandidate } from "./emitted-message.js";
 
 export type LightLaggedMessageClass = "shipReport" | "commandOutcomeReport" | "marketEvent";
@@ -16,7 +16,9 @@ export interface ScheduledEmission {
 
 /**
  * Dependencies for one scheduler writer. The host must serialize `run` calls
- * per observer; acknowledgement persistence is not a transport lock.
+ * per observer; acknowledgement persistence is not a transport lock. Each
+ * light-lagged message receives an immutable observer-local delivery sequence
+ * the first time this scheduler sees it, independent of later batch shape.
  */
 export interface EmissionSchedulerOptions {
   readonly cursors: DeliveryCursorStore;
@@ -25,8 +27,8 @@ export interface EmissionSchedulerOptions {
   /** Scheduler-side failures happen before the gate, but are equally closed. */
   readonly recordIncident: (incident: CausalityIncident) => void;
   readonly incrementCausalityFailure: () => void;
-  /** Records every light-lagged emission suppressed by an acknowledgement. */
-  readonly incrementBelowCursorSuppression: () => void;
+  /** Records every light-lagged emission suppressed by the delivery ledger. */
+  readonly incrementDeliveryIntegrityCounter: () => void;
 }
 
 export interface SchedulerRunResult {
@@ -55,21 +57,23 @@ export class EmissionScheduler {
   readonly #emit: (candidate: EmissionCandidate) => Promise<EmissionResult>;
   readonly #recordIncident: (incident: CausalityIncident) => void;
   readonly #incrementCausalityFailure: () => void;
-  readonly #incrementBelowCursorSuppression: () => void;
+  readonly #incrementDeliveryIntegrityCounter: () => void;
 
-  constructor({ cursors, emit, recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression }: EmissionSchedulerOptions) {
+  constructor({ cursors, emit, recordIncident, incrementCausalityFailure, incrementDeliveryIntegrityCounter }: EmissionSchedulerOptions) {
     this.#cursors = cursors;
     this.#emit = emit;
     this.#recordIncident = recordIncident;
     this.#incrementCausalityFailure = incrementCausalityFailure;
-    this.#incrementBelowCursorSuppression = incrementBelowCursorSuppression;
+    this.#incrementDeliveryIntegrityCounter = incrementDeliveryIntegrityCounter;
   }
 
   /**
    * Runs one serialized delivery pass for an observer.
    *
-   * The caller must supply every unacknowledged light-lagged emission for the
-   * observer on every pass. Presentation order is not a delivery dependency:
+   * A light-lagged candidate receives a durable per-observer sequence when it
+   * is first projected. Later passes look up that fact, so incomplete, gapped,
+   * reordered, or backfilled projections cannot renumber or suppress it.
+   * Presentation order is not a delivery dependency:
    * each event is independently released at its own earliest legal tick. When
    * two are first releasable on the same tick, globalPosition breaks the tie.
    * Re-presenting an acknowledged message increments the delivery-integrity
@@ -82,7 +86,7 @@ export class EmissionScheduler {
       if (emission.message.observerId !== observerId) throw new RangeError("Scheduled emission observer does not match scheduler observer.");
       if (isLightLaggedMessageClass(emission.message.class)) {
         if (lightLaggedPositions.has(emission.sourceGlobalPosition)) {
-          throw new RangeError("One stored event cannot advance a delivery cursor more than once.");
+          throw new RangeError("One scheduled light-lagged message cannot share a delivery sequence.");
         }
         lightLaggedPositions.add(emission.sourceGlobalPosition);
       }
@@ -107,20 +111,31 @@ export class EmissionScheduler {
           : { reason: "invalid-position" as const, provenance: { eventTime: emission.message.event.eventTime, eventPosition: emission.message.event.eventPosition } };
       }
       return { emission, candidate, earliest, incident };
-    }).sort((left, right) => (left.earliest ?? Number.POSITIVE_INFINITY) - (right.earliest ?? Number.POSITIVE_INFINITY) ||
-      left.emission.sourceGlobalPosition - right.emission.sourceGlobalPosition);
+    });
+    const assignmentsByPosition = new Map<number, DeliveryAssignment>();
+    for (const { emission, candidate, incident } of prepared) {
+      if (!isLightLaggedMessageClass(emission.message.class) || candidate === undefined || incident !== undefined) continue;
+      assignmentsByPosition.set(emission.sourceGlobalPosition, await this.#cursors.assign(observerId, candidate.messageId, emission.sourceGlobalPosition));
+    }
+    const ordered = prepared.sort((left, right) => {
+      if (left.earliest === undefined && right.earliest !== undefined) return 1;
+      if (left.earliest !== undefined && right.earliest === undefined) return -1;
+      if (left.earliest !== undefined && right.earliest !== undefined && left.earliest !== right.earliest) return left.earliest - right.earliest;
+      return left.emission.sourceGlobalPosition - right.emission.sourceGlobalPosition;
+    });
 
-    for (const { emission, candidate, earliest, incident } of prepared) {
+    for (const { emission, candidate, earliest, incident } of ordered) {
       const local = !isLightLaggedMessageClass(emission.message.class);
-      const acknowledgement: DeliveryAcknowledgement = { globalPosition: emission.sourceGlobalPosition, messageId: candidate?.messageId ?? `position:${emission.sourceGlobalPosition}` };
-      if (!local && hasAcknowledged(cursor, acknowledgement)) {
-        this.#incrementBelowCursorSuppression();
-        continue;
-      }
+      const assignment = local ? undefined : assignmentsByPosition.get(emission.sourceGlobalPosition);
       if (incident !== undefined) {
         try { this.#recordIncident(incident); } catch { /* closed even if reporting fails */ }
         try { this.#incrementCausalityFailure(); } catch { /* closed even if alerting fails */ }
         blocked.push(`position:${emission.sourceGlobalPosition}`);
+        continue;
+      }
+      if (!local && assignment === undefined) throw new Error("Light-lagged emission has no durable delivery assignment.");
+      if (assignment !== undefined && hasAcknowledged(cursor, assignment)) {
+        this.#incrementDeliveryIntegrityCounter();
         continue;
       }
       if (candidate === undefined || earliest === undefined) throw new Error("Prepared scheduler entry is incomplete.");
@@ -136,8 +151,8 @@ export class EmissionScheduler {
         continue;
       }
       emitted.push(candidate.messageId);
-      if (!local) {
-        cursor = await this.#cursors.acknowledge(observerId, acknowledgement);
+      if (assignment !== undefined) {
+        cursor = await this.#cursors.acknowledge(observerId, assignment);
       }
     }
     return { emitted, deferred, blocked };
