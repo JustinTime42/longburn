@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CausalEmissionGate, SPEED_OF_LIGHT_METERS_PER_SECOND } from "./causality.js";
 import { simTimeMs } from "./clock.js";
 import { InMemoryDeliveryCursorStore } from "./delivery-cursor.js";
-import { EmissionScheduler, type ScheduledEmission } from "./emission-scheduler.js";
+import { DeliveryProjectionViolation, EmissionScheduler, type ScheduledEmission } from "./emission-scheduler.js";
 
 const observerPositionAt = () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
 const scheduled = (globalPosition: number, eventTime = 0): ScheduledEmission => ({
@@ -86,6 +86,28 @@ describe("EmissionScheduler", () => {
     await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(3)])).resolves.toEqual({ emitted: [], deferred: [], blocked: [] });
     expect(emit).not.toHaveBeenCalled();
     expect(incrementDeliveryIntegrityCounter).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a later pass that omits the acknowledged projection prefix", async () => {
+    const cursors = new InMemoryDeliveryCursorStore();
+    const sent: string[] = [];
+    const scheduler = new EmissionScheduler(schedulerOptions(cursors, gateEmitter(sent)));
+    const deferred = {
+      ...scheduled(30),
+      message: {
+        ...scheduled(30).message,
+        event: { ...scheduled(30).message.event, eventPosition: { x: SPEED_OF_LIGHT_METERS_PER_SECOND * 3, y: 0, z: 0 } }
+      }
+    };
+
+    await expect(scheduler.run("hq-player", simTimeMs(1_000), [scheduled(10), scheduled(20), deferred])).resolves.toMatchObject({
+      emitted: [expect.any(String), expect.any(String)], deferred: [expect.any(String)]
+    });
+    expect(await cursors.read("hq-player")).toMatchObject({ lowWatermark: 2, delivered: [] });
+
+    await expect(scheduler.run("hq-player", simTimeMs(2_000), [deferred]))
+      .rejects.toThrow(DeliveryProjectionViolation);
+    expect(sent).toHaveLength(2);
   });
 
   it("delivers later-arriving events without head-of-line blocking and uses global position only for ties", async () => {

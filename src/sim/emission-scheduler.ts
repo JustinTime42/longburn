@@ -16,7 +16,9 @@ export interface ScheduledEmission {
 
 /**
  * Dependencies for one scheduler writer. The host must serialize `run` calls
- * per observer; acknowledgement persistence is not a transport lock.
+ * per observer; acknowledgement persistence is not a transport lock. Every
+ * pass must receive the observer's complete durable light-lagged projection,
+ * including acknowledged messages, append-only in global-position order.
  */
 export interface EmissionSchedulerOptions {
   readonly cursors: DeliveryCursorStore;
@@ -33,6 +35,14 @@ export interface SchedulerRunResult {
   readonly emitted: readonly string[];
   readonly deferred: readonly string[];
   readonly blocked: readonly string[];
+}
+
+/** The caller omitted or renumbered part of the durable delivery projection. */
+export class DeliveryProjectionViolation extends RangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeliveryProjectionViolation";
+  }
 }
 
 const validSourcePosition = (emission: ScheduledEmission): void => {
@@ -68,8 +78,10 @@ export class EmissionScheduler {
   /**
    * Runs one serialized delivery pass for an observer.
    *
-   * The caller must supply every unacknowledged light-lagged emission for the
-   * observer on every pass. Presentation order is not a delivery dependency:
+   * The caller must supply the observer's complete durable light-lagged
+   * projection on every pass, including acknowledged messages, append-only in
+   * global-position order. A partial or renumbered projection is refused before
+   * it can silently suppress a new message. Presentation order is not a delivery dependency:
    * each event is independently released at its own earliest legal tick. When
    * two are first releasable on the same tick, globalPosition breaks the tie.
    * Re-presenting an acknowledged message increments the delivery-integrity
@@ -96,6 +108,9 @@ export class EmissionScheduler {
         .map((emission, index) => [emission.sourceGlobalPosition, index + 1] as const)
     );
     let cursor = await this.#cursors.read(observerId);
+    if (cursor !== undefined && deliverySequenceByPosition.size < cursor.lowWatermark) {
+      throw new DeliveryProjectionViolation("Delivery projection omits part of the compacted acknowledgement prefix.");
+    }
     const emitted: string[] = [];
     const deferred: string[] = [];
     const blocked: string[] = [];
@@ -129,6 +144,12 @@ export class EmissionScheduler {
         deliverySequence, messageId: candidate?.messageId ?? `position:${emission.sourceGlobalPosition}`
       };
       if (!local && acknowledgement === undefined) throw new Error("Light-lagged emission has no delivery sequence.");
+      const priorAcknowledgement = acknowledgement !== undefined && cursor !== undefined
+        ? cursor.delivered.find((delivered) => delivered.deliverySequence === acknowledgement.deliverySequence || delivered.messageId === acknowledgement.messageId)
+        : undefined;
+      if (acknowledgement !== undefined && priorAcknowledgement !== undefined && (priorAcknowledgement.deliverySequence !== acknowledgement.deliverySequence || priorAcknowledgement.messageId !== acknowledgement.messageId)) {
+        throw new DeliveryProjectionViolation("Delivery projection changed an acknowledged message's delivery sequence.");
+      }
       if (acknowledgement !== undefined && hasAcknowledged(cursor, acknowledgement)) {
         this.#incrementDeliveryIntegrityCounter();
         continue;

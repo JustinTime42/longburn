@@ -100,7 +100,7 @@ describe("projectStoredEvent", () => {
     expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ reason: "invalid-envelope" }));
     expect(incrementCausalityFailure).not.toHaveBeenCalled();
 
-    await expect(host.run(simTimeMs(12_002), [malformed])).resolves.toEqual({
+    await expect(host.run(simTimeMs(12_002), [malformed, deliverable])).resolves.toEqual({
       emitted: [], deferred: [], blocked: ["position:7"]
     });
     expect(recordIncident).toHaveBeenCalledOnce();

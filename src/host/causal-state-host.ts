@@ -135,6 +135,11 @@ export class CausalStateHost {
     });
   }
 
+  /**
+   * Runs the complete durable stored-event projection for this observer. The
+   * light-lagged subset must retain acknowledged entries in global-position
+   * order so the scheduler's delivery sequence remains stable.
+   */
   async run(now: SimTimeMs, storedEvents: readonly StoredEventForEmission[]): Promise<SchedulerRunResult> {
     const scheduled: ScheduledEmission[] = [];
     const blocked: string[] = [];
