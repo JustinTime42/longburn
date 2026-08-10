@@ -1,5 +1,6 @@
 import { simTimeMs, type SimTimeMs } from "./clock.js";
 import type { PositionMeters } from "./causality.js";
+import { utDaysSinceJ2000, type UtDaysSinceJ2000 } from "./ephemerides.js";
 import type { SimEvent } from "./event-log.js";
 
 /** A stream is the durable unit of replay, including its deterministic seed. */
@@ -7,6 +8,12 @@ export interface SimulationStream {
   readonly id: string;
   readonly seed: number;
   readonly initialTime: SimTimeMs;
+  /**
+   * The virtual-clock anchor for resolvers that project simulation time onto
+   * ephemerides. Legacy streams predate this fact and cannot be resumed by a
+   * resolver that depends on it.
+   */
+  readonly epochUtDaysSinceJ2000?: UtDaysSinceJ2000;
 }
 
 /**
@@ -133,6 +140,7 @@ interface StreamRow extends Record<string, unknown> {
   readonly stream_id: string;
   readonly seed: number;
   readonly initial_time_ms: number;
+  readonly epoch_ut_days_since_j2000: number | null;
 }
 
 interface EventRow extends Record<string, unknown> {
@@ -160,8 +168,8 @@ export class PostgresSimulationEventStore implements SimulationEventStore {
 
   async createStream(stream: SimulationStream): Promise<void> {
     await this.#client.query(
-      "INSERT INTO simulation_streams (stream_id, seed, initial_time_ms) VALUES ($1, $2, $3)",
-      [stream.id, stream.seed, stream.initialTime]
+      "INSERT INTO simulation_streams (stream_id, seed, initial_time_ms, epoch_ut_days_since_j2000) VALUES ($1, $2, $3, $4)",
+      [stream.id, stream.seed, stream.initialTime, stream.epochUtDaysSinceJ2000 ?? null]
     );
   }
 
@@ -233,7 +241,8 @@ export class PostgresSimulationEventStore implements SimulationEventStore {
   async readStream(streamId: string): Promise<PersistedSimulationStream> {
     const streams = await this.#client.query<StreamRow>(
       `SELECT stream_id, seed::double precision AS seed,
-              initial_time_ms::double precision AS initial_time_ms
+              initial_time_ms::double precision AS initial_time_ms,
+              epoch_ut_days_since_j2000
        FROM simulation_streams WHERE stream_id = $1`,
       [streamId]
     );
@@ -253,6 +262,9 @@ export class PostgresSimulationEventStore implements SimulationEventStore {
       id: stream.stream_id,
       seed: stream.seed,
       initialTime: simTimeMs(stream.initial_time_ms),
+      ...(stream.epoch_ut_days_since_j2000 === null
+        ? {}
+        : { epochUtDaysSinceJ2000: utDaysSinceJ2000(stream.epoch_ut_days_since_j2000) }),
       events: events.rows.map(deserializeStoredEvent)
     };
   }

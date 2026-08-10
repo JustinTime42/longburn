@@ -161,7 +161,8 @@ const deserializeRows = (sql, stdout) => {
     deserialize = (fields) => ({
       stream_id: fields[0],
       seed: Number(fields[1]),
-      initial_time_ms: Number(fields[2])
+      initial_time_ms: Number(fields[2]),
+      epoch_ut_days_since_j2000: fields[3] === "" ? null : Number(fields[3])
     });
   } else if (sql.includes("AS streams_present")) {
     deserialize = (fields) => ({
@@ -268,8 +269,8 @@ integrationDescribe(
       const adapter = new PostgresSimulationEventStore(psqlClient);
       const streamId = `contract-${randomUUID()}`;
       const otherStreamId = `contract-${randomUUID()}`;
-      await adapter.createStream({ id: streamId, seed: 0x1234_5678, initialTime: simTimeMs(10) });
-      await adapter.createStream({ id: otherStreamId, seed: 0x1234_5678, initialTime: simTimeMs(10) });
+      await adapter.createStream({ id: streamId, seed: 0x1234_5678, initialTime: simTimeMs(10), epochUtDaysSinceJ2000: 9_496.5 });
+      await adapter.createStream({ id: otherStreamId, seed: 0x1234_5678, initialTime: simTimeMs(10), epochUtDaysSinceJ2000: 9_496.5 });
 
       const first = await adapter.append(streamId, {
         event: { type: "clockAdvanced", elapsedMs: 20 },
@@ -303,7 +304,7 @@ integrationDescribe(
       }, 0)).resolves.toEqual({ kind: "conflict", expectedStreamSequence: 0, actualStreamSequence: 2 });
 
       const raceStreamId = `contract-race-${randomUUID()}`;
-      await adapter.createStream({ id: raceStreamId, seed: 1, initialTime: simTimeMs(0) });
+      await adapter.createStream({ id: raceStreamId, seed: 1, initialTime: simTimeMs(0), epochUtDaysSinceJ2000: 9_496.5 });
       const raced = await Promise.all([
         adapter.append(raceStreamId, {
           event: { type: "clockAdvanced", elapsedMs: 1 },
@@ -337,6 +338,7 @@ integrationDescribe(
         id: streamId,
         seed: 0x1234_5678,
         initialTime: simTimeMs(10),
+        epochUtDaysSinceJ2000: 9_496.5,
         events: [
           { event: { type: "clockAdvanced", elapsedMs: 20 }, eventTime: simTimeMs(30), eventPosition: { x: 1, y: 2, z: 3 } },
           { event: { type: "randomValueRequested", upperExclusive: 100 }, eventTime: simTimeMs(30), eventPosition: { x: 4, y: 5, z: 6 } }

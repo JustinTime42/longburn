@@ -27,6 +27,7 @@ psql -v ON_ERROR_STOP=1 --dbname 'postgresql://user:password@host:5432/database'
 psql -v ON_ERROR_STOP=1 --dbname 'postgresql://user:password@host:5432/database' --file db/migrations/0002_simulation_event_stream_sequence.sql
 psql -v ON_ERROR_STOP=1 --dbname 'postgresql://user:password@host:5432/database' --file db/migrations/0003_delivery_cursors.sql
 psql -v ON_ERROR_STOP=1 --dbname 'postgresql://user:password@host:5432/database' --file db/migrations/0004_delivery_acknowledgement_ledger.sql
+psql -v ON_ERROR_STOP=1 --dbname 'postgresql://user:password@host:5432/database' --file db/migrations/0009_simulation_stream_epoch.sql
 ```
 
 The real PostgreSQL adapter suite is gated by `LONGBURN_TEST_DATABASE_URL`, so the Forge sandbox skips it with an explicit reason. A CI/host job with a migrated database runs it through the host `psql` executable:
