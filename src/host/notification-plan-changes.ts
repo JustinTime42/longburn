@@ -21,6 +21,8 @@ export interface PlanChangeNotificationOptions {
   readonly sink: NotificationMomentSink;
   readonly hqPositionAt: (timeMs: SimTimeMs) => PositionMeters;
   readonly paperProjection: PaperProjectionProvider;
+  /** Per-tester N4 settings, defaulting to the approved 12 h and 1 h cadence. */
+  readonly lastRevisionLeadTimesMs?: readonly number[];
 }
 
 /**
@@ -30,12 +32,13 @@ export interface PlanChangeNotificationOptions {
 export const enqueuePlanChangeWarnings = async (
   nodes: readonly BurnNode[],
   nowMs: SimTimeMs,
-  { sink, hqPositionAt, paperProjection }: PlanChangeNotificationOptions
+  { sink, hqPositionAt, paperProjection, lastRevisionLeadTimesMs }: PlanChangeNotificationOptions
 ): Promise<void> => {
   const warnings = deriveLastRevisionWarnings(nodes, {
     nowMs,
     hqPositionAt,
-    shipPositionAt: paperProjection.shipPositionAt
+    shipPositionAt: paperProjection.shipPositionAt,
+    leadTimesMs: lastRevisionLeadTimesMs
   });
   await sink.reconcilePendingLastRevisionWarnings(deriveLocalNotifications([], warnings));
 };

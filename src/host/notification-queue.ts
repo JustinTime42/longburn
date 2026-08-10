@@ -189,7 +189,7 @@ export interface NotificationQueueOptions {
   readonly store: NotificationQueueStore;
   readonly wallClockToSimTime: WallClockToSimTime;
   /** A transport adapter receives only G1-derived, causally lawful moments. */
-  readonly deliver: (notification: NotificationMoment) => Promise<{ readonly delivered: boolean }>;
+  readonly deliver: (notification: NotificationMoment, wallClockMs: number) => Promise<{ readonly delivered: boolean }>;
 }
 
 export interface NotificationQueueRunResult {
@@ -230,7 +230,7 @@ export class NotificationQueue {
     const retrying: string[] = [];
     for (const item of await this.#store.dueAtOrBefore(nowMs)) {
       await this.#store.recordAttempt(item.notification.id);
-      const result = await this.#deliver(item.notification);
+      const result = await this.#deliver(item.notification, wallClockMs);
       if (result.delivered) {
         await this.#store.markDelivered(item.notification.id, wallClockMs);
         delivered.push(item.notification.id);

@@ -59,10 +59,10 @@ describe("notification derivation", () => {
   it("keeps planner openings and revision-deadline warnings local to HQ", () => {
     expect(deriveLocalNotifications(
       [{ windowId: "earth-mars-2030", opensAtMs: simTimeMs(4_000) }],
-      [{ nodeId: "capture", executeAtMs: simTimeMs(6_000), lastRevisionAtMs: simTimeMs(5_000) }]
+      [{ nodeId: "capture", executeAtMs: simTimeMs(6_000), lastRevisionAtMs: simTimeMs(5_000), leadTimeMs: 1_000 }]
     )).toMatchObject([
       { kind: "transferWindowOpened", deliverAtMs: 4_000 },
-      { kind: "lastRevisionInstant", deliverAtMs: 5_000 }
+      { kind: "lastRevisionInstant", deliverAtMs: 4_000 }
     ]);
   });
 
@@ -71,7 +71,7 @@ describe("notification derivation", () => {
     expect(last).toBe(8_999);
     expect(deriveLastRevisionWarnings([
       { nodeId: "capture", executeAtMs: simTimeMs(10_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }
-    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(0) })).toEqual([{ nodeId: "capture", executeAtMs: simTimeMs(10_000), lastRevisionAtMs: simTimeMs(8_999) }]);
+    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(0), leadTimesMs: [1_000] })).toEqual([{ nodeId: "capture", executeAtMs: simTimeMs(10_000), lastRevisionAtMs: simTimeMs(8_999), leadTimeMs: 1_000 }]);
   });
 
   it("does not invent a warning when a burn was already unreachable at simulation start", () => {
@@ -81,6 +81,17 @@ describe("notification derivation", () => {
   it("does not schedule a last-revision warning whose deadline has passed", () => {
     expect(deriveLastRevisionWarnings([
       { nodeId: "capture", executeAtMs: simTimeMs(10_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }
-    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(8_999) })).toEqual([]);
+    ], { hqPositionAt: atOrigin, shipPositionAt: atOneLightSecond, nowMs: simTimeMs(8_999), leadTimesMs: [1_000] })).toEqual([]);
+  });
+
+  it("schedules ratified N4 lead times as distinct warnings for the same deadline", () => {
+    const warnings = deriveLastRevisionWarnings([
+      { nodeId: "capture", executeAtMs: simTimeMs(100_000_000), kind: "decel", burn: { burnDurationMs: burnDurationMs(1) }, deltaVMmPerSecond: { x: 0, y: 0, z: 0 } }
+    ], { hqPositionAt: atOrigin, shipPositionAt: atOrigin, nowMs: simTimeMs(0) });
+    expect(warnings.map(({ leadTimeMs }) => leadTimeMs)).toEqual([43_200_000, 3_600_000]);
+    expect(deriveLocalNotifications([], warnings).map(({ id }) => id)).toEqual([
+      "notification:last-revision:capture:100000000:lead:43200000",
+      "notification:last-revision:capture:100000000:lead:3600000"
+    ]);
   });
 });

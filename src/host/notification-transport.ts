@@ -1,4 +1,5 @@
 import type { NotificationMoment } from "../sim/notification-derivation.js";
+import { defaultNotificationPreferences, deliveredRecord, deliveryDisposition, type NotificationInstrumentation, type NotificationPreferenceStore } from "./notification-product.js";
 
 /** The persisted browser capability, normalized away from browser-only types. */
 export interface WebPushSubscription {
@@ -37,6 +38,10 @@ export interface EmailGateway {
     readonly idempotencyKey: string;
     readonly message: NotificationMessage;
   }): Promise<{ readonly delivered: boolean }>;
+}
+
+export interface InAppGateway {
+  deliver(request: { readonly idempotencyKey: string; readonly message: NotificationMessage }): Promise<{ readonly delivered: boolean }>;
 }
 
 /** Preference selection is G4 work; this T0 resolver supplies registered routes. */
@@ -95,6 +100,10 @@ export interface NotificationTransportOptions {
   readonly push: WebPushGateway;
   readonly email: EmailGateway;
   readonly render: (notification: NotificationMoment) => NotificationMessage;
+  /** Optional while older host composition is migrated to G4's product surface. */
+  readonly preferences?: NotificationPreferenceStore;
+  readonly instrumentation?: NotificationInstrumentation;
+  readonly inApp?: InAppGateway;
 }
 
 const nonEmpty = (value: string, label: string): string => {
@@ -126,8 +135,11 @@ export class NotificationTransport {
   readonly #push: WebPushGateway;
   readonly #email: EmailGateway;
   readonly #render: NotificationTransportOptions["render"];
+  readonly #preferences: NotificationPreferenceStore | undefined;
+  readonly #instrumentation: NotificationInstrumentation | undefined;
+  readonly #inApp: InAppGateway | undefined;
 
-  constructor({ observerId, routes, vapid, push, email, render }: NotificationTransportOptions) {
+  constructor({ observerId, routes, vapid, push, email, render, preferences, instrumentation, inApp }: NotificationTransportOptions) {
     this.#observerId = nonEmpty(observerId, "Notification observer ID");
     validVapid(vapid);
     this.#routes = routes;
@@ -135,24 +147,35 @@ export class NotificationTransport {
     this.#push = push;
     this.#email = email;
     this.#render = render;
+    this.#preferences = preferences;
+    this.#instrumentation = instrumentation;
+    this.#inApp = inApp;
   }
 
-  async deliver(notification: NotificationMoment): Promise<{ readonly delivered: boolean }> {
+  async deliver(notification: NotificationMoment, wallClockMs: number = 0): Promise<{ readonly delivered: boolean }> {
     nonEmpty(notification.id, "Notification ID");
+    const preferences = this.#preferences === undefined ? defaultNotificationPreferences() : await this.#preferences.preferencesFor(this.#observerId);
+    const disposition = deliveryDisposition(notification, preferences, wallClockMs);
+    if (disposition.kind === "defer-quiet-hours" || disposition.kind === "digest") return { delivered: false };
+    if (disposition.kind === "off") return { delivered: true };
     const message = this.#render(notification);
-    const subscriptions = await this.#routes.pushSubscriptionsFor(this.#observerId);
-    if (subscriptions.length > 0) {
+    let outcome: { readonly delivered: boolean };
+    if (disposition.channel === "in-app") {
+      outcome = this.#inApp === undefined ? { delivered: false } : await this.#inApp.deliver({ idempotencyKey: notification.id, message });
+    } else if (disposition.channel === "push") {
+      const subscriptions = await this.#routes.pushSubscriptionsFor(this.#observerId);
+      if (subscriptions.length === 0) return { delivered: false };
       let delivered = false;
       for (const subscription of subscriptions) {
-        const outcome = await this.#push.deliver({ subscription, vapid: this.#vapid, idempotencyKey: notification.id, message });
-        delivered ||= outcome.delivered;
+        const pushOutcome = await this.#push.deliver({ subscription, vapid: this.#vapid, idempotencyKey: notification.id, message });
+        delivered ||= pushOutcome.delivered;
       }
-      return { delivered };
+      outcome = { delivered };
+    } else {
+      const recipient = await this.#routes.emailAddressFor(this.#observerId);
+      outcome = recipient === undefined ? { delivered: false } : await this.#email.deliver({ recipient, idempotencyKey: notification.id, message });
     }
-
-    const recipient = await this.#routes.emailAddressFor(this.#observerId);
-    return recipient === undefined
-      ? { delivered: false }
-      : this.#email.deliver({ recipient, idempotencyKey: notification.id, message });
+    if (outcome.delivered && this.#instrumentation !== undefined) await this.#instrumentation.record(deliveredRecord(notification, disposition.channel, wallClockMs));
+    return outcome;
   }
 }
