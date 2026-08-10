@@ -1,6 +1,7 @@
 import { simTimeMs, type SimTimeMs } from "./clock.js";
 import type { ObserverPositionAt, PositionMeters } from "./causality.js";
 import type { PlanRevisionRefusalReason } from "./event-log.js";
+import type { SellRefusalReason } from "./trade.js";
 import type { MarketEvent } from "./market.js";
 
 /** The catalog's seven classes. The last three have no T0 message payload yet. */
@@ -21,7 +22,9 @@ export type ShipReportPayload =
 
 export type CommandOutcomeReportPayload =
   | { readonly outcome: "applied"; readonly commandId: string }
-  | { readonly outcome: "refused"; readonly commandId: string; readonly reason: PlanRevisionRefusalReason };
+  | { readonly outcome: "refused"; readonly commandId: string; readonly reason: PlanRevisionRefusalReason }
+  | { readonly outcome: "cargo-sold"; readonly lot: "contracted" | "spot"; readonly tons: number; readonly proceeds: number }
+  | { readonly outcome: "sell-refused"; readonly reason: SellRefusalReason };
 
 export interface CommandEchoPayload {
   readonly commandId: string;
@@ -136,6 +139,13 @@ const commandOutcomePayload = (payload: unknown): CommandOutcomeReportPayload =>
   if (outcome.outcome === "refused" && isNonEmptyString(outcome.commandId) &&
     (outcome.reason === "executed-burn-conflict" || outcome.reason === "invalid-plan" || outcome.reason === "insufficient-propellant")) {
     return { outcome: outcome.outcome, commandId: outcome.commandId, reason: outcome.reason };
+  }
+  if (outcome.outcome === "cargo-sold" && (outcome.lot === "contracted" || outcome.lot === "spot") &&
+    isSafeInteger(outcome.tons) && outcome.tons > 0 && isSafeInteger(outcome.proceeds) && outcome.proceeds >= 0) {
+    return { outcome: outcome.outcome, lot: outcome.lot, tons: outcome.tons, proceeds: outcome.proceeds };
+  }
+  if (outcome.outcome === "sell-refused" && (outcome.reason === "not-arrived-or-docked" || outcome.reason === "no-cargo" || outcome.reason === "duplicate-sale")) {
+    return { outcome: outcome.outcome, reason: outcome.reason };
   }
   throw new RangeError("Command outcome reports require a catalog outcome payload.");
 };

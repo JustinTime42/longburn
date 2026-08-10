@@ -4,6 +4,7 @@ import type { PersistedSimulationStream, SimulationEventStore, SimulationStream,
 import { assertPlanRevisionRefusalReason, type ArrivalState, type DepartureState, type DestinationBody, type FlightPlan, type PlanRevisionRefusalReason, PlanRevisionValidationError, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
 import type { QuantizedDeltaV } from "./mass-cargo.js";
 import { advanceMarket, centeredIrwinHall12, TIER0_MARKET_CONFIG } from "./market.js";
+import { composeCargo, settlement, type CargoComposition, type SellRefusalReason, TIER0_TRADE_CONFIG } from "./trade.js";
 import { deriveStream, type SeededRng } from "./rng.js";
 import { shipPositionAt, shipWorldlineStateAt } from "./worldline.js";
 
@@ -148,6 +149,36 @@ export class AuthoritativeSimLoop {
       await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPosition) });
       this.#reducer.apply(event);
       await this.#advanceDueBurns(eventPosition);
+    });
+  }
+
+  /** Local HQ loading; the resulting forward rate is a persisted composition fact. */
+  async composeCargo(composition: CargoComposition, plannedArrivalAtMs: SimTimeMs, eventPosition: () => PositionMeters): Promise<void> {
+    return this.#serialize(async () => {
+      const ship = this.#reducer.state.ship;
+      if (ship?.departureState !== undefined && !this.#isDocked(ship)) throw new RangeError("Cargo can be composed only while docked at HQ.");
+      const event = composeCargo(TIER0_TRADE_CONFIG, TIER0_MARKET_CONFIG, this.#reducer.state.market, composition, plannedArrivalAtMs, this.#reducer.time);
+      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
+      this.#reducer.apply(event);
+    });
+  }
+
+  /**
+   * The arrival-side half of an HQ sell command. Transport schedules this at
+   * the command's c-limited arrival; this method records the typed market fact.
+   */
+  async executeManualSellOrder(eventPosition: () => PositionMeters): Promise<void> {
+    return this.#serialize(async () => {
+      const ship = this.#reducer.state.ship;
+      const cargo = this.#reducer.state.cargo;
+      const reason: SellRefusalReason | undefined = ship === undefined || !this.#isDocked(ship) || ship.arrivalState?.destination !== TIER0_MARKET_CONFIG.marketBodyId
+        ? "not-arrived-or-docked"
+        : cargo.spotTons === 0 ? (cargo.spotSold ? "duplicate-sale" : "no-cargo") : undefined;
+      const event = reason === undefined
+        ? settlement("spot", cargo.spotTons, this.#reducer.state.market.price)
+        : { type: "sellRefused" as const, reason };
+      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
+      this.#reducer.apply(event);
     });
   }
 
@@ -342,6 +373,21 @@ export class AuthoritativeSimLoop {
     const event: SimEvent = { type: "arrivalRecorded", arrivalState };
     await this.#append({ event, eventTime: this.#reducer.time, eventPosition: terminalPositionMeters });
     this.#reducer.apply(event);
+    // Price updates at this exact boundary first, then standing and contractual
+    // dispositions settle against the arrival-instant persisted price.
+    await this.#advanceDueMarket();
+    const cargo = this.#reducer.state.cargo;
+    const marketPosition = target.positionMeters;
+    if (cargo.contractedTons > 0) {
+      const settled = settlement("contracted", cargo.contractedTons, cargo.contractedRatePerTon!);
+      await this.#append({ event: settled, eventTime: this.#reducer.time, eventPosition: marketPosition });
+      this.#reducer.apply(settled);
+    }
+    if (cargo.spotTons > 0 && cargo.spotDisposition === "sell-on-arrival") {
+      const settled = settlement("spot", cargo.spotTons, this.#reducer.state.market.price);
+      await this.#append({ event: settled, eventTime: this.#reducer.time, eventPosition: marketPosition });
+      this.#reducer.apply(settled);
+    }
   }
 
   #eventPositionAt(time: SimTimeMs, fallback: (time: SimTimeMs) => PositionMeters): PositionMeters {

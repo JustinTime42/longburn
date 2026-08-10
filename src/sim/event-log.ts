@@ -3,6 +3,7 @@ import { assertTier0DeltaVConsistentWithBurn, burnDurationMs, projectPropellantF
 import { SeededRng } from "./rng.js";
 import { assertInboundCausalityInvariant, type PositionMeters } from "./causality.js";
 import { marketInitialState, reduceMarketEvent, type MarketEvent, type MarketState, TIER0_MARKET_CONFIG } from "./market.js";
+import { initialCargoState, reduceTradeEvent, type CargoState, type TradeEvent } from "./trade.js";
 
 export type DestinationBody = "earth" | "moon" | "mars";
 
@@ -106,12 +107,14 @@ export type SimEvent =
   | { readonly type: "planRevisionRefused"; readonly flightPlan: FlightPlan; readonly reason: PlanRevisionRefusalReason; readonly commandId: string }
   | { readonly type: "burnStarted"; readonly node: BurnNode }
   | { readonly type: "burnEnded"; readonly nodeId: string }
-  | MarketEvent;
+  | MarketEvent
+  | TradeEvent;
 
 export interface SimState {
   readonly time: SimTimeMs;
   readonly randomValues: readonly number[];
   readonly market: MarketState;
+  readonly cargo: CargoState;
   readonly ship?: ShipState;
 }
 
@@ -251,6 +254,7 @@ export class SimEventReducer {
   readonly #rng: SeededRng;
   readonly #randomValues: number[] = [];
   #market = marketInitialState(TIER0_MARKET_CONFIG);
+  #cargo = initialCargoState();
   #flightPlan: FlightPlan | undefined;
   #executedBurns: ExecutedBurn[] = [];
   #departureState: DepartureState | undefined;
@@ -266,12 +270,13 @@ export class SimEventReducer {
   get time(): SimTimeMs { return this.#clock.now; }
 
   get state(): SimState {
-    if (this.#flightPlan === undefined && this.#departureState === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues], market: this.#market };
+    if (this.#flightPlan === undefined && this.#departureState === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues], market: this.#market, cargo: this.#cargo };
     const flightPlan = this.#flightPlan ?? { destination: "earth" as const, nodes: [] };
     return {
       time: this.#clock.now,
       randomValues: [...this.#randomValues],
       market: this.#market,
+      cargo: this.#cargo,
       ship: {
         flightPlan,
         executedBurns: [...this.#executedBurns],
@@ -348,6 +353,11 @@ export class SimEventReducer {
       case "marketQuoteUpdated":
       case "marketEventOccurred":
         this.#market = reduceMarketEvent(TIER0_MARKET_CONFIG, this.#market, event);
+        return;
+      case "cargoComposed":
+      case "cargoSold":
+      case "sellRefused":
+        this.#cargo = reduceTradeEvent(this.#cargo, event);
         return;
     }
   }
