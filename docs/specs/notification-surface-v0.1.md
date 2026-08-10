@@ -75,7 +75,11 @@ Per trigger class (N1–N6): `push | email | in-app only | off`. Plus:
   refused, and no channel they didn't choose is drafted in (the auto-email
   fallback stays rejected; a channel refusal is honoured even when it costs
   the mechanic). The client shell (din.8) surfaces undelivered wakes;
-  onboarding prompts for push permission but never blocks on it.
+  onboarding prompts for push permission but never blocks on it. **Extension
+  (ia14, merged 2026-08-10): the same in-app branch is taken when every
+  registered push subscription has terminally failed (RFC 8030 dead
+  endpoints, pruned on classification) — all-dead is delivered as
+  zero-subscription, never email.**
 - Defaults are the table in §1; a fresh tester gets the designed experience
   without touching settings.
 
