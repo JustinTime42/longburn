@@ -125,7 +125,8 @@ const assertSubscription = (subscription: WebPushSubscription): void => {
 
 /**
  * G3's intentionally timing-free queue adapter. Push is primary whenever a
- * browser has registered a subscription; email is for testers who have none.
+ * browser has registered a subscription. A push default with no subscription
+ * falls back to in-app, never email, so an unchosen channel stays unchosen.
  * A stable queue ID is passed unchanged to either provider for retry safety.
  */
 export class NotificationTransport {
@@ -166,22 +167,27 @@ export class NotificationTransport {
       data: { ...rendered.data, notificationId: notification.id }
     };
     let outcome: { readonly delivered: boolean };
+    let deliveredChannel = disposition.channel;
     if (disposition.channel === "in-app") {
       outcome = this.#inApp === undefined ? { delivered: false } : await this.#inApp.deliver({ idempotencyKey: notification.id, message });
     } else if (disposition.channel === "push") {
       const subscriptions = await this.#routes.pushSubscriptionsFor(this.#observerId);
-      if (subscriptions.length === 0) return { delivered: false };
-      let delivered = false;
-      for (const subscription of subscriptions) {
-        const pushOutcome = await this.#push.deliver({ subscription, vapid: this.#vapid, idempotencyKey: notification.id, message });
-        delivered ||= pushOutcome.delivered;
+      if (subscriptions.length === 0) {
+        deliveredChannel = "in-app";
+        outcome = this.#inApp === undefined ? { delivered: false } : await this.#inApp.deliver({ idempotencyKey: notification.id, message });
+      } else {
+        let delivered = false;
+        for (const subscription of subscriptions) {
+          const pushOutcome = await this.#push.deliver({ subscription, vapid: this.#vapid, idempotencyKey: notification.id, message });
+          delivered ||= pushOutcome.delivered;
+        }
+        outcome = { delivered };
       }
-      outcome = { delivered };
     } else {
       const recipient = await this.#routes.emailAddressFor(this.#observerId);
       outcome = recipient === undefined ? { delivered: false } : await this.#email.deliver({ recipient, idempotencyKey: notification.id, message });
     }
-    if (outcome.delivered && this.#instrumentation !== undefined) await this.#instrumentation.record(deliveredRecord(notification, disposition.channel, wallClockMs));
+    if (outcome.delivered && this.#instrumentation !== undefined) await this.#instrumentation.record(deliveredRecord(notification, deliveredChannel, wallClockMs));
     return outcome;
   }
 }
