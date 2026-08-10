@@ -158,7 +158,13 @@ export class NotificationTransport {
     const disposition = deliveryDisposition(notification, preferences, wallClockMs);
     if (disposition.kind === "defer-quiet-hours" || disposition.kind === "digest") return { delivered: false };
     if (disposition.kind === "off") return { delivered: true };
-    const message = this.#render(notification);
+    // The queue-owned stable ID is the only identity the push-click path may
+    // report. Renderers provide display data, but cannot omit or replace it.
+    const rendered = this.#render(notification);
+    const message: NotificationMessage = {
+      ...rendered,
+      data: { ...rendered.data, notificationId: notification.id }
+    };
     let outcome: { readonly delivered: boolean };
     if (disposition.channel === "in-app") {
       outcome = this.#inApp === undefined ? { delivered: false } : await this.#inApp.deliver({ idempotencyKey: notification.id, message });
