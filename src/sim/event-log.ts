@@ -3,6 +3,7 @@ import { assertTier0DeltaVConsistentWithBurn, burnDurationMs, projectPropellantF
 import { SeededRng } from "./rng.js";
 import { assertInboundCausalityInvariant, type PositionMeters } from "./causality.js";
 import { marketInitialState, reduceMarketEvent, type MarketEvent, type MarketState, TIER0_MARKET_CONFIG } from "./market.js";
+import { initialCargoState, reduceTradeEvent, type CargoState, type TradeEvent } from "./trade.js";
 
 export type DestinationBody = "earth" | "moon" | "mars";
 
@@ -99,19 +100,32 @@ export type SimEvent =
     readonly arrivalAtMs: SimTimeMs;
     readonly hqPosition: PositionMeters;
     readonly arrivalPosition: PositionMeters;
+    readonly commandKind?: "plan-revision";
     readonly replacedNodeIds: readonly string[];
     readonly flightPlan: FlightPlan;
+  }
+  | {
+    readonly type: "commandIssued";
+    readonly commandId: string;
+    readonly issuedAtMs: SimTimeMs;
+    readonly arrivalAtMs: SimTimeMs;
+    readonly hqPosition: PositionMeters;
+    readonly arrivalPosition: PositionMeters;
+    readonly commandKind: "sell-order" | "spot-disposition-revision";
+    readonly spotDisposition?: "manual" | "sell-on-arrival";
   }
   | { readonly type: "planRevisionApplied"; readonly flightPlan: FlightPlan; readonly commandId: string; readonly replacedNodeIds?: readonly string[] }
   | { readonly type: "planRevisionRefused"; readonly flightPlan: FlightPlan; readonly reason: PlanRevisionRefusalReason; readonly commandId: string }
   | { readonly type: "burnStarted"; readonly node: BurnNode }
   | { readonly type: "burnEnded"; readonly nodeId: string }
-  | MarketEvent;
+  | MarketEvent
+  | TradeEvent;
 
 export interface SimState {
   readonly time: SimTimeMs;
   readonly randomValues: readonly number[];
   readonly market: MarketState;
+  readonly cargo: CargoState;
   readonly ship?: ShipState;
 }
 
@@ -251,6 +265,7 @@ export class SimEventReducer {
   readonly #rng: SeededRng;
   readonly #randomValues: number[] = [];
   #market = marketInitialState(TIER0_MARKET_CONFIG);
+  #cargo = initialCargoState();
   #flightPlan: FlightPlan | undefined;
   #executedBurns: ExecutedBurn[] = [];
   #departureState: DepartureState | undefined;
@@ -266,12 +281,13 @@ export class SimEventReducer {
   get time(): SimTimeMs { return this.#clock.now; }
 
   get state(): SimState {
-    if (this.#flightPlan === undefined && this.#departureState === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues], market: this.#market };
+    if (this.#flightPlan === undefined && this.#departureState === undefined) return { time: this.#clock.now, randomValues: [...this.#randomValues], market: this.#market, cargo: this.#cargo };
     const flightPlan = this.#flightPlan ?? { destination: "earth" as const, nodes: [] };
     return {
       time: this.#clock.now,
       randomValues: [...this.#randomValues],
       market: this.#market,
+      cargo: this.#cargo,
       ship: {
         flightPlan,
         executedBurns: [...this.#executedBurns],
@@ -313,6 +329,9 @@ export class SimEventReducer {
           throw new RangeError("Issued commands require a non-empty identity and a non-past arrival time.");
         }
         assertInboundCausalityInvariant(event.issuedAtMs, event.arrivalAtMs, event.hqPosition, event.arrivalPosition);
+        if (event.commandKind === "spot-disposition-revision" && event.spotDisposition !== "manual" && event.spotDisposition !== "sell-on-arrival") {
+          throw new RangeError("Spot-disposition commands require a known disposition.");
+        }
         return;
       case "planRevisionRefused":
         if (event.commandId.length === 0) throw new RangeError("Plan revision outcomes require a non-empty command ID.");
@@ -348,6 +367,12 @@ export class SimEventReducer {
       case "marketQuoteUpdated":
       case "marketEventOccurred":
         this.#market = reduceMarketEvent(TIER0_MARKET_CONFIG, this.#market, event);
+        return;
+      case "cargoComposed":
+      case "cargoSold":
+      case "sellRefused":
+      case "spotDispositionRevised":
+        this.#cargo = reduceTradeEvent(this.#cargo, event);
         return;
     }
   }

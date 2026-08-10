@@ -4,6 +4,7 @@ import type { PersistedSimulationStream, SimulationEventStore, SimulationStream,
 import { assertPlanRevisionRefusalReason, type ArrivalState, type DepartureState, type DestinationBody, type FlightPlan, type PlanRevisionRefusalReason, PlanRevisionValidationError, type SimEvent, type SimState, SimEventReducer, validateFlightPlanRevision } from "./event-log.js";
 import type { QuantizedDeltaV } from "./mass-cargo.js";
 import { advanceMarket, centeredIrwinHall12, TIER0_MARKET_CONFIG } from "./market.js";
+import { composeCargo, reduceTradeEvent, settlement, type CargoComposition, type SellRefusalReason, type SpotDisposition, TIER0_TRADE_CONFIG } from "./trade.js";
 import { deriveStream, type SeededRng } from "./rng.js";
 import { shipPositionAt, shipWorldlineStateAt } from "./worldline.js";
 
@@ -59,11 +60,13 @@ export class AuthoritativeSimLoop {
   readonly #marketStartTime: SimTimeMs;
   #streamSequence = 0;
   #writer: Promise<void> = Promise.resolve();
-  #inboundPlanRevisions: {
+  #inboundCommands: {
     readonly commandId: string;
-    readonly flightPlan: FlightPlan;
+    readonly commandKind: "plan-revision" | "sell-order" | "spot-disposition-revision";
     readonly arrivalAtMs: SimTimeMs;
     readonly arrivalPosition: PositionMeters;
+    readonly flightPlan?: FlightPlan;
+    readonly spotDisposition?: SpotDisposition;
     /** Pending nodes this wholesale replacement was issued to replace. */
     readonly replacedNodeIds: ReadonlySet<string>;
   }[] = [];
@@ -104,14 +107,15 @@ export class AuthoritativeSimLoop {
       if (event.type === "planRevisionApplied" || event.type === "planRevisionRefused") {
         pending.delete(event.commandId);
       }
+      if ((event.type === "cargoSold" || event.type === "sellRefused" || event.type === "spotDispositionRevised") && event.commandId !== undefined) pending.delete(event.commandId);
     }
-    loop.#inboundPlanRevisions = [...pending.values()].map((command) => ({
-      commandId: command.commandId,
-      flightPlan: command.flightPlan,
-      arrivalAtMs: command.arrivalAtMs,
-      arrivalPosition: command.arrivalPosition,
-      replacedNodeIds: new Set(command.replacedNodeIds)
-    })).sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
+    loop.#inboundCommands = [...pending.values()].map((command) => {
+      const base = { commandId: command.commandId, arrivalAtMs: command.arrivalAtMs, arrivalPosition: command.arrivalPosition };
+      if (command.commandKind === "sell-order") return { ...base, commandKind: "sell-order" as const, replacedNodeIds: new Set<string>() };
+      if (command.commandKind === "spot-disposition-revision") return { ...base, commandKind: "spot-disposition-revision" as const, spotDisposition: command.spotDisposition, replacedNodeIds: new Set<string>() };
+      if (!("flightPlan" in command)) throw new Error("Persisted plan-revision command is missing its flight plan.");
+      return { ...base, commandKind: "plan-revision" as const, flightPlan: command.flightPlan, replacedNodeIds: new Set<string>(command.replacedNodeIds) };
+    }).sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
     loop.#streamSequence = persisted.events.length;
     return loop;
   }
@@ -151,6 +155,71 @@ export class AuthoritativeSimLoop {
     });
   }
 
+  /** Local HQ loading; the resulting forward rate is a persisted composition fact. */
+  async composeCargo(composition: CargoComposition, eventPosition: () => PositionMeters): Promise<void> {
+    return this.#serialize(async () => {
+      const ship = this.#reducer.state.ship;
+      // Applying a paper plan records the initial Earth departure state so its
+      // live boundary is replayable, but the ship has not left HQ until a burn
+      // has executed. Subsequent docked bodies must be Earth.
+      const atHq = ship === undefined || (this.#isDocked(ship)
+        ? ship.arrivalState?.destination === "earth"
+        : ship.executedBurns.length === 0);
+      if (!atHq) throw new RangeError("Cargo can be composed only while docked at HQ.");
+      const lastNode = ship?.flightPlan.nodes.at(-1);
+      if (lastNode === undefined) throw new RangeError("Cargo composition requires an authoritative planned arrival.");
+      const plannedArrivalAtMs = simTimeMs(lastNode.executeAtMs + lastNode.burn.burnDurationMs);
+      const event = composeCargo(TIER0_TRADE_CONFIG, TIER0_MARKET_CONFIG, this.#reducer.state.market, composition, plannedArrivalAtMs, this.#reducer.time);
+      // Validate the exact reducer transition before durable append. A rejected
+      // local action must never become an unreplayable persisted fact.
+      reduceTradeEvent(this.#reducer.state.cargo, event);
+      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: eventPosition() });
+      this.#reducer.apply(event);
+    });
+  }
+
+  async scheduleInboundSellOrder(
+    arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
+    hqPositionAt: (issuedAtMs: SimTimeMs) => PositionMeters,
+    arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
+  ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }> {
+    return this.#scheduleInboundTradeCommand("sell-order", arrivalTimeForIssue, hqPositionAt, arrivalPositionAt);
+  }
+
+  async scheduleInboundSpotDispositionRevision(
+    spotDisposition: SpotDisposition,
+    arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
+    hqPositionAt: (issuedAtMs: SimTimeMs) => PositionMeters,
+    arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters
+  ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }> {
+    if (spotDisposition !== "manual" && spotDisposition !== "sell-on-arrival") throw new RangeError("Spot disposition requires a known value.");
+    return this.#scheduleInboundTradeCommand("spot-disposition-revision", arrivalTimeForIssue, hqPositionAt, arrivalPositionAt, spotDisposition);
+  }
+
+  async #scheduleInboundTradeCommand(
+    commandKind: "sell-order" | "spot-disposition-revision",
+    arrivalTimeForIssue: (issuedAtMs: SimTimeMs) => SimTimeMs,
+    hqPositionAt: (issuedAtMs: SimTimeMs) => PositionMeters,
+    arrivalPositionAt: (arrivalAtMs: SimTimeMs) => PositionMeters,
+    spotDisposition?: SpotDisposition
+  ): Promise<{ readonly issuedAtMs: SimTimeMs; readonly arrivalAtMs: SimTimeMs }> {
+    return this.#serialize(async () => {
+      const issuedAtMs = this.#reducer.time;
+      const hqPosition = hqPositionAt(issuedAtMs);
+      const arrivalAtMs = simTimeMs(arrivalTimeForIssue(issuedAtMs));
+      if (arrivalAtMs < issuedAtMs) throw new RangeError("Inbound trade-command arrival cannot precede its issue time.");
+      const commandId = `command-${this.#streamSequence + 1}`;
+      const arrivalPosition = arrivalPositionAt(arrivalAtMs);
+      const command: SimEvent = { type: "commandIssued", commandId, issuedAtMs, arrivalAtMs, hqPosition, arrivalPosition, commandKind, ...(spotDisposition === undefined ? {} : { spotDisposition }) };
+      await this.#append({ event: command, eventTime: issuedAtMs, eventPosition: hqPosition });
+      this.#reducer.apply(command);
+      this.#inboundCommands.push({ commandId, commandKind, arrivalAtMs, arrivalPosition, ...(spotDisposition === undefined ? {} : { spotDisposition }), replacedNodeIds: new Set() });
+      this.#inboundCommands.sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
+      await this.#advanceDueWork(arrivalPositionAt);
+      return { issuedAtMs, arrivalAtMs };
+    });
+  }
+
   /**
    * Queues a signal for its exact causal arrival time. The issue timestamp and
    * arrival solve happen inside writer serialization; this is the authority
@@ -177,10 +246,10 @@ export class AuthoritativeSimLoop {
       };
       await this.#append({ event: command, eventTime: issuedAtMs, eventPosition: hqPosition });
       this.#reducer.apply(command);
-      this.#inboundPlanRevisions.push({
-        commandId, flightPlan, arrivalAtMs, arrivalPosition, replacedNodeIds: new Set(replacedNodeIds)
+      this.#inboundCommands.push({
+        commandId, commandKind: "plan-revision", flightPlan, arrivalAtMs, arrivalPosition, replacedNodeIds: new Set(replacedNodeIds)
       });
-      this.#inboundPlanRevisions.sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
+      this.#inboundCommands.sort((left, right) => left.arrivalAtMs - right.arrivalAtMs);
       await this.#advanceDueWork(arrivalPositionAt);
       return { issuedAtMs, arrivalAtMs };
     });
@@ -249,7 +318,7 @@ export class AuthoritativeSimLoop {
 
   #remainingToNextBoundary(): number | undefined {
     const burnBoundary = this.#remainingToNextBurnBoundary();
-    const revision = this.#inboundPlanRevisions[0];
+    const revision = this.#inboundCommands[0];
     const revisionBoundary = revision === undefined ? undefined : revision.arrivalAtMs - this.#reducer.time;
     if (revisionBoundary !== undefined && revisionBoundary < 0) {
       throw new Error("Inbound plan-revision boundary is behind the authoritative simulation time.");
@@ -264,11 +333,15 @@ export class AuthoritativeSimLoop {
   /** Burns win equal timestamps: only a revision that arrived before a burn can supersede it. */
   async #advanceDueWork(eventPositionAt: (time: SimTimeMs) => PositionMeters): Promise<void> {
     await this.#advanceDueBurns(eventPositionAt);
-    while (this.#inboundPlanRevisions[0]?.arrivalAtMs === this.#reducer.time) {
-      const revision = this.#inboundPlanRevisions.shift()!;
+    while (this.#inboundCommands[0]?.arrivalAtMs === this.#reducer.time) {
+      const revision = this.#inboundCommands.shift()!;
+      if (revision.commandKind !== "plan-revision") {
+        await this.#executeInboundTradeCommand(revision, eventPositionAt);
+        continue;
+      }
       try {
         const validatedPlan = validateFlightPlanRevision(
-          revision.flightPlan, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? [], [...revision.replacedNodeIds]
+          revision.flightPlan!, this.#reducer.time, this.#reducer.state.ship?.executedBurns ?? [], [...revision.replacedNodeIds]
         );
         const event: SimEvent = { type: "planRevisionApplied", commandId: revision.commandId, replacedNodeIds: [...revision.replacedNodeIds], flightPlan: validatedPlan };
         await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPositionAt) });
@@ -276,13 +349,44 @@ export class AuthoritativeSimLoop {
       } catch (error: unknown) {
         if (!(error instanceof PlanRevisionValidationError)) throw error;
         // Arrival-time validation is authoritative. Refusals preserve opaque command payloads for disputes.
-        const event: SimEvent = { type: "planRevisionRefused", commandId: revision.commandId, flightPlan: revision.flightPlan, reason: error.reason };
+        const event: SimEvent = { type: "planRevisionRefused", commandId: revision.commandId, flightPlan: revision.flightPlan!, reason: error.reason };
         await this.#append({ event, eventTime: this.#reducer.time, eventPosition: this.#eventPositionAt(this.#reducer.time, eventPositionAt) });
         this.#reducer.apply(event);
       }
       await this.#advanceDueBurns(eventPositionAt);
     }
     await this.#advanceDueMarket();
+  }
+
+  async #executeInboundTradeCommand(command: {
+    readonly commandId: string;
+    readonly commandKind: "plan-revision" | "sell-order" | "spot-disposition-revision";
+    readonly spotDisposition?: SpotDisposition;
+  }, eventPositionAt: (time: SimTimeMs) => PositionMeters): Promise<void> {
+    if (command.commandKind === "plan-revision") throw new Error("Plan revisions are not trade commands.");
+    await this.#advanceDueMarket();
+    const ship = this.#reducer.state.ship;
+    const cargo = this.#reducer.state.cargo;
+    const atMarket = ship !== undefined && this.#isDocked(ship) && ship.arrivalState?.destination === TIER0_MARKET_CONFIG.marketBodyId;
+    if (command.commandKind === "spot-disposition-revision") {
+      const event: SimEvent = cargo.spotTons === 0
+        ? { type: "sellRefused", reason: "no-cargo", commandId: command.commandId }
+        : { type: "spotDispositionRevised", spotDisposition: command.spotDisposition!, commandId: command.commandId };
+      await this.#append({ event, eventTime: this.#reducer.time, eventPosition: atMarket ? this.#marketPosition() : this.#eventPositionAt(this.#reducer.time, eventPositionAt) });
+      this.#reducer.apply(event);
+      return;
+    }
+    const reason: SellRefusalReason | undefined = !atMarket ? "not-arrived-or-docked" : cargo.spotTons === 0 ? (cargo.spotSold ? "duplicate-sale" : "no-cargo") : undefined;
+    const event: SimEvent = reason === undefined
+      ? settlement("spot", cargo.spotTons, this.#reducer.state.market.price, command.commandId)
+      : { type: "sellRefused", reason, commandId: command.commandId };
+    await this.#append({ event, eventTime: this.#reducer.time, eventPosition: reason === undefined ? this.#marketPosition() : this.#eventPositionAt(this.#reducer.time, eventPositionAt) });
+    this.#reducer.apply(event);
+  }
+
+  #marketPosition(): PositionMeters {
+    if (this.#marketPositionAt === undefined) throw new Error("Market settlement requires the live market position resolver.");
+    return this.#marketPositionAt(TIER0_MARKET_CONFIG.marketBodyId, this.#reducer.time);
   }
 
   async #advanceDueMarket(): Promise<void> {
@@ -342,6 +446,23 @@ export class AuthoritativeSimLoop {
     const event: SimEvent = { type: "arrivalRecorded", arrivalState };
     await this.#append({ event, eventTime: this.#reducer.time, eventPosition: terminalPositionMeters });
     this.#reducer.apply(event);
+    // Price updates at this exact boundary first, then standing and contractual
+    // dispositions settle against the arrival-instant persisted price.
+    await this.#advanceDueMarket();
+    const cargo = this.#reducer.state.cargo;
+    const mustSettleAtMarket = destination === TIER0_MARKET_CONFIG.marketBodyId &&
+      (cargo.contractedTons > 0 || (cargo.spotTons > 0 && cargo.spotDisposition === "sell-on-arrival"));
+    const marketPosition = mustSettleAtMarket ? this.#marketPosition() : undefined;
+    if (destination === TIER0_MARKET_CONFIG.marketBodyId && cargo.contractedTons > 0) {
+      const settled = settlement("contracted", cargo.contractedTons, cargo.contractedRatePerTon!);
+      await this.#append({ event: settled, eventTime: this.#reducer.time, eventPosition: marketPosition! });
+      this.#reducer.apply(settled);
+    }
+    if (destination === TIER0_MARKET_CONFIG.marketBodyId && cargo.spotTons > 0 && cargo.spotDisposition === "sell-on-arrival") {
+      const settled = settlement("spot", cargo.spotTons, this.#reducer.state.market.price);
+      await this.#append({ event: settled, eventTime: this.#reducer.time, eventPosition: marketPosition! });
+      this.#reducer.apply(settled);
+    }
   }
 
   #eventPositionAt(time: SimTimeMs, fallback: (time: SimTimeMs) => PositionMeters): PositionMeters {

@@ -75,6 +75,14 @@ export const projectStoredEvent = (
         // F3: Both durable market variants are class 2.4 and use the same
         // stored-position causal gate and per-message ledger as ship reports.
         return { ...base, class: "marketEvent" as const, payload: stored.event.event, observerPositionAt };
+      case "cargoComposed":
+        return undefined;
+      case "cargoSold":
+        return { ...base, class: "commandOutcomeReport" as const, payload: { outcome: "cargo-sold" as const, lot: stored.event.event.lot, tons: stored.event.event.tons, proceeds: stored.event.event.proceeds, ...(stored.event.event.commandId === undefined ? {} : { commandId: stored.event.event.commandId }) }, observerPositionAt };
+      case "sellRefused":
+        return { ...base, class: "commandOutcomeReport" as const, payload: { outcome: "sell-refused" as const, reason: stored.event.event.reason, ...(stored.event.event.commandId === undefined ? {} : { commandId: stored.event.event.commandId }) }, observerPositionAt };
+      case "spotDispositionRevised":
+        return { ...base, class: "commandOutcomeReport" as const, payload: { outcome: "applied" as const, commandId: stored.event.event.commandId }, observerPositionAt };
       case "clockAdvanced":
       case "randomValueRequested":
         return undefined;
