@@ -67,8 +67,8 @@ EmittedMessage {
 | # | Class | Source events | Lag |
 |---|-------|--------------|-----|
 | 2.1 | Ship report | burnStarted, burnEnded, arrivalRecorded, departureRecorded | c from stored event position to observer |
-| 2.2 | Command outcome report | planRevisionApplied, planRevisionRefused; cargoSold, sellRefused (ADDED 2026-08-08, market-model §4 — sale outcomes happen at the market and travel back at c, the same shape; concrete refusal type named per Warden r2 f5, din.6.4 implements it) | c from the ship/market (the outcome happens at arrival) back to observer |
-| 2.3 | Command echo | commandIssued | none — the event happens AT the observer's HQ (staleness 0) |
+| 2.2 | Command outcome report | planRevisionApplied, planRevisionRefused; cargoSold, sellRefused (ADDED 2026-08-08, market-model §4 — sale outcomes happen at the market and travel back at c, the same shape; concrete refusal type named per Warden r2 f5, din.6.4 implements it); spotDispositionRevised (ADDED 2026-08-09 per Warden din.6.4 r2 f5 — en-route disposition revision outcome, same c-from-arrival shape; its outcome vocabulary is deliberately under review, longburn-nwst f6) | c from the ship/market (the outcome happens at arrival) back to observer |
+| 2.3 | Command echo | commandIssued | none — the event happens AT the observer's HQ (staleness 0). CONSTRAINT (2026-08-09, Warden din.6.4 r2 f8, longburn-ye1t): a composition echo must re-derive any quoted forward rate from the light-lagged market price the observer actually holds — echoing the authoritative-instant rate would leak the market body's spot price to HQ faster than c (SO 12). cargoComposed currently projects to nothing; whoever first emits it owns this constraint. |
 | 2.4 | Market event | marketQuoteUpdated, marketEventOccurred (filled 2026-08-09 by market-model-v0.1.md §3) | c from the market's host body |
 | 2.5 | Sim clock | current sim time at HQ | none — observer-local context, no remote information |
 | 2.6 | (not emitted) Body ephemerides | — | client-computed public math |
