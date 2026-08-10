@@ -10,8 +10,8 @@ CREATE TABLE delivery_cursors (
 
 CREATE TABLE delivery_acknowledgements (
   observer_id TEXT NOT NULL,
-  global_position BIGINT NOT NULL CHECK (global_position > 0),
+  delivery_sequence BIGINT NOT NULL CHECK (delivery_sequence > 0),
   message_id TEXT NOT NULL CHECK (length(message_id) > 0),
-  PRIMARY KEY (observer_id, global_position),
+  PRIMARY KEY (observer_id, delivery_sequence),
   UNIQUE (observer_id, message_id)
 );

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { hasAcknowledged, InMemoryDeliveryCursorStore, PostgresDeliveryCursorStore, type PostgresCursorQueryClient, type PostgresCursorSession } from "./delivery-cursor.js";
 
-const acknowledgement = (globalPosition: number, messageId = `message-${globalPosition}`) => ({ globalPosition, messageId });
+const acknowledgement = (deliverySequence: number, messageId = `message-${deliverySequence}`) => ({ deliverySequence, messageId });
 
 const assertCursorContract = (makeStore: () => import("./delivery-cursor.js").DeliveryCursorStore): void => {
   it("starts empty, preserves sparse delivered messages, and compacts a contiguous prefix", async () => {
@@ -29,7 +29,7 @@ const postgresCursorDouble = (): {
   readonly calls: { sql: string; values: readonly unknown[] | undefined }[];
   readonly transactions: { committed: boolean }[];
 } => {
-  type StoredAcknowledgement = { readonly globalPosition: number; readonly messageId: string };
+  type StoredAcknowledgement = { readonly deliverySequence: number; readonly messageId: string };
   type State = { cursors: Map<string, number>; acknowledgements: Map<string, StoredAcknowledgement[]> };
   const copyState = (state: State): State => ({
     cursors: new Map(state.cursors),
@@ -48,11 +48,11 @@ const postgresCursorDouble = (): {
     if (lowWatermark === undefined) return [];
     const acknowledgements = state().acknowledgements.get(observerId) ?? [];
     return acknowledgements.length === 0
-      ? [{ observer_id: observerId, low_watermark: lowWatermark, global_position: null, message_id: null }]
-      : acknowledgements.sort((a, b) => a.globalPosition - b.globalPosition).map((acknowledgement) => ({
+      ? [{ observer_id: observerId, low_watermark: lowWatermark, delivery_sequence: null, message_id: null }]
+      : acknowledgements.sort((a, b) => a.deliverySequence - b.deliverySequence).map((acknowledgement) => ({
         observer_id: observerId,
         low_watermark: lowWatermark,
-        global_position: acknowledgement.globalPosition,
+        delivery_sequence: acknowledgement.deliverySequence,
         message_id: acknowledgement.messageId
       }));
   };
@@ -61,14 +61,14 @@ const postgresCursorDouble = (): {
       const observerId = values?.[0];
       if (typeof observerId !== "string") throw new Error("Expected observer ID.");
       if (sql.includes("INSERT INTO delivery_acknowledgements")) {
-        const globalPosition = values?.[1];
+        const deliverySequence = values?.[1];
         const messageId = values?.[2];
-        if (typeof globalPosition !== "number" || typeof messageId !== "string") throw new Error("Expected acknowledgement values.");
+        if (typeof deliverySequence !== "number" || typeof messageId !== "string") throw new Error("Expected acknowledgement values.");
         const acknowledgements = state().acknowledgements.get(observerId) ?? [];
-        if (acknowledgements.some((acknowledgement) => acknowledgement.globalPosition === globalPosition || acknowledgement.messageId === messageId)) {
+        if (acknowledgements.some((acknowledgement) => acknowledgement.deliverySequence === deliverySequence || acknowledgement.messageId === messageId)) {
           return result<Row>([]);
         }
-        state().acknowledgements.set(observerId, [...acknowledgements, { globalPosition, messageId }]);
+        state().acknowledgements.set(observerId, [...acknowledgements, { deliverySequence, messageId }]);
         return result<Row>([{ observer_id: observerId }]);
       }
       if (sql.includes("INSERT INTO delivery_cursors")) {
@@ -85,7 +85,7 @@ const postgresCursorDouble = (): {
         const lowWatermark = values?.[1];
         if (typeof lowWatermark !== "number") throw new Error("Expected low watermark.");
         state().acknowledgements.set(observerId, (state().acknowledgements.get(observerId) ?? []).filter(
-          (acknowledgement) => acknowledgement.globalPosition > lowWatermark
+          (acknowledgement) => acknowledgement.deliverySequence > lowWatermark
         ));
         return result<Row>([]);
       }

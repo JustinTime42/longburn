@@ -25,8 +25,8 @@ export interface EmissionSchedulerOptions {
   /** Scheduler-side failures happen before the gate, but are equally closed. */
   readonly recordIncident: (incident: CausalityIncident) => void;
   readonly incrementCausalityFailure: () => void;
-  /** Records every light-lagged emission suppressed by an acknowledgement. */
-  readonly incrementBelowCursorSuppression: () => void;
+  /** Records every light-lagged emission suppressed by the delivery ledger. */
+  readonly incrementDeliveryIntegrityCounter: () => void;
 }
 
 export interface SchedulerRunResult {
@@ -55,14 +55,14 @@ export class EmissionScheduler {
   readonly #emit: (candidate: EmissionCandidate) => Promise<EmissionResult>;
   readonly #recordIncident: (incident: CausalityIncident) => void;
   readonly #incrementCausalityFailure: () => void;
-  readonly #incrementBelowCursorSuppression: () => void;
+  readonly #incrementDeliveryIntegrityCounter: () => void;
 
-  constructor({ cursors, emit, recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression }: EmissionSchedulerOptions) {
+  constructor({ cursors, emit, recordIncident, incrementCausalityFailure, incrementDeliveryIntegrityCounter }: EmissionSchedulerOptions) {
     this.#cursors = cursors;
     this.#emit = emit;
     this.#recordIncident = recordIncident;
     this.#incrementCausalityFailure = incrementCausalityFailure;
-    this.#incrementBelowCursorSuppression = incrementBelowCursorSuppression;
+    this.#incrementDeliveryIntegrityCounter = incrementDeliveryIntegrityCounter;
   }
 
   /**
@@ -82,11 +82,19 @@ export class EmissionScheduler {
       if (emission.message.observerId !== observerId) throw new RangeError("Scheduled emission observer does not match scheduler observer.");
       if (isLightLaggedMessageClass(emission.message.class)) {
         if (lightLaggedPositions.has(emission.sourceGlobalPosition)) {
-          throw new RangeError("One stored event cannot advance a delivery cursor more than once.");
+          throw new RangeError("One scheduled light-lagged message cannot share a delivery sequence.");
         }
         lightLaggedPositions.add(emission.sourceGlobalPosition);
       }
     }
+    // The host supplies the complete durable projection on each pass.  Ranking
+    // only light-lagged candidates makes this sequence observer-local: global
+    // log entries that can never be delivered cannot leave a compaction gap.
+    const deliverySequenceByPosition = new Map(
+      scheduled.filter((emission) => isLightLaggedMessageClass(emission.message.class))
+        .sort((left, right) => left.sourceGlobalPosition - right.sourceGlobalPosition)
+        .map((emission, index) => [emission.sourceGlobalPosition, index + 1] as const)
+    );
     let cursor = await this.#cursors.read(observerId);
     const emitted: string[] = [];
     const deferred: string[] = [];
@@ -107,14 +115,22 @@ export class EmissionScheduler {
           : { reason: "invalid-position" as const, provenance: { eventTime: emission.message.event.eventTime, eventPosition: emission.message.event.eventPosition } };
       }
       return { emission, candidate, earliest, incident };
-    }).sort((left, right) => (left.earliest ?? Number.POSITIVE_INFINITY) - (right.earliest ?? Number.POSITIVE_INFINITY) ||
-      left.emission.sourceGlobalPosition - right.emission.sourceGlobalPosition);
+    }).sort((left, right) => {
+      if (left.earliest === undefined && right.earliest !== undefined) return 1;
+      if (left.earliest !== undefined && right.earliest === undefined) return -1;
+      if (left.earliest !== undefined && right.earliest !== undefined && left.earliest !== right.earliest) return left.earliest - right.earliest;
+      return left.emission.sourceGlobalPosition - right.emission.sourceGlobalPosition;
+    });
 
     for (const { emission, candidate, earliest, incident } of prepared) {
       const local = !isLightLaggedMessageClass(emission.message.class);
-      const acknowledgement: DeliveryAcknowledgement = { globalPosition: emission.sourceGlobalPosition, messageId: candidate?.messageId ?? `position:${emission.sourceGlobalPosition}` };
-      if (!local && hasAcknowledged(cursor, acknowledgement)) {
-        this.#incrementBelowCursorSuppression();
+      const deliverySequence = deliverySequenceByPosition.get(emission.sourceGlobalPosition);
+      const acknowledgement: DeliveryAcknowledgement | undefined = local ? undefined : deliverySequence === undefined ? undefined : {
+        deliverySequence, messageId: candidate?.messageId ?? `position:${emission.sourceGlobalPosition}`
+      };
+      if (!local && acknowledgement === undefined) throw new Error("Light-lagged emission has no delivery sequence.");
+      if (acknowledgement !== undefined && hasAcknowledged(cursor, acknowledgement)) {
+        this.#incrementDeliveryIntegrityCounter();
         continue;
       }
       if (incident !== undefined) {
@@ -136,7 +152,7 @@ export class EmissionScheduler {
         continue;
       }
       emitted.push(candidate.messageId);
-      if (!local) {
+      if (acknowledgement !== undefined) {
         cursor = await this.#cursors.acknowledge(observerId, acknowledgement);
       }
     }

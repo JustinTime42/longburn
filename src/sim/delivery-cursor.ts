@@ -4,7 +4,8 @@
  * write intentionally redelivers the stable message id.
  */
 export interface DeliveryAcknowledgement {
-  readonly globalPosition: number;
+  /** Contiguous only among this observer's light-lagged delivery candidates. */
+  readonly deliverySequence: number;
   readonly messageId: string;
 }
 
@@ -22,8 +23,8 @@ export interface DeliveryCursorStore {
 }
 
 const validAcknowledgement = (acknowledgement: DeliveryAcknowledgement): void => {
-  if (acknowledgement.messageId.length === 0 || !Number.isSafeInteger(acknowledgement.globalPosition) || acknowledgement.globalPosition < 1) {
-    throw new RangeError("Delivery acknowledgements require a non-empty message ID and positive global position.");
+  if (acknowledgement.messageId.length === 0 || !Number.isSafeInteger(acknowledgement.deliverySequence) || acknowledgement.deliverySequence < 1) {
+    throw new RangeError("Delivery acknowledgements require a non-empty message ID and positive delivery sequence.");
   }
 };
 
@@ -36,24 +37,24 @@ const normalize = (observerId: string, lowWatermark: number, delivered: readonly
   if (observerId.length === 0 || !Number.isSafeInteger(lowWatermark) || lowWatermark < 0) {
     throw new RangeError("Delivery cursors require a non-empty observer ID and non-negative low watermark.");
   }
-  const byPosition = new Map<number, DeliveryAcknowledgement>();
+  const bySequence = new Map<number, DeliveryAcknowledgement>();
   const messageIds = new Set<string>();
   for (const acknowledgement of delivered) {
     validAcknowledgement(acknowledgement);
-    if (acknowledgement.globalPosition <= lowWatermark || byPosition.has(acknowledgement.globalPosition) || messageIds.has(acknowledgement.messageId)) {
+    if (acknowledgement.deliverySequence <= lowWatermark || bySequence.has(acknowledgement.deliverySequence) || messageIds.has(acknowledgement.messageId)) {
       throw new RangeError("Delivery acknowledgement ledger contains a duplicate or compacted entry.");
     }
-    byPosition.set(acknowledgement.globalPosition, { ...acknowledgement });
+    bySequence.set(acknowledgement.deliverySequence, { ...acknowledgement });
     messageIds.add(acknowledgement.messageId);
   }
   let compactedWatermark = lowWatermark;
-  while (byPosition.delete(compactedWatermark + 1)) compactedWatermark += 1;
-  return { observerId, lowWatermark: compactedWatermark, delivered: [...byPosition.values()].sort((a, b) => a.globalPosition - b.globalPosition) };
+  while (bySequence.delete(compactedWatermark + 1)) compactedWatermark += 1;
+  return { observerId, lowWatermark: compactedWatermark, delivered: [...bySequence.values()].sort((a, b) => a.deliverySequence - b.deliverySequence) };
 };
 
 export const hasAcknowledged = (cursor: DeliveryCursor | undefined, acknowledgement: DeliveryAcknowledgement): boolean =>
-  cursor !== undefined && (acknowledgement.globalPosition <= cursor.lowWatermark ||
-    cursor.delivered.some((delivered) => delivered.globalPosition === acknowledgement.globalPosition || delivered.messageId === acknowledgement.messageId));
+  cursor !== undefined && (acknowledgement.deliverySequence <= cursor.lowWatermark ||
+    cursor.delivered.some((delivered) => delivered.deliverySequence === acknowledgement.deliverySequence || delivered.messageId === acknowledgement.messageId));
 
 /** Deterministic reference store used by scheduler tests and replay fixtures. */
 export class InMemoryDeliveryCursorStore implements DeliveryCursorStore {
@@ -91,7 +92,7 @@ export interface PostgresCursorQueryClient extends PostgresCursorSession {
 interface CursorRow extends Record<string, unknown> {
   readonly observer_id: string;
   readonly low_watermark: number;
-  readonly global_position: number | null;
+  readonly delivery_sequence: number | null;
   readonly message_id: string | null;
 }
 
@@ -104,11 +105,11 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
   async read(observerId: string): Promise<DeliveryCursor | undefined> {
     const result = await this.#client.query<CursorRow>(
       `SELECT c.observer_id, c.low_watermark::double precision AS low_watermark,
-              a.global_position::double precision AS global_position, a.message_id
+              a.delivery_sequence::double precision AS delivery_sequence, a.message_id
          FROM delivery_cursors c
          LEFT JOIN delivery_acknowledgements a ON a.observer_id = c.observer_id
         WHERE c.observer_id = $1
-        ORDER BY a.global_position`, [observerId]
+        ORDER BY a.delivery_sequence`, [observerId]
     );
     return result.rows.length === 0 ? undefined : deserializeCursor(result.rows);
   }
@@ -117,9 +118,9 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
     validAcknowledgement(acknowledgement);
     return this.#client.withTransaction(async (session) => {
       const inserted = await session.query<{ readonly observer_id: string }>(
-        `INSERT INTO delivery_acknowledgements (observer_id, global_position, message_id)
+        `INSERT INTO delivery_acknowledgements (observer_id, delivery_sequence, message_id)
          VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING observer_id`,
-        [observerId, acknowledgement.globalPosition, acknowledgement.messageId]
+        [observerId, acknowledgement.deliverySequence, acknowledgement.messageId]
       );
       if (inserted.rows.length === 0) throw new RangeError("Delivery message is already acknowledged.");
 
@@ -129,15 +130,15 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
       );
       const locked = await session.query<CursorRow>(
         `SELECT c.observer_id, c.low_watermark::double precision AS low_watermark,
-                a.global_position::double precision AS global_position, a.message_id
+                a.delivery_sequence::double precision AS delivery_sequence, a.message_id
            FROM delivery_cursors c
            LEFT JOIN delivery_acknowledgements a ON a.observer_id = c.observer_id
           WHERE c.observer_id = $1
-          ORDER BY a.global_position FOR UPDATE OF c`, [observerId]
+          ORDER BY a.delivery_sequence FOR UPDATE OF c`, [observerId]
       );
       const lockedCursor = locked.rows[0];
       if (lockedCursor === undefined) throw new Error("Delivery cursor lock returned no cursor.");
-      if (acknowledgement.globalPosition <= lockedCursor.low_watermark) {
+      if (acknowledgement.deliverySequence <= lockedCursor.low_watermark) {
         throw new RangeError("Delivery message is already acknowledged.");
       }
       const beforeCompaction = deserializeCursor(locked.rows);
@@ -146,16 +147,16 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
         [observerId, beforeCompaction.lowWatermark]
       );
       await session.query(
-        "DELETE FROM delivery_acknowledgements WHERE observer_id = $1 AND global_position <= $2",
+        "DELETE FROM delivery_acknowledgements WHERE observer_id = $1 AND delivery_sequence <= $2",
         [observerId, beforeCompaction.lowWatermark]
       );
       const remainder = await session.query<CursorRow>(
         `SELECT c.observer_id, c.low_watermark::double precision AS low_watermark,
-                a.global_position::double precision AS global_position, a.message_id
+                a.delivery_sequence::double precision AS delivery_sequence, a.message_id
            FROM delivery_cursors c
            LEFT JOIN delivery_acknowledgements a ON a.observer_id = c.observer_id
           WHERE c.observer_id = $1
-          ORDER BY a.global_position`, [observerId]
+          ORDER BY a.delivery_sequence`, [observerId]
       );
       const cursor = deserializeCursor(remainder.rows);
       if (!hasAcknowledged(cursor, acknowledgement)) throw new Error("Delivery acknowledgement persistence returned mismatched acknowledgement.");
@@ -167,7 +168,7 @@ export class PostgresDeliveryCursorStore implements DeliveryCursorStore {
 const deserializeCursor = (rows: readonly CursorRow[]): DeliveryCursor => {
   const first = rows[0];
   if (first === undefined) throw new RangeError("Delivery cursor query returned no rows.");
-  const delivered = rows.flatMap((row) => row.global_position === null || row.message_id === null
-    ? [] : [{ globalPosition: row.global_position, messageId: row.message_id }]);
+  const delivered = rows.flatMap((row) => row.delivery_sequence === null || row.message_id === null
+    ? [] : [{ deliverySequence: row.delivery_sequence, messageId: row.message_id }]);
   return normalize(first.observer_id, first.low_watermark, delivered);
 };

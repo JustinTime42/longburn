@@ -84,7 +84,7 @@ describe("projectStoredEvent", () => {
     const host = new CausalStateHost({
       cursors: new InMemoryDeliveryCursorStore(), observerId: "player-1", observerPositionAt,
       socket: { writeText: (payload) => received.push(JSON.parse(payload) as EmittableMessage) },
-      recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression: vi.fn()
+      recordIncident, incrementCausalityFailure, incrementDeliveryIntegrityCounter: vi.fn()
     });
     const malformed = { ...stored({ type: "clockAdvanced", elapsedMs: 1 }), streamId: "" };
     const deliverable = {

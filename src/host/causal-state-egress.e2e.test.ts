@@ -88,7 +88,7 @@ const wiredHost = (received: EmittableMessage[], observerPositionAt: (timeMs: nu
     observerId: "hq-player",
     observerPositionAt,
     socket: { writeText: (payload) => received.push(validateEmittedMessage(JSON.parse(payload))) },
-    recordIncident, incrementCausalityFailure, incrementBelowCursorSuppression: vi.fn()
+    recordIncident, incrementCausalityFailure, incrementDeliveryIntegrityCounter: vi.fn()
   });
   return { host, recordIncident, incrementCausalityFailure };
 };
