@@ -29,8 +29,16 @@ export interface WebPushGateway {
     readonly vapid: VapidConfiguration;
     readonly idempotencyKey: string;
     readonly message: NotificationMessage;
-  }): Promise<{ readonly delivered: boolean }>;
+  }): Promise<WebPushDeliveryResult>;
 }
+
+/**
+ * Provider adapters must classify a permanently revoked endpoint separately
+ * from a retryable provider failure, so the queue can prune only the former.
+ */
+export type WebPushDeliveryResult =
+  | { readonly delivered: true }
+  | { readonly delivered: false; readonly failure: "retryable" | "terminal" };
 
 export interface EmailGateway {
   deliver(request: {
@@ -47,6 +55,7 @@ export interface InAppGateway {
 /** Preference selection is G4 work; this T0 resolver supplies registered routes. */
 export interface NotificationRouteStore {
   pushSubscriptionsFor(observerId: string): Promise<readonly WebPushSubscription[]>;
+  removePushSubscription(endpoint: string): Promise<void>;
   emailAddressFor(observerId: string): Promise<string | undefined>;
 }
 
@@ -91,6 +100,11 @@ export class PostgresPushSubscriptionStore {
       return subscription;
     });
   }
+
+  async removePushSubscription(endpoint: string): Promise<void> {
+    nonEmpty(endpoint, "Push subscription endpoint");
+    await this.#client.query("DELETE FROM notification_push_subscriptions WHERE endpoint = $1", [endpoint]);
+  }
 }
 
 export interface NotificationTransportOptions {
@@ -125,8 +139,9 @@ const assertSubscription = (subscription: WebPushSubscription): void => {
 
 /**
  * G3's intentionally timing-free queue adapter. Push is primary whenever a
- * browser has registered a subscription. A push default with no subscription
- * falls back to in-app, never email, so an unchosen channel stays unchosen.
+ * browser has registered a subscription. A push default with no subscription,
+ * or only terminally dead subscriptions, falls back to in-app, never email,
+ * so an unchosen channel stays unchosen.
  * A stable queue ID is passed unchanged to either provider for retry safety.
  */
 export class NotificationTransport {
@@ -177,11 +192,23 @@ export class NotificationTransport {
         outcome = this.#inApp === undefined ? { delivered: false } : await this.#inApp.deliver({ idempotencyKey: notification.id, message });
       } else {
         let delivered = false;
+        let terminalFailures = 0;
         for (const subscription of subscriptions) {
           const pushOutcome = await this.#push.deliver({ subscription, vapid: this.#vapid, idempotencyKey: notification.id, message });
+          if (!pushOutcome.delivered && pushOutcome.failure === "terminal") {
+            await this.#routes.removePushSubscription(subscription.endpoint);
+            terminalFailures += 1;
+          }
+          // One device waking is sufficient. Keep trying the remaining routes
+          // to prune stale endpoints without changing that delivery outcome.
           delivered ||= pushOutcome.delivered;
         }
-        outcome = { delivered };
+        if (terminalFailures === subscriptions.length) {
+          deliveredChannel = "in-app";
+          outcome = this.#inApp === undefined ? { delivered: false } : await this.#inApp.deliver({ idempotencyKey: notification.id, message });
+        } else {
+          outcome = { delivered };
+        }
       }
     } else {
       const recipient = await this.#routes.emailAddressFor(this.#observerId);

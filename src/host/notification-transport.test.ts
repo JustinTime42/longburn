@@ -10,9 +10,10 @@ const subscription: WebPushSubscription = { endpoint: "https://push.example.test
 const message: NotificationMessage = { title: "LONGBURN", body: "Report received.", data: { route: "/flight", notificationId: "renderer-controlled" } };
 const transportMessage: NotificationMessage = { ...message, data: { ...message.data, notificationId: notification.id } };
 
-const buildTransport = ({ subscriptions = [] as readonly WebPushSubscription[], emailAddress, emailPreference = false, instrumentation, inApp }: { readonly subscriptions?: readonly WebPushSubscription[]; readonly emailAddress?: string; readonly emailPreference?: boolean; readonly instrumentation?: PostgresNotificationInstrumentation; readonly inApp?: { deliver: ReturnType<typeof vi.fn> } } = {}) => {
-  const routes = { pushSubscriptionsFor: vi.fn(async () => subscriptions), emailAddressFor: vi.fn(async () => emailAddress) };
-  const push = { deliver: vi.fn(async () => ({ delivered: true as const })) };
+const buildTransport = ({ subscriptions = [] as readonly WebPushSubscription[], emailAddress, emailPreference = false, instrumentation, inApp, pushOutcomes }: { readonly subscriptions?: readonly WebPushSubscription[]; readonly emailAddress?: string; readonly emailPreference?: boolean; readonly instrumentation?: PostgresNotificationInstrumentation; readonly inApp?: { deliver: ReturnType<typeof vi.fn> }; readonly pushOutcomes?: readonly Awaited<ReturnType<WebPushGateway["deliver"]>>[] } = {}) => {
+  const routes = { pushSubscriptionsFor: vi.fn(async () => subscriptions), removePushSubscription: vi.fn(async () => undefined), emailAddressFor: vi.fn(async () => emailAddress) };
+  let pushCalls = 0;
+  const push = { deliver: vi.fn(async () => pushOutcomes?.[pushCalls++] ?? ({ delivered: true as const })) };
   const email = { deliver: vi.fn(async () => ({ delivered: true as const })) };
   const preferences = new InMemoryNotificationPreferenceStore();
   const configured = emailPreference ? preferences.save("tester-1", { ...defaultNotificationPreferences(), channels: { ...defaultNotificationPreferences().channels, N5: "email" } }) : Promise.resolve();
@@ -58,6 +59,33 @@ describe("NotificationTransport", () => {
     expect(email.deliver).not.toHaveBeenCalled();
     expect(inApp.deliver).toHaveBeenCalledWith({ idempotencyKey: notification.id, message: transportMessage });
     expect(query).toHaveBeenCalledWith(expect.stringContaining("VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING"), ["notificationDelivered", notification.id, "N5", "in-app", 500, 1_000, 2_000]);
+  });
+
+  it("prunes terminal subscriptions then falls back in-app when every endpoint is dead", async () => {
+    const second = { ...subscription, endpoint: "https://push.example.test/dead-second" };
+    const inApp = { deliver: vi.fn(async () => ({ delivered: true as const })) };
+    const { transport, routes, push, email } = buildTransport({
+      subscriptions: [subscription, second], emailAddress: "tester@example.test", inApp,
+      pushOutcomes: [{ delivered: false, failure: "terminal" }, { delivered: false, failure: "terminal" }]
+    });
+
+    await expect(transport.deliver(notification)).resolves.toEqual({ delivered: true });
+    expect(routes.removePushSubscription).toHaveBeenNthCalledWith(1, subscription.endpoint);
+    expect(routes.removePushSubscription).toHaveBeenNthCalledWith(2, second.endpoint);
+    expect(inApp.deliver).toHaveBeenCalledWith({ idempotencyKey: notification.id, message: transportMessage });
+    expect(email.deliver).not.toHaveBeenCalled();
+    expect(push.deliver).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts delivery anywhere as success across mixed push outcomes", async () => {
+    const second = { ...subscription, endpoint: "https://push.example.test/mixed-second" };
+    const { transport, routes } = buildTransport({
+      subscriptions: [subscription, second],
+      pushOutcomes: [{ delivered: true }, { delivered: false, failure: "retryable" }]
+    });
+
+    await expect(transport.deliver(notification)).resolves.toEqual({ delivered: true });
+    expect(routes.removePushSubscription).not.toHaveBeenCalled();
   });
 
   it("leaves the queue retryable when the tester has no registered route or in-app surface", async () => {
@@ -117,7 +145,9 @@ describe("PostgresPushSubscriptionStore", () => {
 
     await store.store("tester-1", subscription);
     await expect(store.pushSubscriptionsFor("tester-1")).resolves.toEqual([subscription]);
+    await store.removePushSubscription(subscription.endpoint);
     expect(query).toHaveBeenNthCalledWith(1, expect.stringContaining("ON CONFLICT (endpoint)"), ["tester-1", subscription.endpoint, subscription.p256dh, subscription.auth]);
     expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining("ORDER BY endpoint"), ["tester-1"]);
+    expect(query).toHaveBeenNthCalledWith(3, "DELETE FROM notification_push_subscriptions WHERE endpoint = $1", [subscription.endpoint]);
   });
 });
