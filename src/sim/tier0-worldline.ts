@@ -19,14 +19,33 @@ export const createTier0AuthoritativeSimLoop = (
   stream: SimulationStream,
   store: SimulationEventStore,
   epochUtDaysSinceJ2000: UtDaysSinceJ2000
-): Promise<AuthoritativeSimLoop> => AuthoritativeSimLoop.create({ stream, store, ...tier0LiveResolvers(epochUtDaysSinceJ2000) });
+): Promise<AuthoritativeSimLoop> => AuthoritativeSimLoop.create({
+  stream: { ...stream, epochUtDaysSinceJ2000 },
+  store,
+  ...tier0LiveResolvers(epochUtDaysSinceJ2000)
+});
 
 /** Restart composition preserves the live market resolver from the first tick. */
 export const resumeTier0AuthoritativeSimLoop = (
   store: SimulationEventStore,
   streamId: string,
   epochUtDaysSinceJ2000: UtDaysSinceJ2000
-): Promise<AuthoritativeSimLoop> => AuthoritativeSimLoop.resume(store, streamId, tier0LiveResolvers(epochUtDaysSinceJ2000));
+): Promise<AuthoritativeSimLoop> => resumeWithPersistedEpoch(store, streamId, epochUtDaysSinceJ2000);
+
+const resumeWithPersistedEpoch = async (
+  store: SimulationEventStore,
+  streamId: string,
+  epochUtDaysSinceJ2000: UtDaysSinceJ2000
+): Promise<AuthoritativeSimLoop> => {
+  const stream = await store.readStream(streamId);
+  if (stream.epochUtDaysSinceJ2000 === undefined) {
+    throw new Error(`Simulation stream ${streamId} has no persisted epoch and cannot resume Tier 0 resolvers.`);
+  }
+  if (stream.epochUtDaysSinceJ2000 !== epochUtDaysSinceJ2000) {
+    throw new Error(`Simulation stream ${streamId} epoch does not match the requested Tier 0 epoch.`);
+  }
+  return AuthoritativeSimLoop.resume(store, streamId, tier0LiveResolvers(stream.epochUtDaysSinceJ2000));
+};
 
 const tier0LiveResolvers = (
   epochUtDaysSinceJ2000: UtDaysSinceJ2000

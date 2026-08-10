@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { simTimeMs } from "./clock.js";
+import { utDaysSinceJ2000 } from "./ephemerides.js";
 import {
   InMemorySimulationEventStore,
   PostgresSimulationEventStore,
@@ -65,6 +66,25 @@ describe("InMemorySimulationEventStore", () => {
 });
 
 describe("PostgresSimulationEventStore", () => {
+  it("writes and reads the optional immutable stream epoch", async () => {
+    const queries: { readonly sql: string; readonly values: readonly unknown[] | undefined }[] = [];
+    const client: PostgresQueryClient = {
+      query: <Row extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) => {
+        queries.push({ sql, values });
+        if (sql.startsWith("INSERT")) return Promise.resolve({ rows: [] as readonly Row[] });
+        if (sql.includes("FROM simulation_events")) return Promise.resolve({ rows: [] as readonly Row[] });
+        return Promise.resolve({ rows: [{
+          stream_id: "epoch", seed: 1, initial_time_ms: 0, epoch_ut_days_since_j2000: 9_496.5
+        }] as unknown as readonly Row[] });
+      }
+    };
+    const store = new PostgresSimulationEventStore(client);
+
+    await store.createStream({ id: "epoch", seed: 1, initialTime: simTimeMs(0), epochUtDaysSinceJ2000: utDaysSinceJ2000(9_496.5) });
+    await expect(store.readStream("epoch")).resolves.toMatchObject({ epochUtDaysSinceJ2000: 9_496.5 });
+    expect(queries[0]).toMatchObject({ values: ["epoch", 1, 0, 9_496.5] });
+  });
+
   it("retries its sequence constraint race and returns the typed conflict", async () => {
     let calls = 0;
     const client: PostgresQueryClient = {

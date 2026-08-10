@@ -75,10 +75,28 @@ describe("Tier 0 live worldline composition", () => {
     const store = new InMemorySimulationEventStore();
     const epoch = utDaysSinceJ2000(9_496.5);
     const loop = await createTier0AuthoritativeSimLoop({ id: "tier0-market", seed: 1, initialTime: simTimeMs(0) }, store, epoch);
+    await expect(loop.persistedStream()).resolves.toMatchObject({ epochUtDaysSinceJ2000: epoch });
     await loop.advance(TIER0_MARKET_CONFIG.marketStepMs, () => ({ x: 0, y: 0, z: 0 }));
     expect((await loop.persistedStream()).events.some(({ event }) => event.type === "marketQuoteUpdated")).toBe(true);
 
     const resumed = await resumeTier0AuthoritativeSimLoop(store, "tier0-market", epoch);
     await expect(resumed.advance(TIER0_MARKET_CONFIG.marketStepMs, () => ({ x: 0, y: 0, z: 0 }))).resolves.toBe(2 * TIER0_MARKET_CONFIG.marketStepMs);
+  });
+
+  it("refuses a resumed resolver epoch that differs from the persisted stream epoch", async () => {
+    const store = new InMemorySimulationEventStore();
+    const epoch = utDaysSinceJ2000(9_496.5);
+    await createTier0AuthoritativeSimLoop({ id: "tier0-epoch", seed: 1, initialTime: simTimeMs(0) }, store, epoch);
+
+    await expect(resumeTier0AuthoritativeSimLoop(store, "tier0-epoch", utDaysSinceJ2000(9_497.5)))
+      .rejects.toThrow("epoch does not match");
+  });
+
+  it("refuses Tier 0 resume for a legacy stream without an epoch fact", async () => {
+    const store = new InMemorySimulationEventStore();
+    await store.createStream({ id: "tier0-legacy", seed: 1, initialTime: simTimeMs(0) });
+
+    await expect(resumeTier0AuthoritativeSimLoop(store, "tier0-legacy", utDaysSinceJ2000(9_496.5)))
+      .rejects.toThrow("has no persisted epoch");
   });
 });
