@@ -72,6 +72,14 @@ const storedArrival = (arrival: StoredSimEvent): StoredEventForEmission => {
   };
 };
 
+const marketQuote = (globalPosition: number, eventTimeMs: number, eventPosition: { readonly x: number; readonly y: number; readonly z: number }): StoredEventForEmission => ({
+  streamId: "market:refined-volatiles",
+  event: {
+    streamSequence: globalPosition, globalPosition, eventTime: simTimeMs(eventTimeMs), eventPosition,
+    event: { type: "marketQuoteUpdated", commodityId: "refined-volatiles", price: 1_050, stepIndex: 1, marketBodyId: "mars" }
+  }
+});
+
 const wiredHost = (received: EmittableMessage[], observerPositionAt: (timeMs: number) => { readonly x: number; readonly y: number; readonly z: number } = () => HQ) => {
   const recordIncident = vi.fn();
   const incrementCausalityFailure = vi.fn();
@@ -157,6 +165,23 @@ describe("causal state egress end-to-end", () => {
     await expect(host.run(simTimeMs(earliest - 1), [movingReport])).resolves.toMatchObject({ emitted: [], deferred: [expect.any(String)], blocked: [] });
     await expect(host.run(simTimeMs(earliest), [movingReport])).resolves.toMatchObject({ emitted: [expect.any(String)], blocked: [] });
     expect(received[0]?.observerPosition).toEqual(observerPositionAt(earliest));
+  });
+
+  it("delivers a market quote no earlier than its moving-Earth causal arrival", async () => {
+    const marsDistanceMeters = 224_000_000_000;
+    const velocityMetersPerSecond = 30_000;
+    const observerPositionAt = (timeMs: number) => ({ x: 0, y: velocityMetersPerSecond * (timeMs / 1_000), z: 0 });
+    const quote = marketQuote(9, 1_000, { x: 0, y: -marsDistanceMeters, z: 0 });
+    const earliest = movingObserverEarliestTick(quote.event.eventTime, quote.event.eventPosition, velocityMetersPerSecond);
+    const received: EmittableMessage[] = [];
+    const { host } = wiredHost(received, observerPositionAt);
+
+    await expect(host.run(simTimeMs(earliest - 1), [quote])).resolves.toMatchObject({ emitted: [], deferred: [expect.any(String)], blocked: [] });
+    await expect(host.run(simTimeMs(earliest), [quote])).resolves.toMatchObject({
+      emitted: ["observer:hq-player/stream:market%3Arefined-volatiles/event:9/class:marketEvent"], blocked: []
+    });
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ class: "marketEvent", eventPosition: quote.event.eventPosition, observerPosition: observerPositionAt(earliest) });
   });
 
   it("uses an authoritative arrivalRecorded stored terminal position over a disagreeing event-position resolver", async () => {

@@ -104,11 +104,11 @@ describe("emitted message schema", () => {
 
   it("defensively rejects an unsafe-cast unconstructible class", () => {
     const invalidInput = {
-      observerId: "player-1", event: storedEvent, class: "marketEvent", payload: {},
+      observerId: "player-1", event: storedEvent, class: "bodyEphemerides", payload: {},
       emissionTimeMs: simTimeMs(1_000), observerPositionAt: () => ({ x: 0, y: 0, z: 0 })
     } as unknown as Parameters<typeof buildEmittedMessage>[0];
 
-    expect(() => buildEmittedMessage(invalidInput)).toThrow("Cannot build an emitted message from class marketEvent");
+    expect(() => buildEmittedMessage(invalidInput)).toThrow("Cannot build an emitted message from class bodyEphemerides");
   });
 
   it("fails closed on malformed provenance, NaN, stale metadata, and reserved classes", () => {
@@ -121,6 +121,6 @@ describe("emitted message schema", () => {
     expect(() => validateEmittedMessage({ ...emitted, eventTimeMs: Number.NaN })).toThrow("provenance times");
     expect(() => validateEmittedMessage({ ...emitted, stalenessMs: 1 })).toThrow("staleness");
     expect(() => validateEmittedMessage({ ...emitted, observerId: "" })).toThrow("observer IDs");
-    expect(() => validateEmittedMessage({ ...emitted, class: "marketEvent" })).toThrow("not an emitted T0");
+    expect(() => validateEmittedMessage({ ...emitted, class: "bodyEphemerides" })).toThrow("not an emitted T0");
   });
 });

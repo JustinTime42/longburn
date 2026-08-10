@@ -59,6 +59,24 @@ describe("projectStoredEvent", () => {
     }))).toBeUndefined();
   });
 
+  it("projects both stamped market facts as class 2.4", () => {
+    const quote = {
+      ...stored({ type: "marketQuoteUpdated", commodityId: "refined-volatiles", price: 1_050, stepIndex: 3, marketBodyId: "mars" }),
+      streamId: "market:refined-volatiles"
+    };
+    const occurrence = {
+      ...stored({ type: "marketEventOccurred", commodityId: "refined-volatiles", price: 1_150, kind: "surge", referencePrice: 1_000 }),
+      streamId: "market:refined-volatiles"
+    };
+
+    expect(projectStoredEvent("player-1", observerPositionAt, quote)).toMatchObject({
+      message: { class: "marketEvent", payload: quote.event.event, event: { eventPosition: quote.event.eventPosition } }
+    });
+    expect(projectStoredEvent("player-1", observerPositionAt, occurrence)).toMatchObject({
+      message: { class: "marketEvent", payload: occurrence.event.event, event: { eventPosition: occurrence.event.eventPosition } }
+    });
+  });
+
   it("quarantines an unprojectable record without aborting a later delivery or raising a causality alarm", async () => {
     const received: EmittableMessage[] = [];
     const recordIncident = vi.fn();

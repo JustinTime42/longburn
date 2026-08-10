@@ -109,6 +109,19 @@ describe("deterministic market process", () => {
     ]);
   });
 
+  it("fails closed if a non-market loop is later resumed with the live market resolver", async () => {
+    const store = new InMemorySimulationEventStore();
+    const disabled = await AuthoritativeSimLoop.create({
+      store, stream: { id: "market-resolver-wedge", seed: 99, initialTime: simTimeMs(0) }
+    });
+    await disabled.advance(2 * TIER0_MARKET_CONFIG.marketStepMs, () => ({ x: 0, y: 0, z: 0 }));
+    const resumed = await AuthoritativeSimLoop.resume(store, "market-resolver-wedge", {
+      marketPositionAt: () => ({ x: 0, y: 0, z: 0 })
+    });
+
+    await expect(resumed.advance(1, () => ({ x: 0, y: 0, z: 0 }))).rejects.toThrow("Market boundary is behind the authoritative simulation time.");
+  });
+
   it("emits threshold-crossing surge and crash events, then re-arms once", () => {
     const atThreshold = (meanPrice: number): MarketConfig => ({
       ...TIER0_MARKET_CONFIG, meanPrice, minimumPrice: 1, maximumPrice: 5_000,

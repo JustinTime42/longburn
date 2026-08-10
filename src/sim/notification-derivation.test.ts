@@ -8,7 +8,7 @@ import { deriveLastRevisionWarnings, deriveLocalNotifications, deriveReportNotif
 const atOrigin = () => ({ x: 0, y: 0, z: 0 });
 const atOneLightSecond = () => ({ x: SPEED_OF_LIGHT_METERS_PER_SECOND, y: 0, z: 0 });
 
-const stored = (globalPosition: number, type: "burnStarted" | "planRevisionApplied" | "planRevisionRefused" | "arrivalRecorded"): NotificationStoredEvent => ({
+const stored = (globalPosition: number, type: "burnStarted" | "planRevisionApplied" | "planRevisionRefused" | "arrivalRecorded" | "marketEventOccurred"): NotificationStoredEvent => ({
   streamId: "sol",
   event: {
     streamSequence: globalPosition,
@@ -21,7 +21,9 @@ const stored = (globalPosition: number, type: "burnStarted" | "planRevisionAppli
         ? { type, commandId: "command-1", flightPlan: { destination: "mars" as const, nodes: [] } }
         : type === "planRevisionRefused"
           ? { type, commandId: "command-2", reason: "invalid-plan" as const, flightPlan: { destination: "mars" as const, nodes: [] } }
-          : { type, arrivalState: { arrivedAtMs: simTimeMs(10_000), destination: "mars" as const, targetPositionMeters: atOrigin(), terminalPositionMeters: atOrigin(), positionGapMeters: atOrigin(), velocityGapMmPerSecond: { x: 0, y: 0, z: 0 } } }
+          : type === "arrivalRecorded"
+            ? { type, arrivalState: { arrivedAtMs: simTimeMs(10_000), destination: "mars" as const, targetPositionMeters: atOrigin(), terminalPositionMeters: atOrigin(), positionGapMeters: atOrigin(), velocityGapMmPerSecond: { x: 0, y: 0, z: 0 } } }
+            : { type, commodityId: "refined-volatiles", price: 1_150, kind: "surge" as const, referencePrice: 1_000 }
   }
 });
 
@@ -42,6 +44,16 @@ describe("notification derivation", () => {
 
   it("does not turn non-report events into notifications", () => {
     expect(deriveReportNotifications([{ streamId: "sol", event: { streamSequence: 1, globalPosition: 1, eventTime: simTimeMs(0), eventPosition: atOrigin(), event: { type: "clockAdvanced", elapsedMs: 1 } } }], atOrigin)).toEqual([]);
+  });
+
+  it("derives a market threshold notification at the shared causal arrival tick", () => {
+    const event = stored(5, "marketEventOccurred");
+    const [notification] = deriveReportNotifications([event], atOneLightSecond);
+    expect(notification).toEqual({
+      id: "notification:stream:sol/event:5/kind:marketEventOccurred", kind: "marketEventOccurred",
+      commodityId: "refined-volatiles", price: 1_150, eventKind: "surge", referencePrice: 1_000,
+      deliverAtMs: simTimeMs(11_000), sourceGlobalPosition: 5, eventTimeMs: simTimeMs(10_000)
+    });
   });
 
   it("keeps planner openings and revision-deadline warnings local to HQ", () => {

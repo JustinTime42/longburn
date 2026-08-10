@@ -1,6 +1,7 @@
 import { simTimeMs, type SimTimeMs } from "./clock.js";
 import type { ObserverPositionAt, PositionMeters } from "./causality.js";
 import type { PlanRevisionRefusalReason } from "./event-log.js";
+import type { MarketEvent } from "./market.js";
 
 /** The catalog's seven classes. The last three have no T0 message payload yet. */
 export type EmittedMessageClass =
@@ -34,8 +35,8 @@ export interface EmittedMessagePayloads {
   readonly shipReport: ShipReportPayload;
   readonly commandOutcomeReport: CommandOutcomeReportPayload;
   readonly commandEcho: CommandEchoPayload;
-  /** Reserved for din.6. The T0 schema deliberately cannot construct one. */
-  readonly marketEvent: never;
+  /** Class 2.4's durable facts, emitted from their stamped market-host position. */
+  readonly marketEvent: MarketEvent;
   readonly simClock: SimClockPayload;
   /** Public deterministic client math, never an emitted message. */
   readonly bodyEphemerides: never;
@@ -71,9 +72,9 @@ export type EmittedMessage = {
   };
 }[EmittedMessageClass];
 
-export type EmittableMessageClass = Exclude<EmittedMessageClass, "marketEvent" | "bodyEphemerides" | "liveShipPosition">;
+export type EmittableMessageClass = Exclude<EmittedMessageClass, "bodyEphemerides" | "liveShipPosition">;
 
-/** The four catalog classes that Tier 0 can construct and send. */
+/** The catalog classes that Tier 0 can construct and send. */
 export type EmittableMessage = Extract<EmittedMessage, { readonly class: EmittableMessageClass }>;
 
 export type EmissionCandidate = {
@@ -105,6 +106,7 @@ export type BuildEmittedMessage = {
 
 const isNonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const isSimTime = (value: unknown): value is SimTimeMs => Number.isSafeInteger(value) && (value as number) >= 0;
+const isSafeInteger = (value: unknown): value is number => Number.isSafeInteger(value);
 
 const copiedPosition = (position: unknown): PositionMeters => {
   if (typeof position !== "object" || position === null) throw new RangeError("Message positions must be finite Cartesian coordinates.");
@@ -148,6 +150,25 @@ const simClockPayload = (payload: unknown): SimClockPayload => {
   const clock = objectPayload(payload, "Sim-clock messages require a safe-integer current time.");
   if (!isSimTime(clock.currentTimeMs)) throw new RangeError("Sim-clock messages require a safe-integer current time.");
   return { currentTimeMs: simTimeMs(clock.currentTimeMs) };
+};
+
+const marketEventPayload = (payload: unknown): MarketEvent => {
+  const event = objectPayload(payload, "Market events require a payload.");
+  if (!isNonEmptyString(event.commodityId) || !isSafeInteger(event.price)) throw new RangeError("Market events require a commodity ID and integer price.");
+  if (event.type === "marketQuoteUpdated") {
+    if (!isSafeInteger(event.stepIndex) || event.stepIndex < 1 ||
+      (event.marketBodyId !== "earth" && event.marketBodyId !== "moon" && event.marketBodyId !== "mars")) {
+      throw new RangeError("Market quotes require a positive step and known host body.");
+    }
+    return { type: event.type, commodityId: event.commodityId, price: event.price, stepIndex: event.stepIndex, marketBodyId: event.marketBodyId };
+  }
+  if (event.type === "marketEventOccurred") {
+    if ((event.kind !== "surge" && event.kind !== "crash") || !isSafeInteger(event.referencePrice)) {
+      throw new RangeError("Market occurrences require a known kind and integer reference price.");
+    }
+    return { type: event.type, commodityId: event.commodityId, price: event.price, kind: event.kind, referencePrice: event.referencePrice };
+  }
+  throw new RangeError("Market events require a known event type.");
 };
 
 /**
@@ -197,12 +218,12 @@ export const validateEmittedMessage = (message: unknown): EmittableMessage => {
     case "shipReport": return { ...base, class: messageClass, payload: shipReportPayload(candidate.payload) };
     case "commandOutcomeReport": return { ...base, class: messageClass, payload: commandOutcomePayload(candidate.payload) };
     case "commandEcho": return { ...base, class: messageClass, payload: commandEchoPayload(candidate.payload) };
+    case "marketEvent": return { ...base, class: messageClass, payload: marketEventPayload(candidate.payload) };
     case "simClock": {
       const payload = simClockPayload(candidate.payload);
       if (payload.currentTimeMs !== candidate.eventTimeMs) throw new RangeError("Sim-clock payload time must equal its provenance event time.");
       return { ...base, class: messageClass, payload };
     }
-    case "marketEvent":
     case "bodyEphemerides":
     case "liveShipPosition":
       throw new RangeError(`${messageClass} is not an emitted T0 message class.`);
@@ -223,6 +244,7 @@ export const buildEmittedMessage = (input: BuildEmittedMessage): EmissionCandida
     case "shipReport": return { ...base, class: input.class, payload: input.payload };
     case "commandOutcomeReport": return { ...base, class: input.class, payload: input.payload };
     case "commandEcho": return { ...base, class: input.class, payload: input.payload };
+    case "marketEvent": return { ...base, class: input.class, payload: input.payload };
     case "simClock": return { ...base, class: input.class, payload: input.payload };
     default: {
       const unhandled: never = input;
