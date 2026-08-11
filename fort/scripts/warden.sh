@@ -157,12 +157,25 @@ require_bwrap || exit $?
 build_mask claude "$root" "$root" "$src"
 mask_env claude
 # Read-only node_modules bind (longburn-5if; ordering-safe appended here: no
-# masked path lies beneath it). vitest writes its cache to node_modules/.vite,
-# so that one subpath is a tmpfs over the RO bind — the mountpoint is created
-# in the source host-side; it is vitest's own cache dir and harmless there.
+# masked path lies beneath it). vitest needs TWO writable subpaths under
+# node_modules, and this fort covered only one until longburn-6yeh:
+#   .vite       its dep-optimizer cache
+#   .vite-temp  where Vite bundles a TypeScript vitest.config.ts before loading it
+# Both are tmpfs over the RO bind; the mountpoints are created in the source
+# host-side, harmless as they are Vite's own scratch dirs.
+# WHY .vite-temp IS HERE (fortkit-8cv6, measured 2026-08-11): fortkit copied
+# this fort's .vite-only pattern and its Warden then died EROFS in .vite-temp —
+# typecheck and lint passed normally while EVERY TEST WAS TAKEN ON FAITH, and
+# nobody noticed for as long as the seat existed. Measured here the same day
+# (longburn-6yeh, before this line): this fort's gate runs clean, 255 passed |
+# 6 skipped, because it has no vitest.config.* and Vite never writes
+# .vite-temp. So this is INSURANCE against the first TypeScript vitest config
+# anyone adds, not a repair of a live outage.
 if [ -n "$nm_src" ]; then
-  mkdir -p "$nm_src/.vite"
-  mask+=(--ro-bind "$nm_src" "$scratch/node_modules" --tmpfs "$scratch/node_modules/.vite")
+  mkdir -p "$nm_src/.vite" "$nm_src/.vite-temp"
+  mask+=(--ro-bind "$nm_src" "$scratch/node_modules" \
+         --tmpfs "$scratch/node_modules/.vite" \
+         --tmpfs "$scratch/node_modules/.vite-temp")
 fi
 # Seat-named mask marker (longburn-5v4): launchers refuse under it.
 mask+=(--setenv FORT_MASKED warden)
