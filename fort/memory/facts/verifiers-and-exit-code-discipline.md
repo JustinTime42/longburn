@@ -21,7 +21,9 @@ worktrees and the verifier runs wherever you are (this bit the Mayor three
 times, so `cd /home/justin/dev/longburn &&` first, always). NO SEAT EVER
 HAND-WRITES TEST COUNTS into events: since gc6 (2026-08-07) verify.sh machine-
 parses and emits observed counts itself, null on parse failure, never a guess
-(the 40j.1 false-107 incident is why). The verifier's stages are typecheck,
-lint, test and shellcheck; CI at `.github/workflows/verify.yml` runs three code
-legs only and does not yet run the fort verifier (longburn-4y6). The cvc waiver
+(the 40j.1 false-107 incident is why). The verifier's stages are memory-lint,
+typecheck, lint, test and shellcheck (memory-lint added 2026-08-11 by
+longburn-wtx7.4; a red ledger is a red build); CI at
+`.github/workflows/verify.yml` runs three code legs only and does not yet run
+the fort verifier (longburn-4y6). The cvc waiver
 era ended 2026-08-06: exit 0 is the norm.

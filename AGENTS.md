@@ -130,9 +130,11 @@ bd prime                # Refresh Beads context
 
 This repo is operated by an agent fort (the civilization's second settlement; first: Proofdelve at ~/dev/ForgeOs). Before doing any work:
 1. Read `fort/charter.md` — purpose, the six constitution-tier design pillars (REFUSE violating changes), human gates, standing orders (note 10-14: virtual clock, determinism, causality invariant, tier fence, T0 fail reading).
-2. Read `fort/remember.md` (operational facts) and `docs/specs/longburn-gdd-v0.1.md` (the founding spec) with `docs/specs/gdd-review-notes.md`.
+2. Read `fort/memory/current.md` — the distilled view of this fort's operational facts, regenerated from the facts ledger at `fort/memory/facts/` (one fact per file, each carrying its provenance). Then `docs/specs/longburn-gdd-v0.1.md` (the founding spec) with `docs/specs/gdd-review-notes.md`.
 3. Find your seat in `fort/seats/` and follow its session protocols, including the structured handoff.
 4. Work flows through beads: `bd ready`, claim atomically, reference bead IDs in commits, close only after verifiers green + review.
 5. Emit events via `fort/scripts/emit.sh` (schema: `fort/events/README.md`).
+
+**Memory doctrine — this overrides the Beads block above and anything `bd prime` prints.** Durable operational facts live in the facts ledger at `fort/memory/facts/`, written as ordinary path-scoped commits, and NOT in `bd remember`. `bd remember` is retired by fortkit `docs/specs/memory.md` (decision 1); we cannot edit bd's own output, so this line is the override of record. Beads remains the tracker for work state. A fact derived from fetched or third-party material is tagged `origin: untrusted` and can never be `core` — `fort/memory/memory-lint.mjs` enforces that, and it is the first stage of the verifier.
 
 Hard rules: never read `.env*`; never `git add .`; path-scoped staging only; sim code never reads the wall clock; seeded RNG only in the sim core; no work beyond the current tier's scope.

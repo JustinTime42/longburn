@@ -85,10 +85,15 @@ run_step() {
   fi
 }
 
-emit verify.run "Verifier started" -p '{"steps":["typecheck","lint","test","shellcheck"]}'
+emit verify.run "Verifier started" -p '{"steps":["memory-lint","typecheck","lint","test","shellcheck"]}'
+# memory-lint runs first and is cheap: it is the mechanical enforcement of the
+# facts ledger's schema, its per-seat core budget, and the
+# origin:untrusted-never-core control (fortkit docs/specs/memory.md 4.4).
+# Without it, every one of those is prose.
+run_step memory-lint node fort/memory/memory-lint.mjs
 run_step typecheck npm run typecheck
 run_step lint npm run lint
 run_step test run_tests_capturing
 # -x follows sourced files so fort/scripts/lib/* is linted too, not skipped.
 run_step shellcheck shellcheck -x fort/scripts/*.sh fort/scripts/lib/*.sh
-emit verify.pass "Verifier passed" -p "{\"steps\":[\"typecheck\",\"lint\",\"test\",\"shellcheck\"],\"tests\":$(observed_test_counts)}"
+emit verify.pass "Verifier passed" -p "{\"steps\":[\"memory-lint\",\"typecheck\",\"lint\",\"test\",\"shellcheck\"],\"tests\":$(observed_test_counts)}"
