@@ -14,8 +14,11 @@
 # the /dev/null bind may instead yield EACCES. Probes must assert byte counts and
 # accept either outcome — never trust an "access denied" narration from a model.
 #
-# Usage:  build_mask <seat-type> <repo-root> [extra-ro-path ...]
+# Usage:  build_mask <seat-type> <repo-root> [--env-root <path>] [--rw-tree <path>]
+#                    [--mask-ssh-auth-sock] [extra-ro-path ...]
 #   seat-type: "codex" (Forge) or "claude" (Mayor, Warden)
+#   --rw-tree: a SECOND writable checkout (a worktree). Grants it AND applies
+#              every enforcement carve-out to it. See fortkit-1q9 below.
 # Each seat type keeps its OWN runtime's credentials readable — masking them
 # breaks the launch outright — and masks the other runtime's entirely.
 
@@ -24,7 +27,35 @@
 build_mask() {
   local seat="$1" root="$2"; shift 2
   local CODEX_DIR_RW=0
-  local extra_ro=("$@")
+  local mask_ssh_auth_sock=0
+  local extra_ro=() env_roots=("$root") rw_trees=("$root")
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env-root)
+        [ "$#" -ge 2 ] || { echo "build_mask: --env-root requires a path" >&2; return 2; }
+        env_roots+=("$2")
+        shift 2
+        ;;
+      --rw-tree)
+        # fortkit-1q9. A declared tree is BOTH granted and protected: it joins
+        # RW_PATHS, every RO carve-out below is computed for it, and its secrets
+        # are swept like the root's. Declaring one also NARROWS the caller —
+        # see the $root-worktrees grant at RW_PATHS.
+        [ "$#" -ge 2 ] || { echo "build_mask: --rw-tree requires a path" >&2; return 2; }
+        rw_trees+=("$2")
+        env_roots+=("$2")
+        shift 2
+        ;;
+      --mask-ssh-auth-sock)
+        mask_ssh_auth_sock=1
+        shift
+        ;;
+      *)
+        extra_ro+=("$1")
+        shift
+        ;;
+    esac
+  done
   local uid; uid="$(id -u)"
 
   local MASK_FILES=(
@@ -33,14 +64,45 @@ build_mask() {
     "/run/user/$uid/podman/podman.sock"
   )
   # Secret files, by the BOTH-LISTS rule: anything added to a policy deny list
-  # belongs here too. Globbed so a fort acquiring a new .env* is covered on
-  # arrival rather than after the incident.
-  local f x
-  for x in "$root" "${extra_ro[@]}"; do
-    for f in "$x"/.env* "$x"/*/.env*; do
-      [ -e "$f" ] && MASK_FILES+=("$f")
+  # belongs here too.
+  #
+  # fortkit-2kub: masking by ENUMERATED SPELLING, and the spelling list is the
+  # whole defect. The mask bound one path per secret; an editor's swap or backup
+  # file is a DIFFERENT path holding the same buffer. Observed 2026-08-11 18:25
+  # in the Proofdelve tree: ..env.staging.local.kate-swp, 768 bytes, readable —
+  # it begins with TWO dots, so `.env*` never matched it. Ruled in scope by the
+  # Overseer under threat 1 (agent accident), not the human-adversary exemption.
+  # One pattern per line so each spelling is greppable and a new editor is a
+  # one-line addition.
+  #
+  # TWO RESIDUALS, STATED RATHER THAN GLOSSED:
+  #  1. THESE GLOBS EXPAND AT LAUNCH. A residue file created after the mask is
+  #     built is NOT masked for that session's lifetime. (The comment here used
+  #     to claim a fort acquiring a new .env* was covered "on arrival"; that is
+  #     true only of the next launch, and it overstated the guarantee.)
+  #  2. Enumeration cannot be complete against an editor nobody has enumerated.
+  #     The complementary controls are fortkit-ks3t (gitignore every residue
+  #     spelling) and not opening .env* in an editor inside a fort checkout.
+  local SECRET_GLOBS=(
+    '.env*'        # canonical
+    '..env*'       # Kate swap for a dotfile: ..env.staging.local.kate-swp
+    '.#*env*'      # Emacs lock file
+    '#*env*#'      # Emacs autosave
+    '.*env*.sw?'   # vim swap for a dotfile: ..env.staging.local.swp, .envrc.swp
+    '*env*~'       # editor backup copies
+  )
+  local f x g
+  for x in "${env_roots[@]}" "${extra_ro[@]}"; do
+    for g in "${SECRET_GLOBS[@]}"; do
+      # shellcheck disable=SC2231  # $g MUST expand as a glob; that is the point
+      for f in "$x"/$g "$x"/*/$g; do
+        [ -e "$f" ] && MASK_FILES+=("$f")
+      done
     done
   done
+  if [ "$mask_ssh_auth_sock" = "1" ]; then
+    MASK_FILES+=("${SSH_AUTH_SOCK:-/nonexistent}")
+  fi
 
   local MASK_DIRS=("$HOME/.ssh" "$HOME/.aws" "$HOME/.config/gh" "$HOME/.docker" "$HOME/.config/git")
   # Cycle 7 (Overseer edict 2026-08-08, longburn-suti / fortkit-i4y): charter
@@ -55,18 +117,34 @@ build_mask() {
   # are host-executed the same way — hooks fire unmasked on the Overseer's next
   # commit, and core.hooksPath repoints them (fortkit-cqc, same class as the
   # .beads hooks below).
-  local RO_PATHS=("$root/.claude" "$root/fort/profiles" "$root/fort/scripts"
-                  "$root/.git/config" "$root/.git/hooks")
-  # Host-executed civilization surface. Guarded on the covenant, not bare
-  # existence (Warden suti finding 6): an ordinary fort growing a bin/ of its
-  # own must not find it silently read-only — only the capital, which hosts
-  # bin/regent and the civ launchers, carries this surface.
-  local hostpath
-  if [ -e "$root/civ/covenant.md" ]; then
-    for hostpath in "$root/bin" "$root/civ/scripts" "$root/civ/profiles"; do
-      [ -e "$hostpath" ] && RO_PATHS+=("$hostpath")
-    done
-  fi
+  #
+  # fortkit-1q9: these are computed PER WRITABLE TREE, not once for $root.
+  # RW_PATHS grants more than one checkout, and until this every cycle-7
+  # protection applied to exactly one of them — so a seat could obtain a
+  # writable copy of the whole enforcement layer one directory sideways, edit a
+  # launcher there, and let the Mayor's ordinary merge carry it to $root.
+  # RESIDUAL, DELIBERATE: a tree created AFTER the mask is built cannot be
+  # carved (same launch-time truth as the secret globs above), which is why the
+  # answer is declared trees plus a narrowed $root-worktrees grant rather than
+  # iterating whatever worktrees happen to exist.
+  local RO_PATHS=() t hostpath
+  for t in "${rw_trees[@]}"; do
+    RO_PATHS+=("$t/.claude" "$t/fort/profiles" "$t/.git/config" "$t/.git/hooks")
+    # Host-executed civilization surface. Guarded on the covenant, not bare
+    # existence (Warden suti finding 6): an ordinary fort growing a bin/ of its
+    # own must not find it silently read-only — only the capital, which hosts
+    # bin/regent and the civ launchers, carries this surface.
+    # ($t/.git/config is a no-op in a worktree, where .git is a FILE; the real
+    # per-worktree config is $root/.git/worktrees/<n>/config.worktree and it
+    # cannot be bound read-only because git must write the index beside it —
+    # fortkit-8cq. The hook vector itself is closed: a worktree uses the main
+    # .git/hooks, which IS bound above.)
+    if [ -e "$t/civ/covenant.md" ]; then
+      for hostpath in "$t/bin" "$t/civ/scripts" "$t/civ/profiles"; do
+        [ -e "$hostpath" ] && RO_PATHS+=("$hostpath")
+      done
+    fi
+  done
 
   case "$seat" in
     codex)
@@ -93,7 +171,7 @@ build_mask() {
       # guards nothing (cycle 6 ruling). The Forge keeps the mechanical lock.
       # Live since longburn-kyl: forge.sh sources this branch (the inline mask
       # is retired; capital-side consolidation is fortkit-6jf).
-      RO_PATHS+=("$root/fort/charter.md" "$root/fort/seats")
+      for t in "${rw_trees[@]}"; do RO_PATHS+=("$t/fort/charter.md" "$t/fort/seats"); done
       ;;
     claude)
       # Mirror image. ~/.claude stays readable and writable: it holds this
@@ -103,6 +181,24 @@ build_mask() {
       # global instructions for the next one (21f.5, applied to Claude seats).
       RO_PATHS+=("$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json" \
                  "$HOME/.claude/CLAUDE.md" "$HOME/.claude/helpers")
+      # fortkit-5sk, Overseer ruling 2026-08-12: the GLOBAL instruction surface
+      # is session-executed context that runs at the NEXT launch, including the
+      # unmasked Regent's — so a masked seat that writes it controls code
+      # running outside the mask. Cycle 7 closed this class for the fort's own
+      # config and missed the global one.
+      #   civilization.json  the settlement registry every civ tool reads
+      #   skills/            INSTALLED COPIES of fortkit/skills, executed as
+      #                      instructions. Ruled read-only knowing it strands
+      #                      the hand-copy install lane a masked Mayor used on
+      #                      2026-08-12; installing a skill is now an unmasked
+      #                      act until fortkit-4n8c symlinks these to the repo.
+      #   commands/ plugins/ slash commands and plugin payloads, both executed
+      # NOT MASKED, deliberately: ~/.claude/teams. It is harness session state,
+      # not an instruction surface — Claude Code writes teams/session-<id>/
+      # config.json at EVERY session start, so a read-only bind there would
+      # break every masked launch. Do not "complete" this list with it.
+      RO_PATHS+=("$HOME/.claude/civilization.json" "$HOME/.claude/skills" \
+                 "$HOME/.claude/commands" "$HOME/.claude/plugins")
       # DISPATCH EXCEPTION, redesigned (longburn-1p9, measured 2026-08-05): the
       # Mayor launches the Forge, and a child codex inherits this mount
       # namespace, so ~/.codex must be reachable and auth must be able to
@@ -125,6 +221,53 @@ build_mask() {
     *) echo "build_mask: unknown seat type '$seat' (expected codex|claude)" >&2; return 2 ;;
   esac
 
+  # fortkit-6ovg — THE VERIFY.SH CARVE-OUT, SHAPE A (Overseer ruling 2026-08-11:
+  # "make the carve-out actually work").
+  #
+  # What was broken: cycle 7 bound $root/fort/scripts read-only as a DIRECTORY
+  # and then bound verify.sh read-WRITE inside it. Measured in all three forts by
+  # all three Mayors: `test -w` says TRUE and open-for-append works, while Edit,
+  # `sed -i`, `git checkout` and `git merge` all fail — every one of them must
+  # CREATE OR UNLINK A SIBLING in the directory, and the directory is read-only.
+  # The error names a sibling temp path rather than verify.sh, which is why it
+  # cost three forts a cycle to see.
+  #
+  # Shape A: the DIRECTORY is writable (it rides the $root grant) and every entry
+  # in it is bound read-only INDIVIDUALLY, except verify.sh, which gets no bind at
+  # all and is therefore an ordinary writable file. Sibling creation works, so the
+  # ordinary edit paths work.
+  # WHY THAT IS SAFER THAN IT SOUNDS: each read-only bind makes that path a MOUNT
+  # POINT, and the kernel refuses to unlink or rename over a mount point (EBUSY).
+  # mayor.sh, warden.sh, emit.sh and lib/ cannot be modified, deleted, or replaced
+  # even with the directory writable — and neither can the directory itself.
+  #
+  # THE HOLE THIS OPENS, DISCLOSED RATHER THAN GLOSSED: NEW FILE CREATION inside
+  # fort/scripts becomes possible. A seat could drop a script into a host-executed
+  # directory. Nothing there is auto-executed and every launcher is named
+  # explicitly, so this is a staging area for a later mistake rather than a direct
+  # path — but it is a real widening. It is probed as an EXPECTED PASS in
+  # probe-cycle7.sh (a hole nobody probes is the thing this fort keeps getting
+  # bitten by) and carried in the charter's accepted residuals.
+  # ITS BLAST RADIUS IS THE MAYOR ALONE: the Warden and the Researcher pass their
+  # whole checkout as extra_ro, which re-masks the directory read-only below, and
+  # the codex branch never takes this path at all.
+  local e
+  if [ "$seat" = "claude" ]; then
+    for t in "${rw_trees[@]}"; do
+      [ -d "$t/fort/scripts" ] || continue
+      for e in "$t/fort/scripts"/* "$t/fort/scripts"/.[!.]*; do
+        [ -e "$e" ] || continue
+        [ "$e" = "$t/fort/scripts/verify.sh" ] && continue
+        RO_PATHS+=("$e")
+      done
+    done
+  else
+    # The unattended seat keeps the whole-directory lock: it has no verify.sh
+    # re-grant to preserve (it edits the verifier through a bead in its own
+    # diff, never the host-executed copy) and therefore no new-file hole.
+    for t in "${rw_trees[@]}"; do RO_PATHS+=("$t/fort/scripts"); done
+  fi
+
   # FILESYSTEM SCOPING (cycle 5). Before this, the sandbox was "everything
   # writable except what we masked", so a seat working in one fort could still
   # rm -rf another project or wipe ~/Documents — threat #1, agent accident, and
@@ -134,9 +277,19 @@ build_mask() {
   # the grants, never the prohibitions. Reads across $HOME stay open by decision
   # (Overseer, 2026-08-04): cross-fort reads are worth more than the
   # exfiltration-path reduction, since civ-digest and the Herald both need them.
-  local RW_PATHS=("$root" "$root-worktrees" "$HOME/.claude" "${TMPDIR:-}" /tmp
+  local RW_PATHS=("${rw_trees[@]}" "$HOME/.claude" "${TMPDIR:-}" /tmp
                   "$HOME/.npm" "$HOME/.nuget" "$HOME/.cache" "$HOME/.bun"
                   "$HOME/.local/share/pnpm" "$HOME/.local/state")
+  # fortkit-1q9. $root-worktrees is granted WHOLESALE only to a caller that
+  # declared no tree of its own — the Mayor, who creates worktrees when she
+  # dispatches the Forge from inside her own mask. A caller that names its
+  # worktree gets that one and nothing else, so the Forge stops being able to
+  # write every OTHER bead's worktree.
+  # THE MAYOR'S RESIDUAL IS OPEN AND KNOWN: she can still `git worktree add` and
+  # obtain a writable enforcement layer in the new tree. No launch-time mask can
+  # close that. It closes when fortkit-52vf.6 (E5) makes forge.sh refuse to
+  # launch in-mask, after which her grant can go too. Tracked on fortkit-1q9.
+  [ "${#rw_trees[@]}" -eq 1 ] && RW_PATHS+=("$root-worktrees")
   mask=(--bind / / --dev /dev --die-with-parent --ro-bind "$HOME" "$HOME")
   local w
   for w in "${RW_PATHS[@]}"; do [ -n "$w" ] && [ -e "$w" ] && mask+=(--bind "$w" "$w"); done
@@ -150,17 +303,11 @@ build_mask() {
   # resurfaced every masked secret beneath it (measured: host run
   # 2026-08-04T202453, mask-spelling:warden 4/4 FAIL). Subtree binds — ro
   # paths, extra_ro, hooks dirs — therefore go HERE, and the per-file dev-null
-  # masks and per-dir tmpfs masks go LAST.
+  # masks and per-dir tmpfs masks go LAST. One exception, surfacing a single
+  # file back over a directory tmpfs and therefore placed after the masks: the
+  # ~/.ssh/known_hosts re-bind.
   local p
   for p in "${RO_PATHS[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
-  # Cycle 7 re-grant, r2 (Warden findings suti-1 / 8c9-4): verify.sh is the one
-  # session-run tool inside the now-RO fort/scripts — the fort evolves it
-  # through beads, and a malicious edit to it executes INSIDE this mask and
-  # lands in git. Stacked after the RO_PATHS binds but BEFORE extra_ro, so a
-  # caller that passes the checkout read-only (the Warden, read-only by
-  # construction) re-masks it: the grant reaches the Mayor and no seat
-  # stricter than the Mayor.
-  [ -e "$root/fort/scripts/verify.sh" ] && mask+=(--bind "$root/fort/scripts/verify.sh" "$root/fort/scripts/verify.sh")
   for p in "${extra_ro[@]}"; do [ -e "$p" ] && mask+=(--ro-bind "$p" "$p"); done
   # SSH inside a user namespace (cycle 6). bwrap's userns maps root-owned files
   # to 'nobody', and OpenSSH refuses any config owned by neither root nor the
@@ -183,7 +330,6 @@ build_mask() {
   } > "$fort_ssh/ssh_config"
   chmod 600 "$fort_ssh/ssh_config"
   mask+=(--tmpfs /etc/ssh --ro-bind "$fort_ssh/ssh_config" /etc/ssh/ssh_config)
-  [ -e "$HOME/.ssh/known_hosts" ] && mask+=(--ro-bind "$HOME/.ssh/known_hosts" "$HOME/.ssh/known_hosts")
 
   # Git hooks under .beads run on the HOST, unsandboxed, on the next commit or
   # push in the main checkout — a writable .beads is a host RCE escape. CLASS
@@ -197,6 +343,18 @@ build_mask() {
   local d
   for d in "${MASK_DIRS[@]}"; do [ -d "$d" ] && mask+=(--tmpfs "$d"); done
 
+  # SECOND EXCEPTION to the ordering invariant (ForgeOs-q6m, backported here
+  # 2026-08-12 by the E2 four-way diff — this copy had the bind but placed it
+  # BEFORE the MASK_DIRS loop, which buried it under the ~/.ssh tmpfs, so it had
+  # never had any effect): known_hosts is surfaced back over that tmpfs so
+  # host-key PINNING survives inside the mask — otherwise every launch does
+  # fresh TOFU against a known_hosts that dies with the tmpfs. Keys remain
+  # unreadable: only this one file is re-bound, read-only.
+  [ -e "$HOME/.ssh/known_hosts" ] && mask+=(--ro-bind "$HOME/.ssh/known_hosts" "$HOME/.ssh/known_hosts")
+  # A false final test must not become build_mask's return value (ForgeOs-vzn
+  # class): under a `set -e` caller that aborts the launcher before the session
+  # starts. Backported here 2026-08-12 by the E2 four-way diff.
+  return 0
 }
 
 # Environment is an ALLOW-LIST, not a deny-list: enumerated unsets leave AWS_*,

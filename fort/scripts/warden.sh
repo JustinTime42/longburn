@@ -154,7 +154,7 @@ require_bwrap || exit $?
 # so a worktree-candidate review still locks $root — the Warden is read-only
 # by construction in every posture, and the verify.sh Mayor re-grant is
 # re-masked here regardless of which tree is under review.
-build_mask claude "$root" "$root" "$src"
+build_mask claude "$root" "$root" "$root-worktrees" "$src"
 mask_env claude
 # Read-only node_modules bind (longburn-5if; ordering-safe appended here: no
 # masked path lies beneath it). vitest needs TWO writable subpaths under

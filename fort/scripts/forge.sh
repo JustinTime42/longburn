@@ -62,22 +62,15 @@ if ! require_bwrap; then
   "$emit" incident "Forge launch refused: bwrap missing, kernel mask layer unavailable" -s forge -t "$bead"
   exit 78
 fi
-build_mask codex "$root"
-# Worktree-side binds the lib cannot know about (scoping every RW tree is the
-# general fix, fortkit-1q9; until then they are appended here, and appending
-# is ordering-safe because no lib-masked path lies beneath these subtrees):
-#   - the worktree's constitution copies stay read-only to the unattended seat
-#     (parity with the inline mask this replaced; gate 4 mechanically), and the
-#     Mayor's verify.sh re-grant is re-masked — the Forge edits verify.sh only
-#     via a bead in its own diff, never the host-executed main copy;
-#   - worktree secrets are swept like the root's (file masks stack last).
-for c in .claude fort/charter.md fort/seats fort/profiles fort/scripts; do
-  [ -e "$wt/$c" ] && mask+=(--ro-bind "$wt/$c" "$wt/$c")
-done
-[ -e "$root/fort/scripts/verify.sh" ] && mask+=(--ro-bind "$root/fort/scripts/verify.sh" "$root/fort/scripts/verify.sh")
-for envf in "$wt"/.env*; do
-  [ -e "$envf" ] && mask+=(--ro-bind /dev/null "$envf")
-done
+# fortkit-1q9 LANDED (E2, 2026-08-12). The worktree-side binds that used to be
+# appended here by hand are now the lib's own work: --rw-tree declares the tree,
+# which BOTH grants it and carves its whole enforcement layer — the same five
+# paths this block named, plus bin/ and civ/ where a fort has them, plus the
+# worktree's .env* sweep, plus the $root-worktrees grant NARROWING so the Forge
+# can no longer write any OTHER bead's worktree. verify.sh needs no separate
+# re-mask: the codex branch keeps fort/scripts locked as a whole directory in
+# every declared tree, so the Mayor's re-grant never reaches this seat.
+build_mask codex "$root" --rw-tree "$wt"
 mask_env codex
 # Attribution as mechanism, not convention (longburn-f9p): verify.sh reads
 # these when emitting, so verify.pass events attribute and target correctly
