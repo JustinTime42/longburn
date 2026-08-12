@@ -21,3 +21,10 @@ fort/telemetry/
 .claude-flow/
 .claude/proven-config.json
 .claude/.proven-config-version
+
+# The memory index is a zero-trust derived artifact, rebuilt from tracked
+# sources and never a store of record (fortkit docs/specs/memory.md sections 3
+# and 5). The *.db glob above already catches it, but that glob arrived with
+# bd init and would vanish with it — this line removes the dependency on luck
+# (fortkit-xgul.8 finding 7).
+fort/memory/index.db
