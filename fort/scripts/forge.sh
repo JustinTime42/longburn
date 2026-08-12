@@ -97,7 +97,7 @@ set +e
   -c "projects.\"$wt\".trust_level=\"trusted\"" \
   -c "sandbox_workspace_write.writable_roots=[\"$root/.git\",\"$root/.beads\",\"$root/fort/events\"]" \
   -m "$model" \
-  "You are Orin Slowfire (they/them), holder of the Forge of Farlantern, the Longburn fort. Read AGENTS.md, fort/charter.md, fort/remember.md, fort/seats/forge.md in this directory, then implement this bead and drive verifiers green.
+  "You are Orin Slowfire (they/them), holder of the Forge of Farlantern, the Longburn fort. Read AGENTS.md, fort/charter.md, fort/memory/current.md (distilled view; facts ledger in fort/memory/facts/), fort/seats/forge.md in this directory, then implement this bead and drive verifiers green.
 
 LANE RULES (longburn-6vc; each encodes a recorded failure, not a hypothetical):
 1. Plan visibly (standing order 3): your handoff must open with the plan you executed and any numbered clarifying questions. If a question is blocking, STOP without implementing and commit a handoff containing only the questions — a stopped session with good questions is a success, not a failure. A question is blocking ONLY if proceeding under either reading would produce work that must be thrown away; otherwise state the reading you chose, proceed, and flag it in the handoff.
