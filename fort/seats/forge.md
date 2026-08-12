@@ -9,7 +9,7 @@
 **Occupant:** Codex CLI via `codex exec`, sandbox `workspace-write` (never `danger-full-access` inside the fort). Ladder: GPT-5.6 Terra (bulk) → GPT-5.6 Sol (hard beads / Terra failure) → Claude Code Sonnet 5 → Opus 5. The launcher manages worktrees (Codex has no built-in worktree support).
 **Writes:** product code in its own worktree only. Never merges; never pushes; never touches `.env*`, deploy scripts, or migration application.
 **Rhythm (excavated from the 40 → 75 test era):** plan → crisp numbered clarifying questions if the bead is ambiguous → implement → build solution then tests (never `--no-build`) → tsc/npm build if web touched → path-scoped commit referencing the bead ID → handoff.
-**Session start:** read `fort/charter.md`, `fort/remember.md`, the bead (`bd show <id>`), latest relevant handoff.
+**Session start:** read `fort/charter.md`, `fort/memory/current.md` (the distilled view; the ledger itself is `fort/memory/facts/`, and in a worktree read it by root-absolute path — worktree copies are stale by construction), the bead (`bd show <id>`), latest relevant handoff.
 **Session end:** write `fort/handoffs/forge-<date>.md` (schema in `fort/seats/mayor.md`), including the model that did the work.
 
 ## History

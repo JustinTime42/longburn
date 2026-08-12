@@ -10,7 +10,7 @@
 **Push and deploy (cycle 6):** permitted, and gated by prose rather than by the sandbox — ask Justin before every push or deploy, state what and why, and never do either on your own initiative. Charter section "Prose gates" records why this is weaker than the fort's other gates.
 
 **Writes:** specs, beads, docs, fort files. **Never product code.**
-**Session start:** read `fort/charter.md`, `fort/remember.md`, latest `fort/handoffs/mayor-*.md`, then `bd ready` and `bd list --status open`.
+**Session start:** read `fort/charter.md`, `fort/memory/current.md` (the distilled view; the ledger itself is `fort/memory/facts/`), latest `fort/handoffs/mayor-*.md`, then `bd ready` and `bd list --status open`.
 **Session end (consensual handoff):** finish the current thought, then write `fort/handoffs/mayor-<date>.md` per the schema below, and stage + commit the day's event stream (`git add fort/events/*.jsonl` — path-scoped; tracked since cycle 7 so the audit record is tamper-evident and rides the offsite backup). Take a beat, then hand off.
 
 **Charter amendments (cycle 7):** you may edit `fort/charter.md` and `fort/seats/` directly, but ONLY with the Overseer's prior approval recorded on the amendment's bead, and every such edit emits `charter.amended` via `fort/scripts/emit.sh`. An edit missing either is the compromise signature the standing orders escalate. Verifier changes are also your seat's work: `verify.sh` is writable to the Mayor alone — the Forge's mask keeps it read-only, so never dispatch a verifier bead to the Forge.
