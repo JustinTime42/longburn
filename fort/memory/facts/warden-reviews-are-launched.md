@@ -2,13 +2,13 @@
 key: warden-reviews-are-launched
 status: active
 superseded-by: null
-tier: on-demand
+tier: core
 scope:
-  seats: [mayor, warden]
+  seats: [mayor]
   topics: [seat-machinery, warden.sh, review-flow]
   beads: []
 provenance:
-  source: "migrated from fort/remember.md:23, d194384 (seat machinery, added 2026-08-04, backport cycles 3-4)"
+  source: "migrated from fort/remember.md:23, d194384 (seat machinery, added 2026-08-04, backport cycles 3-4); promoted to core per Warden finding 7 on longburn-wtx7, 2026-08-11"
   declared-by: vardis
   date: 2026-08-11
   origin: trusted

@@ -17,7 +17,9 @@ All three seats launch inside a kernel mask
 (`fort/scripts/lib/seat-sandbox.sh`), with secrets masked at the inode so no
 path spelling reaches them. Write boundaries as of cycle 7 r2, superseding the
 fact `kernel-mask-seat-boundaries` IN BOTH DIRECTIONS:
-`fort/charter.md` and `fort/seats/` are PROSE-GATED for attended seats
+`.claude/` and `fort/profiles/` remain kernel-RO to every seat, unchanged by
+cycle 7. What cycle 7 reversed is the other two: `fort/charter.md` and
+`fort/seats/` are PROSE-GATED for attended seats
 (Overseer approval recorded on the amendment's bead plus a `charter.amended`
 event), no longer kernel-RO. `fort/scripts/` is NO LONGER Mayor-writable: it is
 kernel-RO with `verify.sh` alone re-granted to the Mayor, and the Warden's
