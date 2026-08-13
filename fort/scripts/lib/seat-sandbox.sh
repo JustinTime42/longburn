@@ -181,7 +181,24 @@ build_mask() {
       # guards nothing (cycle 6 ruling). The Forge keeps the mechanical lock.
       # Live since longburn-kyl: forge.sh sources this branch (the inline mask
       # is retired; capital-side consolidation is fortkit-6jf).
-      for t in "${rw_trees[@]}"; do RO_PATHS+=("$t/fort/charter.md" "$t/fort/seats"); done
+      # THE WRINKLE SHAPE B WOULD OTHERWISE OPEN, closed here. With the
+      # verifier's implementation living in repo scripts/, it sits inside $root,
+      # which is read-write to the Forge apart from these carve-outs — so
+      # without this line the unattended seat could edit the verifier that
+      # judges its own work. Cycle 7's stated intent is the opposite: "verifier
+      # changes are Mayor work; the Forge's and the Warden's masks keep it
+      # read-only." The Warden needs nothing extra, because she passes her whole
+      # checkout as extra_ro and gets it for free.
+      # skills/ joins them (fortkit-4n8c): the installed ~/.claude/skills entries
+      # are now SYMLINKS to this directory, so its contents are session-executed
+      # instruction loaded by every seat and by the unmasked Regent. For attended
+      # seats it is prose-gated exactly as charter.md and fort/seats are — prose
+      # that binds only through a session's own reading of it, with drift visible
+      # in git. The unattended seat cannot ask first, so it keeps the mechanical
+      # lock (cycle 6 ruling).
+      for t in "${rw_trees[@]}"; do
+        RO_PATHS+=("$t/fort/charter.md" "$t/fort/seats" "$t/scripts/verify-impl.sh" "$t/skills")
+      done
       ;;
     claude)
       # Mirror image. ~/.claude stays readable and writable: it holds this
@@ -239,52 +256,44 @@ build_mask() {
     *) echo "build_mask: unknown seat type '$seat' (expected codex|claude)" >&2; return 2 ;;
   esac
 
-  # fortkit-6ovg — THE VERIFY.SH CARVE-OUT, SHAPE A (Overseer ruling 2026-08-11:
-  # "make the carve-out actually work").
+  # fortkit-6ovg and fortkit-x9ou — SHAPE B (Overseer ruling 2026-08-12,
+  # reversing Shape A of the previous day). THE VERIFIER MOVED OUT INSTEAD OF
+  # BEING CARVED OUT. fort/scripts is one whole-directory read-only bind for
+  # every seat type, and fort/scripts/verify.sh is a shim that execs
+  # scripts/verify-impl.sh, which lives where mutability is already sanctioned.
   #
-  # What was broken: cycle 7 bound $root/fort/scripts read-only as a DIRECTORY
-  # and then bound verify.sh read-WRITE inside it. Measured in all three forts by
-  # all three Mayors: `test -w` says TRUE and open-for-append works, while Edit,
-  # `sed -i`, `git checkout` and `git merge` all fail — every one of them must
-  # CREATE OR UNLINK A SIBLING in the directory, and the directory is read-only.
-  # The error names a sibling temp path rather than verify.sh, which is why it
-  # cost three forts a cycle to see.
+  # THE HISTORY MATTERS, because two shapes were tried and both failures were
+  # about the same confusion between a FILE and a LOCATION:
+  #  • Cycle 7 bound this directory read-only and re-bound verify.sh read-WRITE
+  #    inside it. Measured in all three forts by all three Mayors: `test -w`
+  #    returns TRUE and an O_APPEND open works, while Edit, `sed -i`, `git
+  #    checkout` and `git merge` all fail — each of them rewrites a file by
+  #    creating or unlinking a SIBLING, and the directory was read-only. The
+  #    error names a temp path rather than verify.sh, which is why it cost three
+  #    forts a cycle to see.
+  #  • Shape A inverted it: writable directory, every entry bound read-only
+  #    individually, verify.sh left unbound. The edits worked and each FILE was
+  #    immutable (a read-only bind is a mount point; the kernel refuses to
+  #    unlink or rename over one, EBUSY). Both premises it was approved on then
+  #    failed inside a day:
+  #      - "the new-file hole is bounded to the MAYOR, an attended seat that
+  #        asks first" — FALSE. Every build_mask claude caller that does not
+  #        pass its own checkout as extra_ro holds it, which includes
+  #        civ/scripts/herald.sh — AND THE HERALD RUNS UNATTENDED, headless, on
+  #        a daily 05:00 timer, with Bash, Write and Edit (fortkit-vkq8).
+  #      - "the hole only lets a seat ADD files, and nothing there is
+  #        auto-executed" — FALSE. The harness measured `A4b fort/scripts DIR
+  #        not renamable :: unlink=NO rename=YES`. With the directory itself
+  #        unlocked, a seat could rename it aside and put its own fort/scripts
+  #        in its place; ~/.local/bin/mayor then exec'd that path ON THE HOST,
+  #        UNMASKED. Per-file mounts protect the FILES and not the LOCATION
+  #        (fortkit-x9ou).
   #
-  # Shape A: the DIRECTORY is writable (it rides the $root grant) and every entry
-  # in it is bound read-only INDIVIDUALLY, except verify.sh, which gets no bind at
-  # all and is therefore an ordinary writable file. Sibling creation works, so the
-  # ordinary edit paths work.
-  # WHY THAT IS SAFER THAN IT SOUNDS: each read-only bind makes that path a MOUNT
-  # POINT, and the kernel refuses to unlink or rename over a mount point (EBUSY).
-  # mayor.sh, warden.sh, emit.sh and lib/ cannot be modified, deleted, or replaced
-  # even with the directory writable — and neither can the directory itself.
-  #
-  # THE HOLE THIS OPENS, DISCLOSED RATHER THAN GLOSSED: NEW FILE CREATION inside
-  # fort/scripts becomes possible. A seat could drop a script into a host-executed
-  # directory. Nothing there is auto-executed and every launcher is named
-  # explicitly, so this is a staging area for a later mistake rather than a direct
-  # path — but it is a real widening. It is probed as an EXPECTED PASS in
-  # probe-cycle7.sh (a hole nobody probes is the thing this fort keeps getting
-  # bitten by) and carried in the charter's accepted residuals.
-  # ITS BLAST RADIUS IS THE MAYOR ALONE: the Warden and the Researcher pass their
-  # whole checkout as extra_ro, which re-masks the directory read-only below, and
-  # the codex branch never takes this path at all.
-  local e
-  if [ "$seat" = "claude" ]; then
-    for t in "${rw_trees[@]}"; do
-      [ -d "$t/fort/scripts" ] || continue
-      for e in "$t/fort/scripts"/* "$t/fort/scripts"/.[!.]*; do
-        [ -e "$e" ] || continue
-        [ "$e" = "$t/fort/scripts/verify.sh" ] && continue
-        RO_PATHS+=("$e")
-      done
-    done
-  else
-    # The unattended seat keeps the whole-directory lock: it has no verify.sh
-    # re-grant to preserve (it edits the verifier through a bead in its own
-    # diff, never the host-executed copy) and therefore no new-file hole.
-    for t in "${rw_trees[@]}"; do RO_PATHS+=("$t/fort/scripts"); done
-  fi
+  # Shape B has neither problem and needs no accepted residual: the directory is
+  # a mount point again, so it refuses rename, and nothing new can be created
+  # inside it. The cost is one level of indirection, paid once, in a shim that
+  # says so at the top of itself.
+  for t in "${rw_trees[@]}"; do RO_PATHS+=("$t/fort/scripts"); done
 
   # FILESYSTEM SCOPING (cycle 5). Before this, the sandbox was "everything
   # writable except what we masked", so a seat working in one fort could still
