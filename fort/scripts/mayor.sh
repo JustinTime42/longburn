@@ -1,14 +1,22 @@
 #!/bin/bash
 # Talk to the Mayor. Usage: fort/scripts/mayor.sh  (add an alias: alias mayor-longburn='~/dev/longburn/fort/scripts/mayor.sh')
-REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || echo /home/justin/dev/longburn)"
-cd "$REPO" || exit 1
-# In-sandbox launch refusal (longburn-5v4, amended on the Mayor's finding):
-# no seat launches another Mayor — any marker at all, including the Mayor's
-# own and the legacy '1', refuses. Only an unmasked shell launches this.
+# In-sandbox launch refusal (longburn-5v4, amended on this fort's Mayor's own
+# finding): no seat launches another Mayor — any marker at all, including the
+# Mayor's own and the legacy '1', refuses. Only an unmasked shell launches this.
+# HOISTED ABOVE REPO RESOLUTION 2026-08-13 by Regent edict fortkit-52vf.12 (E10),
+# with the Overseer present. This fort is the ORIGIN of the guard, and the
+# capital's backport of it (fortkit-px7e) recorded the origin as checking "on
+# entry, at its lines 8-9" — a line-number reading that never checked what line
+# 4 was. MEASURED here: below the `cd`, a directory that is not a git checkout
+# dies at that line and the refusal is NEVER EVALUATED — exit 1, no message,
+# the opaque failure this guard exists to replace. Probed 4/5 FAIL before this
+# move and 5/5 after, the same scores the other two forts showed.
 if [ -n "${FORT_MASKED:-}" ]; then
   echo "mayor.sh: REFUSED — already inside the '$FORT_MASKED' seat mask; no seat launches another Mayor (longburn-5v4)" >&2
   exit 77
 fi
+REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || echo /home/justin/dev/longburn)"
+cd "$REPO" || exit 1
 fort/scripts/emit.sh session.start "The Overseer summons Vardis" -a vardis -s mayor 2>/dev/null || true
 trap 'fort/scripts/emit.sh session.end "Vardis'\''s audience with the Overseer ends" -a vardis -s mayor 2>/dev/null || true' EXIT
 # Kernel mask layer (civilization cycle 4). Permission rules bind a SPELLING,

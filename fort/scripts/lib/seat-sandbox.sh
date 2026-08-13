@@ -34,6 +34,14 @@
 #              copy. An extra-ro-path would leave such a file READABLE; this makes
 #              it read empty. Added by fortkit-52vf.10 for the forge.sh port,
 #              deliberately as a parameter rather than a second copy of the logic.
+#              TAKES A FILE, AND SILENTLY IGNORES A DIRECTORY (Warden finding 7
+#              on fortkit-52vf.10): the bind site tests [ -e ] && [ ! -d ],
+#              correctly — MASK_FILES also carries sockets, and `--ro-bind
+#              /dev/null <dir>` ABORTS BWRAP so no seat launches anywhere — but
+#              a caller passing a directory therefore gets no mask AND no
+#              output. That is the same silent-gap class this file discloses at
+#              length for the secret sweep below; pass directories as
+#              extra-ro-paths, or add them to MASK_DIRS.
 # Each seat type keeps its OWN runtime's credentials readable — masking them
 # breaks the launch outright — and masks the other runtime's entirely.
 
@@ -296,11 +304,26 @@ build_mask() {
       # loaded as instruction by the NEXT codex launch, outside that seat's mask.
       # That is a real widening of the attended-seat boundary and it is accepted
       # deliberately here, not overlooked.
-      #   • For the CODEX seat the policy layer still covers it: forge.sh's
-      #     guarded deny table denies /home/justin/.codex/**, and Landlock DOES
-      #     enforce write denials (only read-deny is the upstream TODO,
-      #     openai/codex#11316). So the Forge is denied at policy and permitted
-      #     at kernel; the Mayor and Warden are permitted at both.
+      #   • For the CODEX seat the policy layer still covers it — but NOT by
+      #     the mechanism this comment used to name. It named a deny profile
+      #     in forge.sh, covering the codex home, as what enforces this — and
+      #     that profile exists in ONE fort. Re-measured 2026-08-13 (finding 1
+      #     fortkit-52vf.10, fortkit-52vf.10.1): only Proofdelve's forge.sh has
+      #     such a table; the capital's and the factory's contain the word
+      #     `deny` zero times, and Farlantern's once, about Landlock rather
+      #     than a table. A SHARED COMMENT TRUE IN ONE FORT AND FALSE IN
+      #     ANOTHER IS THE DRIFT CLASS THIS FILE EXISTS TO CLOSE, so what is
+      #     named here is the mechanism that actually holds in ALL FOUR copies:
+      #     every forge.sh runs `codex exec --sandbox workspace-write`, whose
+      #     writable roots are the explicit --add-dir grants, and ~/.codex is
+      #     not among them — so codex's own command executor refuses the
+      #     model's shell there ("rejected by the command executor", measured
+      #     in all three forts, 2026-08-13). Proofdelve's deny profile is an
+      #     ADDITIONAL layer in that one fort, not the load-bearing one; and
+      #     Landlock DOES enforce write denials where a profile is in play
+      #     (only read-deny is the upstream TODO, openai/codex#11316).
+      #     So the Forge is denied at policy and permitted at kernel; the Mayor
+      #     and Warden are permitted at both.
       #   • DO NOT "FIX" THIS BY RO-BINDING skills/ OR plugins/. The Overseer
       #     ruled it out on 2026-08-13: codex appears to mutate both at startup,
       #     so a read-only bind there is a launch-abort risk of exactly the
@@ -309,6 +332,17 @@ build_mask() {
       #     fortkit-5sk, and, unlike 5sk, one an RO bind cannot fix. Leave it.
       CODEX_DIR_RW=1
       RO_PATHS+=("$HOME/.codex/config.toml")
+      # CONSEQUENCE, WRITTEN DOWN BECAUSE IT WAS NOWHERE (Warden finding 6 on
+      # fortkit-52vf.10): a Forge DISPATCHED BY A MAYOR inherits these masks
+      # recursively, so that codex session's rollouts, log and history.jsonl
+      # land in the MAYOR's tmpfs and are LOST when her session ends. This is
+      # not a regression — the previous full tmpfs over ~/.codex lost them too
+      # — and it is not a launch failure (measured: fortkit-m0wm ran to exit
+      # 0). It is simply invisible, and a seat looking for a missing rollout
+      # would otherwise spend a session finding out why.
+      # These three are asserted by neither probe-cycle7.sh nor
+      # scripts/mask-harness.sh; that gap is fortkit-52vf.10.1's finding 6 and
+      # is deferred to fortkit-wtps with the rename assertion, NOT closed here.
       MASK_DIRS+=("$HOME/.codex/sessions" "$HOME/.codex/log")
       MASK_FILES+=("$HOME/.codex/history.jsonl")
       ;;
