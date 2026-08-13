@@ -2,6 +2,14 @@
 # Shared kernel-mask builder for seat launchers. Source this, call build_mask,
 # then run: bwrap "${mask[@]}" -- <your command>
 #
+# MODE IS 0644 AND THAT IS THE DECISION, NOT AN OVERSIGHT (fortkit-n3bk finding
+# 7, decided by the E8 sitting 2026-08-13). This file is SOURCED, never executed:
+# no caller invokes it as a program, so the executable bit would grant a way to
+# run it that nothing needs. All three forts' copies measured -rw-r--r-- on
+# 2026-08-13, so there is no single-file mode change to explain and the gate-1
+# escalation class the finding invoked does not apply. The shebang is kept for
+# editors and ShellCheck, which is why it looks executable and is not.
+#
 # WHY THIS EXISTS (Proofdelve 21f.3/21f.5/21f.8, civilization cycle 4):
 # Permission rules in both harnesses match the TEXT of a command, so a deny
 # rule binds a SPELLING, not a file — measured six-for-six against obfuscated
@@ -15,10 +23,17 @@
 # accept either outcome — never trust an "access denied" narration from a model.
 #
 # Usage:  build_mask <seat-type> <repo-root> [--env-root <path>] [--rw-tree <path>]
-#                    [--mask-ssh-auth-sock] [extra-ro-path ...]
+#                    [--mask-file <path>] [--mask-ssh-auth-sock] [extra-ro-path ...]
 #   seat-type: "codex" (Forge) or "claude" (Mayor, Warden)
 #   --rw-tree: a SECOND writable checkout (a worktree). Grants it AND applies
 #              every enforcement carve-out to it. See fortkit-1q9 below.
+#   --mask-file: a caller-specific path to mask to /dev/null, joining MASK_FILES
+#              so it is bound in the correct pass. For deltas the shared list
+#              cannot know — Proofdelve's deploy scripts, which its charter gate 3
+#              keeps out of every agent's hands, in both the root and the worktree
+#              copy. An extra-ro-path would leave such a file READABLE; this makes
+#              it read empty. Added by fortkit-52vf.10 for the forge.sh port,
+#              deliberately as a parameter rather than a second copy of the logic.
 # Each seat type keeps its OWN runtime's credentials readable — masking them
 # breaks the launch outright — and masks the other runtime's entirely.
 
@@ -28,7 +43,7 @@ build_mask() {
   local seat="$1" root="$2"; shift 2
   local CODEX_DIR_RW=0
   local mask_ssh_auth_sock=0
-  local extra_ro=() env_roots=("$root") rw_trees=("$root")
+  local extra_ro=() env_roots=("$root") rw_trees=("$root") mask_files_extra=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env-root)
@@ -44,6 +59,11 @@ build_mask() {
         [ "$#" -ge 2 ] || { echo "build_mask: --rw-tree requires a path" >&2; return 2; }
         rw_trees+=("$2")
         env_roots+=("$2")
+        shift 2
+        ;;
+      --mask-file)
+        [ "$#" -ge 2 ] || { echo "build_mask: --mask-file requires a path" >&2; return 2; }
+        mask_files_extra+=("$2")
         shift 2
         ;;
       --mask-ssh-auth-sock)
@@ -106,6 +126,17 @@ build_mask() {
         # existed in any fort — and one character class to close. A secret is a
         # regular file, and -f follows symlinks, so a symlinked secret is still
         # swept.
+        # DISCLOSED RESIDUAL (fortkit-n3bk finding 6, E8 2026-08-13): -f trades
+        # a loud abort for a SILENT GAP in one case. A DIRECTORY whose name
+        # matches a secret glob is now skipped instead of aborting the launch —
+        # which is the right trade, because the abort took down every seat in
+        # the civilization — but it is then simply UNMASKED, and no line of
+        # output says so. A directory called `environments~` or `.env.d` holding
+        # secret files is therefore readable inside every mask. Not closed here:
+        # the honest fix is to descend into such a directory and sweep its files,
+        # which changes what a launch costs and belongs in its own sitting with
+        # its own measurement. Recorded so the next reader finds the limit stated
+        # rather than inferring the case was handled.
         [ -f "$f" ] && MASK_FILES+=("$f")
       done
     done
@@ -113,6 +144,11 @@ build_mask() {
   if [ "$mask_ssh_auth_sock" = "1" ]; then
     MASK_FILES+=("${SSH_AUTH_SOCK:-/nonexistent}")
   fi
+  # Caller-declared masks (--mask-file). Joined here so they ride the same
+  # existence-guarded bind pass as every other MASK_FILES entry, and are
+  # therefore placed LAST per the ordering invariant — a caller appending its
+  # own --ro-bind after build_mask returns would get that ordering by luck.
+  MASK_FILES+=("${mask_files_extra[@]}")
 
   local MASK_DIRS=("$HOME/.ssh" "$HOME/.aws" "$HOME/.config/gh" "$HOME/.docker" "$HOME/.config/git")
   # Cycle 7 (Overseer edict 2026-08-08, longburn-suti / fortkit-i4y): charter
@@ -234,20 +270,43 @@ build_mask() {
       # break every masked launch. Do not "complete" this list with it.
       RO_PATHS+=("$HOME/.claude/civilization.json" "$HOME/.claude/skills" \
                  "$HOME/.claude/commands" "$HOME/.claude/plugins")
-      # DISPATCH EXCEPTION, redesigned (longburn-1p9, measured 2026-08-05): the
-      # Mayor launches the Forge, and a child codex inherits this mount
-      # namespace, so ~/.codex must be reachable and auth must be able to
-      # ROTATE. The old design (tmpfs over ~/.codex + auth.json re-bound RO as
-      # a FILE) pinned the auth.json inode: codex rotates the token by rename,
-      # so rotation failed at write, the refresh token was reused and revoked
-      # server-side, and a host-side `codex login` stayed invisible to running
-      # sessions — both seat lanes died until session restart. Fix: bind the
-      # real DIRECTORY read-write (name lookups resolve live, so rename
-      # rotation and host re-login both work), keep config.toml read-only (the
-      # injection vector, 21f.5), and mask transcripts/history. Reading the
-      # token remains the same accepted exposure as before: a session that can
-      # already spend it gains little by seeing it. Revisit if Codex gains
-      # fd/env auth.
+      # DISPATCH EXCEPTION, redesigned (longburn-1p9, measured 2026-08-05;
+      # unified across the civilization 2026-08-13 by fortkit-52vf.10 with the
+      # Overseer present): the Mayor launches the Forge, and a child codex
+      # inherits this mount namespace, so ~/.codex must be reachable and auth
+      # must be able to ROTATE. The old design (tmpfs over ~/.codex + auth.json
+      # re-bound RO as a FILE) pinned the auth.json inode: codex rotates the
+      # token by rename, so rotation failed at write, the refresh token was
+      # reused and revoked server-side, and a host-side `codex login` stayed
+      # invisible to running sessions — both seat lanes died until session
+      # restart. Fix: bind the real DIRECTORY read-write (name lookups resolve
+      # live, so rename rotation and host re-login both work), keep config.toml
+      # read-only (the injection vector, 21f.5), and mask transcripts/history.
+      # Reading the token remains the same accepted exposure as before: a
+      # session that can already spend it gains little by seeing it. Revisit if
+      # Codex gains fd/env auth.
+      #
+      # THE COST, STATED RATHER THAN IMPLIED (Overseer's rider, 2026-08-13).
+      # ~/.codex is not only credentials and transcripts. It also holds
+      # SESSION-EXECUTED INSTRUCTION for the Codex runtime — AGENTS.md, skills/,
+      # plugins/, rules/, memories/ — which is the same class of surface
+      # fortkit-5sk kernel-locked for the Claude runtime (~/.claude/skills,
+      # commands, plugins, civilization.json). A live rw bind hands an attended
+      # Mayor or Warden write access to all of it, and what it writes there is
+      # loaded as instruction by the NEXT codex launch, outside that seat's mask.
+      # That is a real widening of the attended-seat boundary and it is accepted
+      # deliberately here, not overlooked.
+      #   • For the CODEX seat the policy layer still covers it: forge.sh's
+      #     guarded deny table denies /home/justin/.codex/**, and Landlock DOES
+      #     enforce write denials (only read-deny is the upstream TODO,
+      #     openai/codex#11316). So the Forge is denied at policy and permitted
+      #     at kernel; the Mayor and Warden are permitted at both.
+      #   • DO NOT "FIX" THIS BY RO-BINDING skills/ OR plugins/. The Overseer
+      #     ruled it out on 2026-08-13: codex appears to mutate both at startup,
+      #     so a read-only bind there is a launch-abort risk of exactly the
+      #     ~/.claude/teams shape (harness state that looks like an instruction
+      #     surface). It is filed as fortkit-elh9 — the codex twin of
+      #     fortkit-5sk, and, unlike 5sk, one an RO bind cannot fix. Leave it.
       CODEX_DIR_RW=1
       RO_PATHS+=("$HOME/.codex/config.toml")
       MASK_DIRS+=("$HOME/.codex/sessions" "$HOME/.codex/log")
@@ -412,6 +471,14 @@ build_mask() {
 # still sign — an attended session can use a key it can never read (`ssh-add`
 # for agent-based push). The codex seat gets neither the env var nor the
 # socket (masked in build_mask): the unattended Forge never pushes.
+# WHY THE NAME AND NOT JUST THE SOCKET (measured 2026-08-13, fortkit-52vf.10,
+# when Proofdelve's Forge was ported onto this lib and briefly got the name):
+# masking the socket alone is sufficient at the KERNEL — `ssh-add -l` returns
+# "Connection refused" — and insufficient in the RECORD. Proofdelve's smoke
+# probe asserts SSH_AUTH_SOCK is UNSET, its seat read a set variable as a live
+# agent and a boundary failure, and it refused the remaining nine probes rather
+# than risk a real push. A boundary that is closed but looks open costs
+# measurement. This fort had it right first; the other two now match.
 mask_env() {
   local seat="$1" v
   local common=(HOME USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM LANG LC_ALL
