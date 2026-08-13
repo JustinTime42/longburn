@@ -96,7 +96,17 @@ build_mask() {
     for g in "${SECRET_GLOBS[@]}"; do
       # shellcheck disable=SC2231  # $g MUST expand as a glob; that is the point
       for f in "$x"/$g "$x"/*/$g; do
-        [ -e "$f" ] && MASK_FILES+=("$f")
+        # [ -f ], NOT [ -e ] (fortkit-faka finding 5, Warden Ilva Trueglass).
+        # Two of the six spellings above — *env*~ and #*env*# — do NOT begin
+        # with a dot, so they match ordinary names. A DIRECTORY called
+        # environments~ satisfied [ -e ] and joined MASK_FILES, and
+        # `--ro-bind /dev/null <directory>` ABORTS BWRAP: the failure mode was
+        # NO SEAT LAUNCHES ANYWHERE, arriving through the 2kub fix rather than
+        # through the mask it was fixing. Latent when found — no such path
+        # existed in any fort — and one character class to close. A secret is a
+        # regular file, and -f follows symlinks, so a symlinked secret is still
+        # swept.
+        [ -f "$f" ] && MASK_FILES+=("$f")
       done
     done
   done
@@ -339,7 +349,13 @@ build_mask() {
   local h
   while IFS= read -r h; do mask+=(--ro-bind "$h" "$h"); done \
     < <(find "$root/.beads" -type d -name hooks 2>/dev/null)
-  for f in "${MASK_FILES[@]}"; do [ -e "$f" ] && mask+=(--ro-bind /dev/null "$f"); done
+  # BELT FOR THE SAME DEFECT — and deliberately NOT [ -f ] here. MASK_FILES also
+  # carries SOCKETS: the docker and podman sockets always, and SSH_AUTH_SOCK
+  # under --mask-ssh-auth-sock. [ -f ] is FALSE for a socket, so using it here
+  # would silently stop masking the docker socket, which is the one entry in
+  # this list that is a host-escape rather than a secret. The property that
+  # actually matters at the bind site is "exists and is not a directory".
+  for f in "${MASK_FILES[@]}"; do [ -e "$f" ] && [ ! -d "$f" ] && mask+=(--ro-bind /dev/null "$f"); done
   local d
   for d in "${MASK_DIRS[@]}"; do [ -d "$d" ] && mask+=(--tmpfs "$d"); done
 
