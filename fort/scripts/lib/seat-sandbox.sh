@@ -203,6 +203,14 @@ build_mask() {
       #                      2026-08-12; installing a skill is now an unmasked
       #                      act until fortkit-4n8c symlinks these to the repo.
       #   commands/ plugins/ slash commands and plugin payloads, both executed
+      # SECOND STRANDED LANE, disclosed here because the skills one was and this
+      # one was not (fortkit-faka finding 4): bin/fort-init writes the settlement
+      # registry at ${FORT_REGISTRY:-$HOME/.claude/civilization.json}, and that
+      # path is now kernel-RO — FOUNDING A SETTLEMENT FROM INSIDE A MASKED SEAT
+      # FAILS EROFS. Founding is already Overseer or Regent work, so the decision
+      # stands; the gap was in its record, and that kind of gap costs someone an
+      # afternoon. Pass FORT_REGISTRY at a writable path to found a throwaway
+      # fort for testing, which is what the factory's own verification does.
       # NOT MASKED, deliberately: ~/.claude/teams. It is harness session state,
       # not an instruction surface — Claude Code writes teams/session-<id>/
       # config.json at EVERY session start, so a read-only bind there would
@@ -346,9 +354,22 @@ build_mask() {
   # fix, not one path: there are at least two such directories (.beads/hooks and
   # dolt's git-remote-cache repo.git/hooks), so every one is caught by finding
   # them rather than naming them.
+  # fortkit-faka finding 3 (Warden Ilva Trueglass, E2 review): PER DECLARED
+  # TREE, not root-scoped. Everything above moved to the rw_trees form in 1q9
+  # and this did not, while calling itself a CLASS fix — and .beads/hooks/* is
+  # TRACKED, so every worktree materialises its own writable copy of the five
+  # hook scripts. Direct execution was already closed (core.hooksPath is an
+  # absolute path into the main checkout, which is bound below), so the live
+  # path was the same one 1q9 describes for launchers: a Forge edits its
+  # worktree copy, commits path-scoped, and an ordinary merge carries it to
+  # $root where it runs unmasked on the next commit or push. Non-blocking
+  # because that path is Warden-reviewed; fixed because "every one is caught by
+  # finding them rather than naming them" was not true of the trees.
   local h
-  while IFS= read -r h; do mask+=(--ro-bind "$h" "$h"); done \
-    < <(find "$root/.beads" -type d -name hooks 2>/dev/null)
+  for t in "${rw_trees[@]}"; do
+    while IFS= read -r h; do mask+=(--ro-bind "$h" "$h"); done \
+      < <(find "$t/.beads" -type d -name hooks 2>/dev/null)
+  done
   # BELT FOR THE SAME DEFECT — and deliberately NOT [ -f ] here. MASK_FILES also
   # carries SOCKETS: the docker and podman sockets always, and SSH_AUTH_SOCK
   # under --mask-ssh-auth-sock. [ -f ] is FALSE for a socket, so using it here
